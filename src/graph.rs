@@ -55,11 +55,21 @@ pub struct GraphMessage {
     pub max_points: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct DeadlineMessage {
+    pub missed: bool,
+    pub processing_time_us: u64,
+    pub deadline_us: u64,
+}
+
 struct GraphRegistry {
     streams: HashMap<String, GraphData>,
     time_start: Instant,
     colors: Vec<Color>,
     next_color: usize,
+    deadline_misses: u64,
+    total_samples: u64,
+    last_processing_time_us: u64,
 }
 
 impl GraphRegistry {
@@ -77,6 +87,9 @@ impl GraphRegistry {
                 Color::White,
             ],
             next_color: 0,
+            deadline_misses: 0,
+            total_samples: 0,
+            last_processing_time_us: 0,
         }
     }
 
@@ -99,9 +112,26 @@ impl GraphRegistry {
     fn get_streams(&self) -> &HashMap<String, GraphData> {
         &self.streams
     }
+
+    fn update_deadline_stats(&mut self, deadline_msg: DeadlineMessage) {
+        self.total_samples += 1;
+        self.last_processing_time_us = deadline_msg.processing_time_us;
+        if deadline_msg.missed {
+            self.deadline_misses += 1;
+        }
+    }
+
+    fn get_deadline_miss_rate(&self) -> f64 {
+        if self.total_samples == 0 {
+            0.0
+        } else {
+            (self.deadline_misses as f64 / self.total_samples as f64) * 100.0
+        }
+    }
 }
 
 static GRAPH_SENDER: Mutex<Option<mpsc::Sender<GraphMessage>>> = Mutex::new(None);
+static DEADLINE_SENDER: Mutex<Option<mpsc::Sender<DeadlineMessage>>> = Mutex::new(None);
 
 impl Signal {
     pub fn graph(&self, name: &str, value: f32) {
@@ -126,16 +156,21 @@ struct GraphApp {
     update_interval: Duration,
     registry: GraphRegistry,
     receiver: mpsc::Receiver<GraphMessage>,
+    deadline_receiver: mpsc::Receiver<DeadlineMessage>,
 }
 
 impl GraphApp {
-    fn new(receiver: mpsc::Receiver<GraphMessage>) -> Self {
+    fn new(
+        receiver: mpsc::Receiver<GraphMessage>,
+        deadline_receiver: mpsc::Receiver<DeadlineMessage>,
+    ) -> Self {
         Self {
             should_quit: false,
             last_update: Instant::now(),
             update_interval: Duration::from_millis(50),
             registry: GraphRegistry::new(),
             receiver,
+            deadline_receiver,
         }
     }
 
@@ -144,6 +179,10 @@ impl GraphApp {
             while let Ok(msg) = self.receiver.try_recv() {
                 self.registry
                     .push_value(&msg.name, msg.value, msg.max_points);
+            }
+
+            while let Ok(deadline_msg) = self.deadline_receiver.try_recv() {
+                self.registry.update_deadline_stats(deadline_msg);
             }
 
             if self.last_update.elapsed() >= self.update_interval {
@@ -184,11 +223,16 @@ impl GraphApp {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints(vec![Constraint::Percentage(80), Constraint::Percentage(20)])
+            .constraints(vec![
+                Constraint::Percentage(70),
+                Constraint::Percentage(20),
+                Constraint::Percentage(10),
+            ])
             .split(f.size());
 
         self.render_chart(f, chunks[0], streams);
         self.render_legend(f, chunks[1], streams);
+        self.render_performance(f, chunks[2]);
     }
 
     fn render_chart(&self, f: &mut Frame, area: Rect, streams: &HashMap<String, GraphData>) {
@@ -285,6 +329,40 @@ impl GraphApp {
 
         f.render_widget(legend, area);
     }
+
+    fn render_performance(&self, f: &mut Frame, area: Rect) {
+        let miss_rate = self.registry.get_deadline_miss_rate();
+        let processing_time = self.registry.last_processing_time_us;
+        let deadline_us = 22; // ~22μs per sample at 44.1kHz
+
+        let performance_color = if miss_rate > 5.0 {
+            Color::Red
+        } else if miss_rate > 1.0 {
+            Color::Yellow
+        } else {
+            Color::Green
+        };
+
+        let items = vec![
+            ListItem::new(Line::from(vec![
+                Span::styled("● ", Style::default().fg(performance_color)),
+                Span::raw(format!("Deadline Miss Rate: {:.2}%", miss_rate)),
+            ])),
+            ListItem::new(Line::from(vec![Span::raw(format!(
+                "Processing Time: {}μs / {}μs",
+                processing_time, deadline_us
+            ))])),
+            ListItem::new(Line::from(vec![Span::raw(format!(
+                "Total Samples: {}",
+                self.registry.total_samples
+            ))])),
+        ];
+
+        let performance =
+            List::new(items).block(Block::default().title("Performance").borders(Borders::ALL));
+
+        f.render_widget(performance, area);
+    }
 }
 
 pub fn graph<F>(synth_fn: F) -> Result<(), Box<dyn std::error::Error>>
@@ -292,10 +370,16 @@ where
     F: FnMut(&mut Signal) + Send + 'static,
 {
     let (tx, rx) = mpsc::channel();
+    let (deadline_tx, deadline_rx) = mpsc::channel();
 
     {
         let mut sender = GRAPH_SENDER.lock().unwrap();
         *sender = Some(tx);
+    }
+
+    {
+        let mut deadline_sender = DEADLINE_SENDER.lock().unwrap();
+        *deadline_sender = Some(deadline_tx);
     }
 
     enable_raw_mode()?;
@@ -329,10 +413,14 @@ where
                         let signal = signal.clone();
                         let synth_fn = synth_fn.clone();
                         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                            let deadline_us = 22; // ~22μs per sample at 44.1kHz
+
                             let mut signal_lock = signal.lock().unwrap();
                             let mut synth_lock = synth_fn.lock().unwrap();
 
                             for frame in data.chunks_mut(channels) {
+                                let start_time = Instant::now();
+
                                 synth_lock(&mut *signal_lock);
                                 let sample = signal_lock.get_current_sample();
 
@@ -341,6 +429,19 @@ where
                                 }
 
                                 signal_lock.advance();
+
+                                let processing_time = start_time.elapsed();
+                                let processing_time_us = processing_time.as_micros() as u64;
+                                let missed = processing_time_us > deadline_us;
+
+                                if let Some(deadline_tx) = DEADLINE_SENDER.lock().unwrap().as_ref()
+                                {
+                                    let _ = deadline_tx.send(DeadlineMessage {
+                                        missed,
+                                        processing_time_us,
+                                        deadline_us,
+                                    });
+                                }
                             }
                         }
                     },
@@ -359,7 +460,7 @@ where
         )
     };
 
-    let mut app = GraphApp::new(rx);
+    let mut app = GraphApp::new(rx, deadline_rx);
     let res = app.run(&mut terminal);
 
     *running.lock().unwrap() = false;
