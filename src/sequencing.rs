@@ -52,6 +52,8 @@ pub(crate) struct SequenceState {
     pub(crate) active_notes: std::collections::HashSet<i32>,
     pub(crate) previous_notes: std::collections::HashSet<i32>,
     pub(crate) params_hash: u64,
+    pub(crate) current_bar: usize,
+    pub(crate) last_clock_position: f32,
 }
 
 pub struct Sequence {
@@ -113,6 +115,8 @@ impl Sequence {
             state.active_notes.clear();
             state.previous_notes.clear();
             state.params_hash = current_hash;
+            state.current_bar = 0;
+            state.last_clock_position = 0.0;
         }
     }
 
@@ -121,11 +125,16 @@ impl Sequence {
             return Vec::new();
         }
 
-        let sequence_position = (clock_position * self.bars as f32) % 1.0;
-
         let state = signal.get_sequence_state(self.id as i32, 0);
 
         self.ensure_state(state);
+
+        if clock_position < state.last_clock_position {
+            state.current_bar = (state.current_bar + 1) % self.bars;
+        }
+        state.last_clock_position = clock_position;
+
+        let sequence_position = (state.current_bar as f32 + clock_position) / self.bars as f32;
         let chord_index = (sequence_position * self.chords.len() as f32) as usize;
 
         let chord_changed = chord_index != state.last_chord_index;

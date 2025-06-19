@@ -22,6 +22,7 @@ pub struct Oscillator {
     attenuation: f32,
     phase_offset: f32,
     computed_sample: f32,
+    is_bipolar: bool,
 }
 
 pub fn sin(id: usize) -> Oscillator {
@@ -55,6 +56,7 @@ impl Oscillator {
             attenuation: 1.0,
             phase_offset: 0.0,
             computed_sample: 0.0,
+            is_bipolar: false,
         }
     }
 
@@ -76,6 +78,11 @@ impl Oscillator {
 
     pub fn atten(mut self, a: f32) -> Self {
         self.attenuation = a;
+        self
+    }
+
+    pub fn bipolar(mut self) -> Self {
+        self.is_bipolar = true;
         self
     }
 
@@ -120,23 +127,50 @@ impl Oscillator {
         let adjusted_phase = (phase + self.phase_offset / (2.0 * std::f32::consts::PI)) % 1.0;
 
         let sample = match self.wave_type {
-            WaveType::Sine => (adjusted_phase * 2.0 * std::f32::consts::PI).sin(),
-            WaveType::Square => {
-                if adjusted_phase < 0.5 {
-                    1.0
+            WaveType::Sine => {
+                let bipolar_sample = (adjusted_phase * 2.0 * std::f32::consts::PI).sin();
+                if self.is_bipolar {
+                    bipolar_sample
                 } else {
-                    -1.0
+                    (bipolar_sample + 1.0) * 0.5
+                }
+            }
+            WaveType::Square => {
+                let bipolar_sample = if adjusted_phase < 0.5 { 1.0 } else { -1.0 };
+                if self.is_bipolar {
+                    bipolar_sample
+                } else {
+                    (bipolar_sample + 1.0) * 0.5
                 }
             }
             WaveType::Triangle => {
-                if adjusted_phase < 0.5 {
+                let bipolar_sample = if adjusted_phase < 0.5 {
                     -1.0 + 4.0 * adjusted_phase
                 } else {
                     3.0 - 4.0 * adjusted_phase
+                };
+                if self.is_bipolar {
+                    bipolar_sample
+                } else {
+                    (bipolar_sample + 1.0) * 0.5
                 }
             }
-            WaveType::SawUp => -1.0 + 2.0 * adjusted_phase,
-            WaveType::SawDown => 1.0 - 2.0 * adjusted_phase,
+            WaveType::SawUp => {
+                let bipolar_sample = -1.0 + 2.0 * adjusted_phase;
+                if self.is_bipolar {
+                    bipolar_sample
+                } else {
+                    (bipolar_sample + 1.0) * 0.5
+                }
+            }
+            WaveType::SawDown => {
+                let bipolar_sample = 1.0 - 2.0 * adjusted_phase;
+                if self.is_bipolar {
+                    bipolar_sample
+                } else {
+                    (bipolar_sample + 1.0) * 0.5
+                }
+            }
         };
 
         self.computed_sample = sample * self.attenuation;
