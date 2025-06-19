@@ -15,13 +15,14 @@ fn synth(s: &mut Signal) {
             chord(&[0, 4, 7]),
             chord(&[5, 9, 12]),
             chord(&[7, 11, 14]),
-            chord(&[0, 4, 7]),
+            chord(&[9, 7, 11, 16]),
         ])
         .tempo(40.)
         .output(s);
         for key in seq {
             let env = adsr!(0.01, 0.4, 0.1, 0.).output(key.on, key.note, s);
-            tri!().pitch(key.pitch - 12.).atten(env).play(s).output();
+            dbg!(env);
+            tri!().pitch(key.pitch - 12.).play(s).output();
             sin!().pitch(key.pitch + 12.).play(s).output();
         }
     });

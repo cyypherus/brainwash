@@ -2,7 +2,8 @@ use crate::Signal;
 
 #[derive(Clone)]
 pub struct ADSRState {
-    pub notes: [(bool, u32); 128],
+    on: bool,
+    time: u32,
 }
 
 pub fn adsr(id: usize, a: f32, d: f32, s: f32, r: f32) -> ADSR {
@@ -23,16 +24,21 @@ impl ADSR {
     }
 
     pub fn output(&self, on: bool, note: i32, signal: &mut Signal) -> f32 {
-        let state = signal.adsr_state.entry(self.id).or_insert(ADSRState {
-            notes: [(false, 0); 128],
-        });
+        let state = signal
+            .adsr_state
+            .entry(self.id + note as usize)
+            .or_insert(ADSRState { on: false, time: 0 });
 
-        let (current_on, time) = state.notes[note as usize];
+        let ADSRState {
+            on: current_on,
+            time,
+        } = state;
 
-        let duration = signal.position as u32 - time;
+        let duration = signal.position as u32 - *time;
 
-        if on != current_on {
-            state.notes[note as usize] = (on, signal.position as u32);
+        if on != *current_on {
+            *current_on = on;
+            *time = signal.position as u32;
         }
 
         fn time_to_samples(secs: f32, sample_rate: usize) -> u32 {
@@ -47,7 +53,7 @@ impl ADSR {
         let decay_time = time_to_samples(self.s, signal.sample_rate);
         let release_time = time_to_samples(self.r, signal.sample_rate);
 
-        if current_on {
+        if *current_on {
             if duration < attack_time {
                 lerp(0., 1., duration as f32 / attack_time as f32)
             } else if duration <= attack_time + decay_time {
