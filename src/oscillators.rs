@@ -106,7 +106,7 @@ impl Oscillator {
 
     fn calculate_time_based(&mut self, signal: &mut Signal) {
         let sample_rate = signal.sample_rate as f32;
-        let state = signal.get_oscillator_state(self.index as i32 + self.id as i32);
+        let state = signal.get_oscillator_state(self.id as i32, self.index as i32);
 
         let phase_increment =
             ((self.frequency as f64 / sample_rate as f64) * (u32::MAX as f64 + 1.0)) as u32;

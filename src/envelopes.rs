@@ -83,7 +83,7 @@ impl ADSR {
         let current_time = signal.position;
         let sample_rate = signal.sample_rate as f32;
 
-        let state = signal.get_adsr_state(self.id as i32 + self.index as i32);
+        let state = signal.get_adsr_state(self.id as i32, self.index as i32);
 
         match (self.trigger, state.trigger_time, state.release_time) {
             (true, None, _) => {

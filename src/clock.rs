@@ -21,7 +21,7 @@ impl Clock {
 
     pub fn output(self, signal: &mut Signal) -> f32 {
         let sample_rate = signal.sample_rate;
-        let state = signal.get_clock_state(self.id as i32);
+        let state = signal.get_clock_state(self.id as i32, 0);
 
         let beats_per_second = self.bpm / 60.0;
         let samples_per_beat = sample_rate as f32 / beats_per_second;

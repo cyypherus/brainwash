@@ -123,7 +123,7 @@ impl Sequence {
 
         let sequence_position = (clock_position * self.bars as f32) % 1.0;
 
-        let state = signal.get_sequence_state(self.id as i32);
+        let state = signal.get_sequence_state(self.id as i32, 0);
 
         self.ensure_state(state);
         let chord_index = (sequence_position * self.chords.len() as f32) as usize;

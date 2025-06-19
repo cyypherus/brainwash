@@ -29,13 +29,10 @@ fn synth(s: &mut Signal) {
                 .dec(0.1)
                 .trigger(key.on)
                 .output(s);
-            let lfo = rsaw!().at_phase(clock).atten(0.01).output();
-            sin!()
-                .index(i)
-                .pitch(key.pitch + lfo)
-                .atten(env)
-                .run(s)
-                .output();
+            // let lfo = rsaw!().at_phase(clock).atten(0.01).output();
+            sin!().index(i).pitch(key.pitch).atten(env).run(s);
+            //     .output();
+            rsaw!().index(i).pitch(key.pitch).atten(env).play(s);
             s.graph(format!("t{}", i).as_str(), env, 200000);
         }
     });

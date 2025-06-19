@@ -7,10 +7,10 @@ pub struct Signal {
     pub sample_rate: usize,
     pub position: usize,
     pub global_volume: f32,
-    adsr_state: HashMap<i32, ADSRState>,
-    sequence_state: HashMap<i32, SequenceState>,
-    clock_state: HashMap<i32, ClockState>,
-    oscillator_state: HashMap<i32, OscillatorState>,
+    adsr_state: HashMap<(i32, i32), ADSRState>,
+    sequence_state: HashMap<(i32, i32), SequenceState>,
+    clock_state: HashMap<(i32, i32), ClockState>,
+    oscillator_state: HashMap<(i32, i32), OscillatorState>,
 }
 
 impl Signal {
@@ -60,32 +60,36 @@ impl Signal {
         self.position as f32 / self.sample_rate as f32
     }
 
-    pub fn get_adsr_state(&mut self, id: i32) -> &mut ADSRState {
-        self.adsr_state.entry(id).or_insert(ADSRState {
+    pub fn get_adsr_state(&mut self, id: i32, index: i32) -> &mut ADSRState {
+        self.adsr_state.entry((id, index)).or_insert(ADSRState {
             trigger_time: None,
             release_time: None,
         })
     }
 
-    pub(crate) fn get_sequence_state(&mut self, id: i32) -> &mut SequenceState {
-        self.sequence_state.entry(id).or_insert(SequenceState {
-            all_notes: Vec::new(),
-            last_chord_index: usize::MAX,
-            active_notes: std::collections::HashSet::new(),
-            previous_notes: std::collections::HashSet::new(),
-            params_hash: 0,
-        })
+    pub(crate) fn get_sequence_state(&mut self, id: i32, index: i32) -> &mut SequenceState {
+        self.sequence_state
+            .entry((id, index))
+            .or_insert(SequenceState {
+                all_notes: Vec::new(),
+                last_chord_index: usize::MAX,
+                active_notes: std::collections::HashSet::new(),
+                previous_notes: std::collections::HashSet::new(),
+                params_hash: 0,
+            })
     }
 
-    pub(crate) fn get_clock_state(&mut self, id: i32) -> &mut ClockState {
+    pub(crate) fn get_clock_state(&mut self, id: i32, index: i32) -> &mut ClockState {
         self.clock_state
-            .entry(id)
+            .entry((id, index))
             .or_insert(ClockState { position: 0 })
     }
 
-    pub(crate) fn get_oscillator_state(&mut self, id: i32) -> &mut OscillatorState {
-        self.oscillator_state.entry(id).or_insert(OscillatorState {
-            phase_accumulator: 0,
-        })
+    pub(crate) fn get_oscillator_state(&mut self, id: i32, index: i32) -> &mut OscillatorState {
+        self.oscillator_state
+            .entry((id, index))
+            .or_insert(OscillatorState {
+                phase_accumulator: 0,
+            })
     }
 }
