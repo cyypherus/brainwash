@@ -16,6 +16,10 @@ pub fn chord(notes: &[i32]) -> Chord {
     }
 }
 
+pub fn note(note: i32) -> Chord {
+    chord(&[note])
+}
+
 pub fn sequence<T: Into<Vec<Chord>>>(chords: T) -> Sequence {
     Sequence {
         chords: chords.into(),

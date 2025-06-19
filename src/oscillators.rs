@@ -72,12 +72,21 @@ impl SineOscillator {
     }
 
     pub fn play(mut self, signal: &mut Signal) -> Self {
+        self.calculate(signal);
+        signal.add_sample(self.computed_sample);
+        self
+    }
+
+    pub fn run(mut self, signal: &mut Signal) -> Self {
+        self.calculate(signal);
+        self
+    }
+
+    fn calculate(&mut self, signal: &mut Signal) {
         let time = signal.position as f32 / signal.sample_rate as f32;
         let phase = (time * self.frequency * 2.0 * std::f32::consts::PI) + self.phase_offset;
         let sample = phase.sin() * self.attenuation;
         self.computed_sample = sample;
-        signal.add_sample(sample);
-        self
     }
 
     pub fn output(self) -> f32 {
@@ -103,12 +112,21 @@ impl SquareOscillator {
     }
 
     pub fn play(mut self, signal: &mut Signal) -> Self {
+        self.calculate(signal);
+        signal.add_sample(self.computed_sample);
+        self
+    }
+
+    pub fn run(mut self, signal: &mut Signal) -> Self {
+        self.calculate(signal);
+        self
+    }
+
+    fn calculate(&mut self, signal: &mut Signal) {
         let time = signal.position as f32 / signal.sample_rate as f32;
         let phase = (time * self.frequency * 2.0 * std::f32::consts::PI) + self.phase_offset;
         let sample = if phase.sin() >= 0.0 { 1.0 } else { -1.0 } * self.attenuation;
         self.computed_sample = sample;
-        signal.add_sample(sample);
-        self
     }
 
     pub fn output(self) -> f32 {
@@ -134,6 +152,17 @@ impl TriangleOscillator {
     }
 
     pub fn play(mut self, signal: &mut Signal) -> Self {
+        self.calculate(signal);
+        signal.add_sample(self.computed_sample);
+        self
+    }
+
+    pub fn run(mut self, signal: &mut Signal) -> Self {
+        self.calculate(signal);
+        self
+    }
+
+    fn calculate(&mut self, signal: &mut Signal) {
         let time = signal.position as f32 / signal.sample_rate as f32;
         let phase = ((time * self.frequency + self.phase_offset / (2.0 * std::f32::consts::PI))
             % 1.0)
@@ -147,8 +176,6 @@ impl TriangleOscillator {
         } * self.attenuation;
 
         self.computed_sample = sample;
-        signal.add_sample(sample);
-        self
     }
 
     pub fn output(self) -> f32 {
