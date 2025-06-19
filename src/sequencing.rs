@@ -8,6 +8,7 @@ pub struct Sequence {
     chords: Vec<Chord>,
     bar_duration_samples: usize,
     bpm: f32,
+    bars: usize,
 }
 
 pub fn chord(notes: &[i32]) -> Chord {
@@ -25,6 +26,7 @@ pub fn sequence<T: Into<Vec<Chord>>>(_id: usize, chords: T) -> Sequence {
         chords: chords.into(),
         bar_duration_samples: 44100,
         bpm: 120.0,
+        bars: 1,
     }
 }
 
@@ -32,6 +34,11 @@ impl Sequence {
     pub fn tempo(mut self, bpm: f32) -> Self {
         self.bpm = bpm;
         self.bar_duration_samples = self.calculate_bar_duration_samples(44100);
+        self
+    }
+
+    pub fn bars(mut self, bars: usize) -> Self {
+        self.bars = bars;
         self
     }
 
@@ -47,24 +54,41 @@ impl Sequence {
             return Vec::new();
         }
 
+        let all_notes = self.get_all_notes();
         let bar_duration = self.calculate_bar_duration_samples(signal.sample_rate);
+        let sequence_duration = bar_duration * self.bars;
         let chord_duration = bar_duration / self.chords.len();
-        let position_in_bar = signal.position % bar_duration;
+        let position_in_sequence = signal.position % sequence_duration;
+        let position_in_bar = position_in_sequence % bar_duration;
         let chord_index = position_in_bar / chord_duration;
 
-        if let Some(chord) = self.chords.get(chord_index) {
-            chord
-                .notes
-                .iter()
-                .map(|&n| Key {
-                    on: true,
-                    note: n,
-                    pitch: n as f32,
-                })
-                .collect()
-        } else {
-            Vec::new()
+        let active_notes: std::collections::HashSet<i32> =
+            if let Some(chord) = self.chords.get(chord_index) {
+                chord.notes.iter().cloned().collect()
+            } else {
+                std::collections::HashSet::new()
+            };
+
+        all_notes
+            .iter()
+            .map(|&note| Key {
+                on: active_notes.contains(&note),
+                note,
+                pitch: note as f32,
+            })
+            .collect()
+    }
+
+    fn get_all_notes(&self) -> Vec<i32> {
+        let mut all_notes = std::collections::HashSet::new();
+        for chord in &self.chords {
+            for &note in &chord.notes {
+                all_notes.insert(note);
+            }
         }
+        let mut notes: Vec<i32> = all_notes.into_iter().collect();
+        notes.sort();
+        notes
     }
 
     pub fn set_bar_duration(&mut self, samples: usize) {
