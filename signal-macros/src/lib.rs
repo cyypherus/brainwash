@@ -88,8 +88,10 @@ pub fn rsaw(_input: TokenStream) -> TokenStream {
 
 #[proc_macro]
 pub fn clock(_input: TokenStream) -> TokenStream {
+    let id = next_id();
+
     let expanded = quote! {
-        crate::clock()
+        crate::clock(#id)
     };
 
     TokenStream::from(expanded)

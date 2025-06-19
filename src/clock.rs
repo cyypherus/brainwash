@@ -1,11 +1,16 @@
 use crate::Signal;
 
+pub(crate) struct ClockState {
+    position: usize,
+}
+
 pub struct Clock {
+    id: usize,
     bpm: f32,
 }
 
-pub fn clock() -> Clock {
-    Clock { bpm: 120.0 }
+pub fn clock(id: usize) -> Clock {
+    Clock { id, bpm: 120.0 }
 }
 
 impl Clock {
@@ -14,26 +19,19 @@ impl Clock {
         self
     }
 
-    pub fn output(&self, signal: &Signal) -> f32 {
+    pub fn output(self, signal: &mut Signal) -> f32 {
+        let state = signal
+            .clock_state
+            .entry(self.id as i32)
+            .or_insert(ClockState { position: 0 });
+
         let beats_per_second = self.bpm / 60.0;
         let samples_per_beat = signal.sample_rate as f32 / beats_per_second;
         let samples_per_bar = samples_per_beat * 4.0;
 
-        let position_in_bar = (signal.position as f32) % samples_per_bar;
+        let position_in_bar = (state.position as f32) % samples_per_bar;
+        state.position += 1;
+
         position_in_bar / samples_per_bar
-    }
-
-    pub fn beat(&self, signal: &Signal) -> f32 {
-        let beats_per_second = self.bpm / 60.0;
-        let samples_per_beat = signal.sample_rate as f32 / beats_per_second;
-
-        let position_in_beat = (signal.position as f32) % samples_per_beat;
-        position_in_beat / samples_per_beat
-    }
-
-    pub fn bar_samples(&self, sample_rate: usize) -> usize {
-        let beats_per_second = self.bpm / 60.0;
-        let samples_per_beat = sample_rate as f32 / beats_per_second;
-        (samples_per_beat * 4.0) as usize
     }
 }

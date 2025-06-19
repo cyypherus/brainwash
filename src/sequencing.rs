@@ -50,6 +50,7 @@ pub struct SequenceState {
     all_notes: Vec<i32>,
     last_chord_index: usize,
     active_notes: std::collections::HashSet<i32>,
+    previous_notes: std::collections::HashSet<i32>,
     params_hash: u64,
 }
 
@@ -82,7 +83,7 @@ pub fn sequence<T: Into<Vec<Chord>>>(id: usize, chords: T) -> Sequence {
 }
 
 impl Sequence {
-    pub fn cycles(mut self, bars: usize) -> Self {
+    pub fn bars(mut self, bars: usize) -> Self {
         self.bars = bars;
         self
     }
@@ -110,6 +111,7 @@ impl Sequence {
             state.all_notes = self.get_all_notes();
             state.last_chord_index = usize::MAX;
             state.active_notes.clear();
+            state.previous_notes.clear();
             state.params_hash = current_hash;
         }
     }
@@ -128,13 +130,17 @@ impl Sequence {
                 all_notes: Vec::new(),
                 last_chord_index: usize::MAX,
                 active_notes: std::collections::HashSet::new(),
+                previous_notes: std::collections::HashSet::new(),
                 params_hash: 0,
             });
 
         self.ensure_state(state);
         let chord_index = (sequence_position * self.chords.len() as f32) as usize;
 
-        if chord_index != state.last_chord_index {
+        let chord_changed = chord_index != state.last_chord_index;
+
+        if chord_changed {
+            state.previous_notes = state.active_notes.clone();
             state.active_notes.clear();
             if let Some(chord) = self.chords.get(chord_index) {
                 state.active_notes.extend(chord.notes.iter().cloned());
@@ -145,10 +151,19 @@ impl Sequence {
         state
             .all_notes
             .iter()
-            .map(|&note| Key {
-                on: state.active_notes.contains(&note),
-                note,
-                pitch: note as f32,
+            .map(|&note| {
+                let was_on = state.previous_notes.contains(&note);
+                let is_on = state.active_notes.contains(&note);
+
+                Key {
+                    on: if chord_changed && was_on && is_on {
+                        false
+                    } else {
+                        is_on
+                    },
+                    note,
+                    pitch: note as f32,
+                }
             })
             .collect()
     }

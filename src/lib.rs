@@ -19,8 +19,9 @@ pub struct Signal {
     pub current_sample: f32,
     pub sample_rate: usize,
     pub position: usize,
-    pub adsr_state: HashMap<i32, ADSRState>,
-    pub sequence_state: HashMap<i32, SequenceState>,
+    adsr_state: HashMap<i32, ADSRState>,
+    sequence_state: HashMap<i32, SequenceState>,
+    clock_state: HashMap<i32, ClockState>,
 }
 
 impl Signal {
@@ -31,6 +32,7 @@ impl Signal {
             position: 0,
             adsr_state: HashMap::new(),
             sequence_state: HashMap::new(),
+            clock_state: HashMap::new(),
         }
     }
 

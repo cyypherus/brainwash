@@ -65,7 +65,7 @@ impl ADSR {
         self
     }
 
-    pub fn output(&self, on: bool, note: i32, signal: &mut Signal) -> f32 {
+    pub fn output(self, on: bool, note: i32, signal: &mut Signal) -> f32 {
         let state = signal
             .adsr_state
             .entry(self.id as i32 + note)
