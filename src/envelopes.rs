@@ -14,29 +14,14 @@ pub struct ReleaseStage {
 }
 
 pub struct ADSR {
-    attack: AttackStage,
-    decay_sustain: DecaySustainStage,
-    release: ReleaseStage,
+    a: f32,
+    d: f32,
+    s: f32,
+    r: f32,
 }
 
-pub fn a(time: Time) -> AttackStage {
-    AttackStage { time }
-}
-
-pub fn ds(vol: Vol, time: Time) -> DecaySustainStage {
-    DecaySustainStage { vol, time }
-}
-
-pub fn r(time: Time) -> ReleaseStage {
-    ReleaseStage { time }
-}
-
-pub fn adsr(attack: AttackStage, decay_sustain: DecaySustainStage, release: ReleaseStage) -> ADSR {
-    ADSR {
-        attack,
-        decay_sustain,
-        release,
-    }
+pub fn adsr(a: f32, d: f32, s: f32, r: f32) -> ADSR {
+    ADSR { a, d, s, r }
 }
 
 impl ADSR {
@@ -54,9 +39,9 @@ impl ADSR {
 
         let (note_on, note_time) = (on, duration);
         let note_duration = pos - note_time;
-        let attack_time = time_to_samples(self.attack.time.0);
-        let decay_time = time_to_samples(self.decay_sustain.time.0);
-        let release_time = time_to_samples(self.release.time.0);
+        let attack_time = time_to_samples(self.a);
+        let decay_time = time_to_samples(self.s);
+        let release_time = time_to_samples(self.r);
 
         if note_on {
             if note_duration < attack_time {
@@ -64,19 +49,15 @@ impl ADSR {
             } else if note_duration <= attack_time + decay_time {
                 lerp(
                     1.,
-                    self.decay_sustain.vol.0,
+                    self.d,
                     (note_duration - attack_time) as f32 / decay_time as f32,
                 )
             } else {
-                self.decay_sustain.vol.0
+                self.d
             }
         } else {
             if note_duration <= release_time {
-                lerp(
-                    self.decay_sustain.vol.0,
-                    0.,
-                    note_duration as f32 / release_time as f32,
-                )
+                lerp(self.d, 0., note_duration as f32 / release_time as f32)
             } else {
                 0.
             }
