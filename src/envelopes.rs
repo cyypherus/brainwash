@@ -4,6 +4,7 @@ use crate::Signal;
 pub struct ADSRState {
     on: bool,
     time: u32,
+    last_value: f32,
 }
 
 pub fn adsr(id: usize) -> ADSR {
@@ -70,11 +71,16 @@ impl ADSR {
         let state = signal
             .adsr_state
             .entry(self.id + note as usize)
-            .or_insert(ADSRState { on: false, time: 0 });
+            .or_insert(ADSRState {
+                on: false,
+                time: 0,
+                last_value: 0.0,
+            });
 
         let ADSRState {
             on: current_on,
             time,
+            last_value,
         } = state;
 
         let duration = signal.position as u32 - *time;
@@ -85,7 +91,7 @@ impl ADSR {
         }
 
         fn time_to_samples(secs: f32, sample_rate: usize) -> u32 {
-            (secs * sample_rate as f32) as u32
+            ((secs * sample_rate as f32).max(1.0)) as u32
         }
 
         fn curve_lerp(a: f32, b: f32, t: f32, curve: f32) -> f32 {
@@ -106,35 +112,40 @@ impl ADSR {
         let decay_time = time_to_samples(self.decay, signal.sample_rate);
         let release_time = time_to_samples(self.release, signal.sample_rate);
 
-        if *current_on {
+        let output = if *current_on {
             if duration < attack_time {
                 curve_lerp(
                     0.0,
                     1.0,
-                    duration as f32 / attack_time as f32,
+                    (duration as f32 / attack_time as f32).min(1.0),
                     self.attack_curve,
                 )
             } else if duration <= attack_time + decay_time {
                 curve_lerp(
                     1.0,
                     self.sustain,
-                    (duration - attack_time) as f32 / decay_time as f32,
+                    ((duration - attack_time) as f32 / decay_time as f32).min(1.0),
                     self.decay_curve,
                 )
             } else {
                 self.sustain
             }
         } else {
+            let release_start_value = *last_value;
             if duration <= release_time {
                 curve_lerp(
-                    self.sustain,
+                    release_start_value,
                     0.0,
-                    duration as f32 / release_time as f32,
+                    (duration as f32 / release_time as f32).min(1.0),
                     self.release_curve,
                 )
             } else {
                 0.0
             }
-        }
+        };
+
+        let clamped_output = output.clamp(0.0, 1.0);
+        *last_value = clamped_output;
+        clamped_output
     }
 }
