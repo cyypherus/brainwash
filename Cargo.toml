@@ -11,14 +11,10 @@ path = "src/main.rs"
 name = "signal"
 path = "src/lib.rs"
 
-[dependencies.cpal]
-version = "0.15"
-optional = true
+[[example]]
+name = "simple"
+path = "examples/simple/src/main.rs"
 
-[dependencies.hound]
-version = "3.5"
-optional = true
-
-[features]
-default = ["audio"]
-audio = ["cpal", "hound"]
+[dependencies]
+cpal = "0.15"
+hound = "3.5"

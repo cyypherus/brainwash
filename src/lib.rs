@@ -1,14 +1,16 @@
+mod audio;
 mod envelopes;
 mod oscillators;
 mod sequencing;
 
+pub use audio::*;
 pub use envelopes::*;
 pub use oscillators::*;
 pub use sequencing::*;
 
 #[derive(Debug, Default)]
 pub struct Signal {
-    pub samples: Vec<f32>,
+    pub current_sample: f32,
     pub sample_rate: usize,
     pub position: usize,
 }
@@ -16,34 +18,28 @@ pub struct Signal {
 impl Signal {
     pub fn new(sample_rate: usize) -> Self {
         Signal {
-            samples: Vec::new(),
+            current_sample: 0.0,
             sample_rate,
             position: 0,
         }
     }
 
     pub fn add_sample(&mut self, sample: f32) {
-        if self.position < self.samples.len() {
-            self.samples[self.position] += sample;
-        } else {
-            self.samples.push(sample);
-        }
+        self.current_sample += sample;
     }
 
     pub fn advance(&mut self) {
         self.position += 1;
+        self.current_sample = 0.0;
     }
 
     pub fn reset(&mut self) {
         self.position = 0;
+        self.current_sample = 0.0;
     }
 
-    pub fn len(&self) -> usize {
-        self.samples.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.samples.is_empty()
+    pub fn get_current_sample(&self) -> f32 {
+        self.current_sample
     }
 }
 
