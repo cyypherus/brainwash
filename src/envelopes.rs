@@ -1,7 +1,6 @@
 use crate::{Signal, Time, Vol};
 
 pub struct AttackStage {
-    pub vol: Vol,
     pub time: Time,
 }
 
@@ -18,11 +17,10 @@ pub struct ADSR {
     attack: AttackStage,
     decay_sustain: DecaySustainStage,
     release: ReleaseStage,
-    start_position: Option<usize>,
 }
 
-pub fn a(vol: Vol, time: Time) -> AttackStage {
-    AttackStage { vol, time }
+pub fn a(time: Time) -> AttackStage {
+    AttackStage { time }
 }
 
 pub fn ds(vol: Vol, time: Time) -> DecaySustainStage {
@@ -38,41 +36,50 @@ pub fn adsr(attack: AttackStage, decay_sustain: DecaySustainStage, release: Rele
         attack,
         decay_sustain,
         release,
-        start_position: None,
     }
 }
 
 impl ADSR {
-    pub fn output(&mut self, signal: &Signal) -> f32 {
-        if self.start_position.is_none() {
-            self.start_position = Some(signal.position);
+    pub fn output(&self, note: i32, signal: &Signal) -> f32 {
+        let (on, duration) = signal.pitch_triggers[note as usize];
+        let pos = signal.position as u32;
+
+        fn time_to_samples(secs: f32) -> u32 {
+            (secs * 44100.0) as u32
         }
 
-        let start_pos = self.start_position.unwrap();
-        let elapsed_samples = signal.position - start_pos;
-        let elapsed_time = elapsed_samples as f32 / signal.sample_rate as f32;
+        fn lerp(a: f32, b: f32, t: f32) -> f32 {
+            a + (b - a) * t
+        }
 
-        let attack_time = self.attack.time.0;
-        let decay_time = self.decay_sustain.time.0;
-        let total_ad_time = attack_time + decay_time;
+        let (note_on, note_time) = (on, duration);
+        let note_duration = pos - note_time;
+        let attack_time = time_to_samples(self.attack.time.0);
+        let decay_time = time_to_samples(self.decay_sustain.time.0);
+        let release_time = time_to_samples(self.release.time.0);
 
-        let attack_vol = self.attack.vol.0;
-        let sustain_vol = self.decay_sustain.vol.0;
-
-        if elapsed_time < attack_time {
-            // Attack phase: 0 -> attack_vol
-            attack_vol * (elapsed_time / attack_time)
-        } else if elapsed_time < total_ad_time {
-            // Decay phase: attack_vol -> sustain_vol
-            let decay_progress = (elapsed_time - attack_time) / decay_time;
-            attack_vol + (sustain_vol - attack_vol) * decay_progress
+        if note_on {
+            if note_duration < attack_time {
+                lerp(0., 1., note_duration as f32 / attack_time as f32)
+            } else if note_duration <= attack_time + decay_time {
+                lerp(
+                    1.,
+                    self.decay_sustain.vol.0,
+                    (note_duration - attack_time) as f32 / decay_time as f32,
+                )
+            } else {
+                self.decay_sustain.vol.0
+            }
         } else {
-            // Sustain phase: hold sustain_vol
-            sustain_vol
+            if note_duration <= release_time {
+                lerp(
+                    self.decay_sustain.vol.0,
+                    0.,
+                    note_duration as f32 / release_time as f32,
+                )
+            } else {
+                0.
+            }
         }
-    }
-
-    pub fn reset(&mut self) {
-        self.start_position = None;
     }
 }

@@ -8,11 +8,12 @@ pub use envelopes::*;
 pub use oscillators::*;
 pub use sequencing::*;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Signal {
     pub current_sample: f32,
     pub sample_rate: usize,
     pub position: usize,
+    pub pitch_triggers: [(bool, u32); 128],
 }
 
 impl Signal {
@@ -21,6 +22,7 @@ impl Signal {
             current_sample: 0.0,
             sample_rate,
             position: 0,
+            pitch_triggers: [(false, 0); 128],
         }
     }
 
