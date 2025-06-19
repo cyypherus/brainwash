@@ -20,7 +20,7 @@ pub fn note(note: i32) -> Chord {
     chord(&[note])
 }
 
-pub fn sequence<T: Into<Vec<Chord>>>(chords: T) -> Sequence {
+pub fn sequence<T: Into<Vec<Chord>>>(_id: usize, chords: T) -> Sequence {
     Sequence {
         chords: chords.into(),
         bar_duration_samples: 44100,

@@ -5,7 +5,11 @@ pub struct ADSRState {
     pub notes: [(bool, u32); 128],
 }
 
-pub struct StatefulADSR {
+pub fn adsr(id: usize, a: f32, d: f32, s: f32, r: f32) -> ADSR {
+    ADSR { id, a, d, s, r }
+}
+
+pub struct ADSR {
     id: usize,
     a: f32,
     d: f32,
@@ -13,9 +17,9 @@ pub struct StatefulADSR {
     r: f32,
 }
 
-impl StatefulADSR {
+impl ADSR {
     pub fn new(id: usize, a: f32, d: f32, s: f32, r: f32) -> Self {
-        StatefulADSR { id, a, d, s, r }
+        ADSR { id, a, d, s, r }
     }
 
     pub fn output(&self, on: bool, note: i32, signal: &mut Signal) -> f32 {

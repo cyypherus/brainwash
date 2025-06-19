@@ -24,7 +24,7 @@ pub struct TriangleOscillator {
     computed_sample: f32,
 }
 
-pub fn sin() -> SineOscillator {
+pub fn sin(_id: usize) -> SineOscillator {
     SineOscillator {
         pitch: 0.0,
         frequency: 440.0,
@@ -34,7 +34,7 @@ pub fn sin() -> SineOscillator {
     }
 }
 
-pub fn squ() -> SquareOscillator {
+pub fn squ(_id: usize) -> SquareOscillator {
     SquareOscillator {
         pitch: 0.0,
         frequency: 440.0,
@@ -44,7 +44,7 @@ pub fn squ() -> SquareOscillator {
     }
 }
 
-pub fn tri() -> TriangleOscillator {
+pub fn tri(_id: usize) -> TriangleOscillator {
     TriangleOscillator {
         pitch: 0.0,
         frequency: 440.0,
