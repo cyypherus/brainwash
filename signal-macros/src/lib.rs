@@ -9,12 +9,11 @@ fn next_id() -> usize {
 }
 
 #[proc_macro]
-pub fn adsr(input: TokenStream) -> TokenStream {
+pub fn adsr(_input: TokenStream) -> TokenStream {
     let id = next_id();
-    let input: proc_macro2::TokenStream = input.into();
 
     let expanded = quote! {
-        crate::adsr(#id, #input)
+        crate::adsr(#id)
     };
 
     TokenStream::from(expanded)

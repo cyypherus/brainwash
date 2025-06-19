@@ -21,13 +21,22 @@ fn synth(s: &mut Signal) {
         .tempo(100.)
         .bars(1)
         .output(s);
-        for key in seq {
-            let env = adsr!(0.0, 1., 1., 1.).output(key.on, key.note, s);
-            tri!()
-                .pitch(key.pitch + 12. + (env * 0.1))
-                .atten(env)
-                .play(s)
-                .output();
-        }
+        // for key in seq {
+        let key = seq.first().unwrap();
+        let env = adsr!()
+            .att(0.02)
+            .att_curve(-0.1)
+            .dec(0.15)
+            .dec_curve(0.2)
+            .sus(0.7)
+            .rel(0.4)
+            .rel_curve(-0.15)
+            .output(key.on, key.note, s);
+        tri!()
+            .pitch(key.pitch + 12. + (env * 0.1))
+            .atten(env)
+            .play(s)
+            .output();
+        // }
     });
 }
