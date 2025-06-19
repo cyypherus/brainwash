@@ -1,65 +1,78 @@
 use crate::{Signal, Time, Vol};
 
-pub struct EnvelopePoint(pub Vol, pub Time);
-
-pub struct ADSR {
-    attack: EnvelopePoint,
-    decay: EnvelopePoint,
-    sustain: EnvelopePoint,
-    release: EnvelopePoint,
-    current_value: f32,
+pub struct AttackStage {
+    pub vol: Vol,
+    pub time: Time,
 }
 
-pub fn adsr(
-    attack: (Vol, Time),
-    decay: (Vol, Time),
-    sustain: (Vol, Time),
-    release: (Vol, Time),
-) -> ADSR {
+pub struct DecaySustainStage {
+    pub vol: Vol,
+    pub time: Time,
+}
+
+pub struct ReleaseStage {
+    pub time: Time,
+}
+
+pub struct ADSR {
+    attack: AttackStage,
+    decay_sustain: DecaySustainStage,
+    release: ReleaseStage,
+    start_position: Option<usize>,
+}
+
+pub fn a(vol: Vol, time: Time) -> AttackStage {
+    AttackStage { vol, time }
+}
+
+pub fn ds(vol: Vol, time: Time) -> DecaySustainStage {
+    DecaySustainStage { vol, time }
+}
+
+pub fn r(time: Time) -> ReleaseStage {
+    ReleaseStage { time }
+}
+
+pub fn adsr(attack: AttackStage, decay_sustain: DecaySustainStage, release: ReleaseStage) -> ADSR {
     ADSR {
-        attack: EnvelopePoint(attack.0, attack.1),
-        decay: EnvelopePoint(decay.0, decay.1),
-        sustain: EnvelopePoint(sustain.0, sustain.1),
-        release: EnvelopePoint(release.0, release.1),
-        current_value: 0.0,
+        attack,
+        decay_sustain,
+        release,
+        start_position: None,
     }
 }
 
 impl ADSR {
-    pub fn output(&self) -> f32 {
-        self.attack.0.0
-    }
-
-    pub fn apply(&mut self, signal: &mut Signal, sample_index: usize) -> f32 {
-        let sample_rate = signal.sample_rate as f32;
-        let time = sample_index as f32 / sample_rate;
-
-        let attack_time = self.attack.1.0;
-        let decay_time = self.decay.1.0;
-        let sustain_time = self.sustain.1.0;
-        let release_time = self.release.1.0;
-
-        let attack_vol = self.attack.0.0;
-        let decay_vol = self.decay.0.0;
-        let sustain_vol = self.sustain.0.0;
-        let release_vol = self.release.0.0;
-
-        let total_time = attack_time + decay_time + sustain_time + release_time;
-
-        if time < attack_time {
-            self.current_value = attack_vol * (time / attack_time);
-        } else if time < (attack_time + decay_time) {
-            let decay_phase = (time - attack_time) / decay_time;
-            self.current_value = attack_vol + (decay_vol - attack_vol) * decay_phase;
-        } else if time < (attack_time + decay_time + sustain_time) {
-            self.current_value = sustain_vol;
-        } else if time < total_time {
-            let release_phase = (time - attack_time - decay_time - sustain_time) / release_time;
-            self.current_value = sustain_vol + (release_vol - sustain_vol) * release_phase;
-        } else {
-            self.current_value = 0.0;
+    pub fn output(&mut self, signal: &Signal) -> f32 {
+        if self.start_position.is_none() {
+            self.start_position = Some(signal.position);
         }
 
-        self.current_value
+        let start_pos = self.start_position.unwrap();
+        let elapsed_samples = signal.position - start_pos;
+        let elapsed_time = elapsed_samples as f32 / signal.sample_rate as f32;
+
+        let attack_time = self.attack.time.0;
+        let decay_time = self.decay_sustain.time.0;
+        let total_ad_time = attack_time + decay_time;
+
+        let attack_vol = self.attack.vol.0;
+        let sustain_vol = self.decay_sustain.vol.0;
+
+        if elapsed_time < attack_time {
+            // Attack phase: 0 -> attack_vol
+            attack_vol * (elapsed_time / attack_time)
+        } else if elapsed_time < total_ad_time {
+            // Decay phase: attack_vol -> sustain_vol
+            let decay_progress = (elapsed_time - attack_time) / decay_time;
+            attack_vol + (sustain_vol - attack_vol) * decay_progress
+        } else {
+            // Sustain phase: hold sustain_vol
+            sustain_vol
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.start_position = None;
     }
 }
