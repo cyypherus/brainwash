@@ -1,0 +1,24 @@
+[package]
+name = "signal"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "signal"
+path = "src/main.rs"
+
+[lib]
+name = "signal"
+path = "src/lib.rs"
+
+[dependencies.cpal]
+version = "0.15"
+optional = true
+
+[dependencies.hound]
+version = "3.5"
+optional = true
+
+[features]
+default = ["audio"]
+audio = ["cpal", "hound"]
