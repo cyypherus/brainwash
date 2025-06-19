@@ -24,12 +24,16 @@ fn synth(s: &mut Signal) {
         for (i, key) in seq.iter().enumerate() {
             let env = adsr!()
                 .att(0.001)
-                .sus(0.)
+                .sus(1.)
                 .dec(0.1)
                 .output(key.on, key.note, s);
-            let lfo = rsaw!().at_phase(clock).output();
-            let m = sin!().pitch(key.pitch).atten(lfo * 0.1).run(s).output();
-            saw!().pitch(key.pitch + m).atten(env).play(s);
+            let lfo = rsaw!().at_phase(clock).atten(0.01).output();
+            sin!()
+                .index(i)
+                .pitch(key.pitch + lfo)
+                .atten(env)
+                .play(s)
+                .output();
             s.graph(format!("t{}", i).as_str(), env, 200000);
         }
     });

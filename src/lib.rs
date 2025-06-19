@@ -13,6 +13,7 @@ pub use oscillators::*;
 pub use sequencing::*;
 pub use signal_macros::*;
 
+use crate::oscillators::OscillatorState;
 use std::collections::HashMap;
 
 pub struct Signal {
@@ -22,6 +23,7 @@ pub struct Signal {
     adsr_state: HashMap<i32, ADSRState>,
     sequence_state: HashMap<i32, SequenceState>,
     clock_state: HashMap<i32, ClockState>,
+    oscillator_state: HashMap<i32, OscillatorState>,
 }
 
 impl Signal {
@@ -33,6 +35,7 @@ impl Signal {
             adsr_state: HashMap::new(),
             sequence_state: HashMap::new(),
             clock_state: HashMap::new(),
+            oscillator_state: HashMap::new(),
         }
     }
 
@@ -50,6 +53,7 @@ impl Signal {
         self.current_sample = 0.0;
         self.adsr_state.clear();
         self.sequence_state.clear();
+        self.oscillator_state.clear();
     }
 
     pub fn get_current_sample(&self) -> f32 {

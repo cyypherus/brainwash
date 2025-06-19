@@ -1,5 +1,9 @@
 use crate::{Signal, utils};
 
+pub(crate) struct OscillatorState {
+    phase_accumulator: u32,
+}
+
 #[derive(Clone, Copy)]
 pub enum WaveType {
     Sine,
@@ -10,6 +14,8 @@ pub enum WaveType {
 }
 
 pub struct Oscillator {
+    id: usize,
+    index: usize,
     wave_type: WaveType,
     pitch: f32,
     frequency: f32,
@@ -18,29 +24,31 @@ pub struct Oscillator {
     computed_sample: f32,
 }
 
-pub fn sin(_id: usize) -> Oscillator {
-    Oscillator::new(WaveType::Sine)
+pub fn sin(id: usize) -> Oscillator {
+    Oscillator::new(id, WaveType::Sine)
 }
 
-pub fn squ(_id: usize) -> Oscillator {
-    Oscillator::new(WaveType::Square)
+pub fn squ(id: usize) -> Oscillator {
+    Oscillator::new(id, WaveType::Square)
 }
 
-pub fn tri(_id: usize) -> Oscillator {
-    Oscillator::new(WaveType::Triangle)
+pub fn tri(id: usize) -> Oscillator {
+    Oscillator::new(id, WaveType::Triangle)
 }
 
-pub fn saw(_id: usize) -> Oscillator {
-    Oscillator::new(WaveType::SawUp)
+pub fn saw(id: usize) -> Oscillator {
+    Oscillator::new(id, WaveType::SawUp)
 }
 
-pub fn rsaw(_id: usize) -> Oscillator {
-    Oscillator::new(WaveType::SawDown)
+pub fn rsaw(id: usize) -> Oscillator {
+    Oscillator::new(id, WaveType::SawDown)
 }
 
 impl Oscillator {
-    fn new(wave_type: WaveType) -> Self {
+    fn new(id: usize, wave_type: WaveType) -> Self {
         Self {
+            id,
+            index: 0,
             wave_type,
             pitch: 0.0,
             frequency: 440.0,
@@ -91,9 +99,24 @@ impl Oscillator {
         self.computed_sample
     }
 
-    fn calculate_time_based(&mut self, signal: &Signal) {
-        let time = signal.position as f32 / signal.sample_rate as f32;
-        let phase = (time * self.frequency) % 1.0;
+    pub fn index(mut self, id: usize) -> Self {
+        self.index = id;
+        self
+    }
+
+    fn calculate_time_based(&mut self, signal: &mut Signal) {
+        let state = signal
+            .oscillator_state
+            .entry(self.index as i32 + self.id as i32)
+            .or_insert(OscillatorState {
+                phase_accumulator: 0,
+            });
+
+        let phase_increment =
+            ((self.frequency as f64 / signal.sample_rate as f64) * (u32::MAX as f64 + 1.0)) as u32;
+
+        state.phase_accumulator = state.phase_accumulator.wrapping_add(phase_increment);
+        let phase = state.phase_accumulator as f32 / (u32::MAX as f32 + 1.0);
         self.calculate_phase_based(phase);
     }
 
