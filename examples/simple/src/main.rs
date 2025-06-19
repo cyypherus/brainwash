@@ -3,11 +3,9 @@ use signal::*;
 
 fn main() {
     connect_subsecond();
-    println!("Starting live synthesizer...");
-    if let Err(e) = play_live(synth) {
-        eprintln!("Error with live audio: {}", e);
-    }
-    // save_wav(synth, "test.wav", 3., 44100).expect("oof");
+    // play_live(synth).expect("Error with live audio");
+    // save_wav(synth, "test.wav", 3., 44100).expect("Error saving audio");
+    graph(synth).expect("Error with graph");
 }
 
 fn synth(s: &mut Signal) {
@@ -23,20 +21,17 @@ fn synth(s: &mut Signal) {
         .output(s);
         // for key in seq {
         let key = seq.first().unwrap();
-        let env = adsr!()
-            .att(0.02)
-            .att_curve(-0.1)
-            .dec(0.15)
-            .dec_curve(0.2)
-            .sus(0.7)
-            .rel(0.4)
-            .rel_curve(-0.15)
-            .output(key.on, key.note, s);
+        let env = adsr!().att(0.1).sus(1.).output(key.on, key.note, s);
+
+        s.graph_with_window("envelope", env, 100000);
+
         tri!()
-            .pitch(key.pitch + 12. + (env * 0.1))
+            .pitch(key.pitch + 12. + (env))
             .atten(env)
             .play(s)
             .output();
+
+        // s.graph("t", t);
         // }
     });
 }

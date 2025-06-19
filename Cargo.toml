@@ -15,10 +15,13 @@ path = "src/lib.rs"
 name = "simple"
 path = "examples/simple/src/main.rs"
 
+
 [dependencies]
 cpal = "0.15"
 hound = "3.5"
 signal-macros = { path = "signal-macros" }
+crossterm = "0.27"
+ratatui = "0.26"
 
 [dev-dependencies]
 dioxus-devtools = { version = "0.7.0-alpha.1" }

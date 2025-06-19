@@ -1,10 +1,12 @@
 mod audio;
 mod envelopes;
+mod graph;
 mod oscillators;
 mod sequencing;
 
 pub use audio::*;
 pub use envelopes::*;
+pub use graph::*;
 pub use oscillators::*;
 pub use sequencing::*;
 pub use signal_macros::*;
