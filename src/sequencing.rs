@@ -57,10 +57,9 @@ impl Sequence {
         let all_notes = self.get_all_notes();
         let bar_duration = self.calculate_bar_duration_samples(signal.sample_rate);
         let sequence_duration = bar_duration * self.bars;
-        let chord_duration = bar_duration / self.chords.len();
+        let chord_duration = sequence_duration / self.chords.len();
         let position_in_sequence = signal.position % sequence_duration;
-        let position_in_bar = position_in_sequence % bar_duration;
-        let chord_index = position_in_bar / chord_duration;
+        let chord_index = position_in_sequence / chord_duration;
 
         let active_notes: std::collections::HashSet<i32> =
             if let Some(chord) = self.chords.get(chord_index) {

@@ -19,7 +19,7 @@ fn synth(s: &mut Signal) {
             chord(&[9, 7, 11, 16]),
         ])
         .tempo(100.)
-        .bars(4)
+        .bars(1)
         .output(s);
         for key in seq {
             let env = adsr!(0.0, 1., 1., 1.).output(key.on, key.note, s);
