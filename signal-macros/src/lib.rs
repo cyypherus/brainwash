@@ -63,3 +63,34 @@ pub fn seq(input: TokenStream) -> TokenStream {
 
     TokenStream::from(expanded)
 }
+
+#[proc_macro]
+pub fn saw(_input: TokenStream) -> TokenStream {
+    let id = next_id();
+
+    let expanded = quote! {
+        crate::saw(#id)
+    };
+
+    TokenStream::from(expanded)
+}
+
+#[proc_macro]
+pub fn rsaw(_input: TokenStream) -> TokenStream {
+    let id = next_id();
+
+    let expanded = quote! {
+        crate::rsaw(#id)
+    };
+
+    TokenStream::from(expanded)
+}
+
+#[proc_macro]
+pub fn clock(_input: TokenStream) -> TokenStream {
+    let expanded = quote! {
+        crate::clock()
+    };
+
+    TokenStream::from(expanded)
+}

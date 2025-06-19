@@ -1,10 +1,12 @@
 mod audio;
+mod clock;
 mod envelopes;
 mod graph;
 mod oscillators;
 mod sequencing;
 
 pub use audio::*;
+pub use clock::*;
 pub use envelopes::*;
 pub use graph::*;
 pub use oscillators::*;
