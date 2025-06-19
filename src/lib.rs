@@ -17,7 +17,7 @@ pub struct Signal {
     pub current_sample: f32,
     pub sample_rate: usize,
     pub position: usize,
-    pub adsr_state: HashMap<usize, ADSRState>,
+    pub adsr_state: HashMap<i32, ADSRState>,
 }
 
 impl Signal {

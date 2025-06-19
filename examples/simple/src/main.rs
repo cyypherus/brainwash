@@ -19,19 +19,26 @@ fn synth(s: &mut Signal) {
         .tempo(100.)
         .bars(1)
         .output(s);
-        // for key in seq {
-        let key = seq.first().unwrap();
-        let env = adsr!().att(0.1).sus(1.).output(key.on, key.note, s);
-
-        s.graph_with_window("envelope", env, 100000);
-
-        tri!()
-            .pitch(key.pitch + 12. + (env))
-            .atten(env)
-            .play(s)
-            .output();
-
-        // s.graph("t", t);
-        // }
+        let sc = cmin();
+        let seq = seq!((-10..=10).map(|i| note(sc.note(i))).collect::<Vec<_>>())
+            .tempo(100.)
+            .bars(1)
+            .output(s);
+        for (i, key) in seq.iter().enumerate() {
+            let env = adsr!()
+                .att(0.01)
+                .att_curve(-0.5)
+                .sus(0.0)
+                .dec(2.)
+                .dec_curve(-0.5)
+                .output(key.on, key.note, s);
+            tri!().pitch(key.pitch).atten(env).play(s).output();
+            if i == 0 {
+                s.graph(format!("t{}", i).as_str(), env, 100000);
+            }
+            if key.on {
+                s.graph("note", key.note as f32, 100000);
+            }
+        }
     });
 }

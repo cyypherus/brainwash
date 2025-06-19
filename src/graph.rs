@@ -134,11 +134,7 @@ static GRAPH_SENDER: Mutex<Option<mpsc::Sender<GraphMessage>>> = Mutex::new(None
 static DEADLINE_SENDER: Mutex<Option<mpsc::Sender<DeadlineMessage>>> = Mutex::new(None);
 
 impl Signal {
-    pub fn graph(&self, name: &str, value: f32) {
-        self.graph_with_window(name, value, 1000);
-    }
-
-    pub fn graph_with_window(&self, name: &str, value: f32, max_points: usize) {
+    pub fn graph(&self, name: &str, value: f32, max_points: usize) {
         let sender = GRAPH_SENDER.lock().unwrap();
         if let Some(ref tx) = *sender {
             let _ = tx.send(GraphMessage {
@@ -207,6 +203,7 @@ impl GraphApp {
 
             thread::sleep(Duration::from_millis(10));
         }
+        ratatui::restore();
         Ok(())
     }
 
@@ -217,7 +214,7 @@ impl GraphApp {
             let block = Block::default().title("Signal Graph").borders(Borders::ALL);
             let text = vec![ListItem::new("No data streams registered")];
             let list = List::new(text).block(block);
-            f.render_widget(list, f.size());
+            f.render_widget(list, f.area());
             return;
         }
 
@@ -228,7 +225,7 @@ impl GraphApp {
                 Constraint::Percentage(20),
                 Constraint::Percentage(10),
             ])
-            .split(f.size());
+            .split(f.area());
 
         self.render_chart(f, chunks[0], streams);
         self.render_legend(f, chunks[1], streams);
