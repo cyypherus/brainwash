@@ -11,7 +11,7 @@ fn main() {
 
 fn synth(s: &mut Signal) {
     subsecond::call(|| {
-        let seq = sequence([
+        let seq = seq!([
             chord(&[0, 4, 7]),
             chord(&[5, 9, 12]),
             chord(&[7, 11, 14]),
@@ -19,10 +19,10 @@ fn synth(s: &mut Signal) {
         ])
         .tempo(40.)
         .output(s);
-        for (pitch, note) in seq {
-            let env = adsr(0.01, 0.4, 0.1, 0.).output(note, s);
-            tri().pitch(pitch - 12.).atten(env).play(s).output();
-            sin().pitch(pitch + 12.).play(s).output();
+        for key in seq {
+            let env = adsr!(0.01, 0.4, 0.1, 0.).output(key.on, key.note, s);
+            tri!().pitch(key.pitch - 12.).atten(env).play(s).output();
+            sin!().pitch(key.pitch + 12.).play(s).output();
         }
     });
 }

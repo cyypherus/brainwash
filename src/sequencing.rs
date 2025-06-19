@@ -42,32 +42,26 @@ impl Sequence {
         (seconds_per_bar * sample_rate as f32) as usize
     }
 
-    pub fn output(&mut self, signal: &mut Signal) -> Vec<(f32, i32)> {
+    pub fn output(&mut self, signal: &mut Signal) -> Vec<Key> {
         if self.chords.is_empty() {
             return Vec::new();
         }
 
-        let pos = signal.position as u32;
         let bar_duration = self.calculate_bar_duration_samples(signal.sample_rate);
         let chord_duration = bar_duration / self.chords.len();
         let position_in_bar = signal.position % bar_duration;
         let chord_index = position_in_bar / chord_duration;
 
         if let Some(chord) = self.chords.get(chord_index) {
-            for (i, (trigger, time)) in signal.pitch_triggers.iter_mut().enumerate() {
-                if chord.notes.contains(&(i as i32)) {
-                    if !*trigger {
-                        *trigger = true;
-                        *time = pos;
-                    }
-                } else {
-                    if *trigger {
-                        *trigger = false;
-                        *time = pos;
-                    }
-                }
-            }
-            chord.notes.iter().map(|&n| (n as f32, n)).collect()
+            chord
+                .notes
+                .iter()
+                .map(|&n| Key {
+                    on: true,
+                    note: n,
+                    pitch: n as f32,
+                })
+                .collect()
         } else {
             Vec::new()
         }
@@ -76,6 +70,13 @@ impl Sequence {
     pub fn set_bar_duration(&mut self, samples: usize) {
         self.bar_duration_samples = samples;
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Key {
+    pub on: bool,
+    pub note: i32,
+    pub pitch: f32,
 }
 
 impl Chord {

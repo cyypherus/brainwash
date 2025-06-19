@@ -18,6 +18,7 @@ path = "examples/simple/src/main.rs"
 [dependencies]
 cpal = "0.15"
 hound = "3.5"
+signal-macros = { path = "signal-macros" }
 
 [dev-dependencies]
 dioxus-devtools = { version = "0.7.0-alpha.1" }

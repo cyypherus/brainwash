@@ -7,13 +7,15 @@ pub use audio::*;
 pub use envelopes::*;
 pub use oscillators::*;
 pub use sequencing::*;
+pub use signal_macros::*;
 
-#[derive(Debug)]
+use std::collections::HashMap;
+
 pub struct Signal {
     pub current_sample: f32,
     pub sample_rate: usize,
     pub position: usize,
-    pub pitch_triggers: [(bool, u32); 128],
+    pub adsr_state: HashMap<usize, ADSRState>,
 }
 
 impl Signal {
@@ -22,7 +24,7 @@ impl Signal {
             current_sample: 0.0,
             sample_rate,
             position: 0,
-            pitch_triggers: [(false, 0); 128],
+            adsr_state: HashMap::new(),
         }
     }
 
@@ -38,6 +40,7 @@ impl Signal {
     pub fn reset(&mut self) {
         self.position = 0;
         self.current_sample = 0.0;
+        self.adsr_state.clear();
     }
 
     pub fn get_current_sample(&self) -> f32 {
@@ -53,15 +56,4 @@ pub mod utils {
     pub fn note_to_freq(note: f32) -> f32 {
         midi_to_freq(note + 60.0)
     }
-}
-
-pub struct Vol(pub f32);
-pub struct Time(pub f32);
-
-pub fn vol(amount: f32) -> Vol {
-    Vol(amount)
-}
-
-pub fn time(seconds: f32) -> Time {
-    Time(seconds)
 }

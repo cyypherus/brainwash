@@ -1,63 +1,63 @@
-use crate::{Signal, Time, Vol};
+use crate::Signal;
 
-pub struct AttackStage {
-    pub time: Time,
+#[derive(Clone)]
+pub struct ADSRState {
+    pub notes: [(bool, u32); 128],
 }
 
-pub struct DecaySustainStage {
-    pub vol: Vol,
-    pub time: Time,
-}
-
-pub struct ReleaseStage {
-    pub time: Time,
-}
-
-pub struct ADSR {
+pub struct StatefulADSR {
+    id: usize,
     a: f32,
     d: f32,
     s: f32,
     r: f32,
 }
 
-pub fn adsr(a: f32, d: f32, s: f32, r: f32) -> ADSR {
-    ADSR { a, d, s, r }
-}
+impl StatefulADSR {
+    pub fn new(id: usize, a: f32, d: f32, s: f32, r: f32) -> Self {
+        StatefulADSR { id, a, d, s, r }
+    }
 
-impl ADSR {
-    pub fn output(&self, note: i32, signal: &Signal) -> f32 {
-        let (on, duration) = signal.pitch_triggers[note as usize];
-        let pos = signal.position as u32;
+    pub fn output(&self, on: bool, note: i32, signal: &mut Signal) -> f32 {
+        let state = signal.adsr_state.entry(self.id).or_insert(ADSRState {
+            notes: [(false, 0); 128],
+        });
 
-        fn time_to_samples(secs: f32) -> u32 {
-            (secs * 44100.0) as u32
+        let (current_on, time) = state.notes[note as usize];
+
+        let duration = signal.position as u32 - time;
+
+        if on != current_on {
+            state.notes[note as usize] = (on, signal.position as u32);
+        }
+
+        fn time_to_samples(secs: f32, sample_rate: usize) -> u32 {
+            (secs * sample_rate as f32) as u32
         }
 
         fn lerp(a: f32, b: f32, t: f32) -> f32 {
             a + (b - a) * t
         }
 
-        let (note_on, note_time) = (on, duration);
-        let note_duration = pos - note_time;
-        let attack_time = time_to_samples(self.a);
-        let decay_time = time_to_samples(self.s);
-        let release_time = time_to_samples(self.r);
+        let attack_time = time_to_samples(self.a, signal.sample_rate);
+        let decay_time = time_to_samples(self.s, signal.sample_rate);
+        let release_time = time_to_samples(self.r, signal.sample_rate);
 
-        if note_on {
-            if note_duration < attack_time {
-                lerp(0., 1., note_duration as f32 / attack_time as f32)
-            } else if note_duration <= attack_time + decay_time {
+        if current_on {
+            if duration < attack_time {
+                lerp(0., 1., duration as f32 / attack_time as f32)
+            } else if duration <= attack_time + decay_time {
                 lerp(
                     1.,
                     self.d,
-                    (note_duration - attack_time) as f32 / decay_time as f32,
+                    (duration - attack_time) as f32 / decay_time as f32,
                 )
             } else {
                 self.d
             }
         } else {
-            if note_duration <= release_time {
-                lerp(self.d, 0., note_duration as f32 / release_time as f32)
+            if duration <= release_time {
+                lerp(self.d, 0., duration as f32 / release_time as f32)
             } else {
                 0.
             }
