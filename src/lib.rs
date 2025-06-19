@@ -18,6 +18,7 @@ pub struct Signal {
     pub sample_rate: usize,
     pub position: usize,
     pub adsr_state: HashMap<i32, ADSRState>,
+    pub sequence_state: HashMap<i32, SequenceState>,
 }
 
 impl Signal {
@@ -27,6 +28,7 @@ impl Signal {
             sample_rate,
             position: 0,
             adsr_state: HashMap::new(),
+            sequence_state: HashMap::new(),
         }
     }
 
@@ -43,6 +45,7 @@ impl Signal {
         self.position = 0;
         self.current_sample = 0.0;
         self.adsr_state.clear();
+        self.sequence_state.clear();
     }
 
     pub fn get_current_sample(&self) -> f32 {
