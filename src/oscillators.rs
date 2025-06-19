@@ -34,7 +34,7 @@ pub fn sin() -> SineOscillator {
     }
 }
 
-pub fn square() -> SquareOscillator {
+pub fn squ() -> SquareOscillator {
     SquareOscillator {
         pitch: 0.0,
         frequency: 440.0,
@@ -44,7 +44,7 @@ pub fn square() -> SquareOscillator {
     }
 }
 
-pub fn triangle() -> TriangleOscillator {
+pub fn tri() -> TriangleOscillator {
     TriangleOscillator {
         pitch: 0.0,
         frequency: 440.0,
