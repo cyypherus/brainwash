@@ -4,6 +4,7 @@ mod envelopes;
 mod graph;
 mod oscillators;
 mod sequencing;
+mod signal;
 
 pub use audio::*;
 pub use clock::*;
@@ -11,55 +12,8 @@ pub use envelopes::*;
 pub use graph::*;
 pub use oscillators::*;
 pub use sequencing::*;
+pub use signal::*;
 pub use signal_macros::*;
-
-use crate::oscillators::OscillatorState;
-use std::collections::HashMap;
-
-pub struct Signal {
-    pub current_sample: f32,
-    pub sample_rate: usize,
-    pub position: usize,
-    adsr_state: HashMap<i32, ADSRState>,
-    sequence_state: HashMap<i32, SequenceState>,
-    clock_state: HashMap<i32, ClockState>,
-    oscillator_state: HashMap<i32, OscillatorState>,
-}
-
-impl Signal {
-    pub fn new(sample_rate: usize) -> Self {
-        Signal {
-            current_sample: 0.0,
-            sample_rate,
-            position: 0,
-            adsr_state: HashMap::new(),
-            sequence_state: HashMap::new(),
-            clock_state: HashMap::new(),
-            oscillator_state: HashMap::new(),
-        }
-    }
-
-    pub fn add_sample(&mut self, sample: f32) {
-        self.current_sample += sample;
-    }
-
-    pub fn advance(&mut self) {
-        self.position += 1;
-        self.current_sample = 0.0;
-    }
-
-    pub fn reset(&mut self) {
-        self.position = 0;
-        self.current_sample = 0.0;
-        self.adsr_state.clear();
-        self.sequence_state.clear();
-        self.oscillator_state.clear();
-    }
-
-    pub fn get_current_sample(&self) -> f32 {
-        self.current_sample
-    }
-}
 
 pub mod utils {
     pub fn midi_to_freq(note: f32) -> f32 {

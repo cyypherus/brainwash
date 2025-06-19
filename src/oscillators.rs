@@ -1,7 +1,7 @@
 use crate::{Signal, utils};
 
 pub(crate) struct OscillatorState {
-    phase_accumulator: u32,
+    pub(crate) phase_accumulator: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -105,15 +105,11 @@ impl Oscillator {
     }
 
     fn calculate_time_based(&mut self, signal: &mut Signal) {
-        let state = signal
-            .oscillator_state
-            .entry(self.index as i32 + self.id as i32)
-            .or_insert(OscillatorState {
-                phase_accumulator: 0,
-            });
+        let sample_rate = signal.sample_rate as f32;
+        let state = signal.get_oscillator_state(self.index as i32 + self.id as i32);
 
         let phase_increment =
-            ((self.frequency as f64 / signal.sample_rate as f64) * (u32::MAX as f64 + 1.0)) as u32;
+            ((self.frequency as f64 / sample_rate as f64) * (u32::MAX as f64 + 1.0)) as u32;
 
         state.phase_accumulator = state.phase_accumulator.wrapping_add(phase_increment);
         let phase = state.phase_accumulator as f32 / (u32::MAX as f32 + 1.0);

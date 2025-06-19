@@ -46,12 +46,12 @@ impl Scale {
     }
 }
 
-pub struct SequenceState {
-    all_notes: Vec<i32>,
-    last_chord_index: usize,
-    active_notes: std::collections::HashSet<i32>,
-    previous_notes: std::collections::HashSet<i32>,
-    params_hash: u64,
+pub(crate) struct SequenceState {
+    pub(crate) all_notes: Vec<i32>,
+    pub(crate) last_chord_index: usize,
+    pub(crate) active_notes: std::collections::HashSet<i32>,
+    pub(crate) previous_notes: std::collections::HashSet<i32>,
+    pub(crate) params_hash: u64,
 }
 
 pub struct Sequence {
@@ -123,16 +123,7 @@ impl Sequence {
 
         let sequence_position = (clock_position * self.bars as f32) % 1.0;
 
-        let state = signal
-            .sequence_state
-            .entry(self.id as i32)
-            .or_insert(SequenceState {
-                all_notes: Vec::new(),
-                last_chord_index: usize::MAX,
-                active_notes: std::collections::HashSet::new(),
-                previous_notes: std::collections::HashSet::new(),
-                params_hash: 0,
-            });
+        let state = signal.get_sequence_state(self.id as i32);
 
         self.ensure_state(state);
         let chord_index = (sequence_position * self.chords.len() as f32) as usize;

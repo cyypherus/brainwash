@@ -1,8 +1,8 @@
 use crate::Signal;
 
 pub struct ADSRState {
-    trigger_time: Option<usize>,
-    release_time: Option<usize>,
+    pub(crate) trigger_time: Option<usize>,
+    pub(crate) release_time: Option<usize>,
 }
 
 pub struct ADSR {
@@ -66,16 +66,10 @@ impl ADSR {
     }
 
     pub fn output(self, on: bool, note: i32, signal: &mut Signal) -> f32 {
-        let state = signal
-            .adsr_state
-            .entry(self.id as i32 + note)
-            .or_insert(ADSRState {
-                trigger_time: None,
-                release_time: None,
-            });
-
         let current_time = signal.position;
         let sample_rate = signal.sample_rate as f32;
+
+        let state = signal.get_adsr_state(self.id as i32 + note);
 
         match (on, state.trigger_time, state.release_time) {
             (true, None, _) => {
