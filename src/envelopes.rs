@@ -7,6 +7,7 @@ pub struct ADSRState {
 
 pub struct ADSR {
     id: usize,
+    index: usize,
     attack: f32,
     decay: f32,
     sustain: f32,
@@ -14,11 +15,13 @@ pub struct ADSR {
     attack_curve: f32,
     decay_curve: f32,
     release_curve: f32,
+    trigger: bool,
 }
 
 pub fn adsr(id: usize) -> ADSR {
     ADSR {
         id,
+        index: 0,
         attack: 0.01,
         decay: 0.1,
         sustain: 0.7,
@@ -26,6 +29,7 @@ pub fn adsr(id: usize) -> ADSR {
         attack_curve: 0.0,
         decay_curve: 0.0,
         release_curve: 0.0,
+        trigger: false,
     }
 }
 
@@ -65,13 +69,23 @@ impl ADSR {
         self
     }
 
-    pub fn output(self, on: bool, note: i32, signal: &mut Signal) -> f32 {
+    pub fn trigger(mut self, trigger: bool) -> Self {
+        self.trigger = trigger;
+        self
+    }
+
+    pub fn index(mut self, id: usize) -> Self {
+        self.index = id;
+        self
+    }
+
+    pub fn output(self, signal: &mut Signal) -> f32 {
         let current_time = signal.position;
         let sample_rate = signal.sample_rate as f32;
 
-        let state = signal.get_adsr_state(self.id as i32 + note);
+        let state = signal.get_adsr_state(self.id as i32 + self.index as i32);
 
-        match (on, state.trigger_time, state.release_time) {
+        match (self.trigger, state.trigger_time, state.release_time) {
             (true, None, _) => {
                 state.trigger_time = Some(current_time);
                 state.release_time = None;
