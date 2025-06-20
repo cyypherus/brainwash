@@ -130,7 +130,7 @@ impl Signal {
     }
 
     fn assert_unique_access(&mut self, access_type: Access, id: i32, index: i32, type_name: &str) {
-        debug_assert!(
+        assert!(
             self.accesses.insert((access_type, id, index)),
             r#"
             *********************************************

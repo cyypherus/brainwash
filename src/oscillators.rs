@@ -37,6 +37,7 @@ pub fn tri(id: usize) -> Oscillator {
     Oscillator::new(id, WaveType::Triangle)
 }
 
+/// Saw up
 pub fn saw(id: usize) -> Oscillator {
     Oscillator::new(id, WaveType::SawUp)
 }
@@ -97,7 +98,7 @@ impl Oscillator {
         self
     }
 
-    pub fn at_phase(mut self, phase: f32) -> Self {
+    pub fn value_at(mut self, phase: f32) -> Self {
         self.calculate_phase_based(phase);
         self
     }

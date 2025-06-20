@@ -5,7 +5,7 @@ fn bench_sequence_basic_usage(c: &mut Criterion) {
     c.bench_function("sequence_basic_usage", |b| {
         let mut seq = seq(
             0,
-            vec![chord(&[60, 64, 67]), note(62), chord(&[59, 62, 66]), rest()],
+            vec![chord([60, 64, 67]), note(62), chord([59, 62, 66]), rest()],
         );
         let mut signal = Signal::new(44100);
         let mut position = 0.0;

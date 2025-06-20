@@ -7,15 +7,25 @@ pub(crate) struct ClockState {
 pub struct Clock {
     id: usize,
     bpm: f32,
+    bars: usize,
 }
 
 pub fn clock(id: usize) -> Clock {
-    Clock { id, bpm: 120.0 }
+    Clock {
+        id,
+        bpm: 120.0,
+        bars: 1,
+    }
 }
 
 impl Clock {
     pub fn bpm(mut self, bpm: f32) -> Self {
         self.bpm = bpm.max(1.0);
+        self
+    }
+
+    pub fn bars(mut self, bars: usize) -> Self {
+        self.bars = bars;
         self
     }
 
@@ -25,7 +35,7 @@ impl Clock {
 
         let beats_per_second = self.bpm / 60.0;
         let samples_per_beat = sample_rate as f32 / beats_per_second;
-        let samples_per_bar = samples_per_beat * 4.0;
+        let samples_per_bar = samples_per_beat * 4.0 * self.bars as f32;
 
         let position_in_bar = (state.position as f32) % samples_per_bar;
         state.position += 1;

@@ -396,15 +396,15 @@ where
                 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
                 use std::sync::{Arc, Mutex};
 
-                let signal = Arc::new(Mutex::new(Signal::new(44100)));
-                let synth_fn = Arc::new(Mutex::new(synth_fn));
-
                 let host = cpal::default_host();
                 let device = host.default_output_device().ok_or("No output device")?;
                 let config = device
                     .default_output_config()
                     .expect("Failed to get default output config");
                 let channels = config.channels() as usize;
+
+                let signal = Arc::new(Mutex::new(Signal::new(config.sample_rate().0 as usize)));
+                let synth_fn = Arc::new(Mutex::new(synth_fn));
 
                 let stream = device.build_output_stream(
                     &config.into(),

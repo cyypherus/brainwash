@@ -65,21 +65,21 @@ pub struct Sequence {
     bars: usize,
 }
 
-pub fn chord(notes: &[i32]) -> SequenceElement {
+pub fn chord(notes: impl Into<Vec<i32>>) -> SequenceElement {
     SequenceElement::Chord(Chord {
-        notes: notes.to_vec(),
+        notes: notes.into(),
     })
 }
 
 pub fn note(note: i32) -> SequenceElement {
-    chord(&[note])
+    chord([note])
 }
 
 pub fn rest() -> SequenceElement {
-    chord(&[])
+    chord([])
 }
 
-pub fn seq<T: Into<Vec<SequenceElement>>>(id: usize, elements: T) -> Sequence {
+pub fn seq(id: usize, elements: impl Into<Vec<SequenceElement>>) -> Sequence {
     Sequence {
         id,
         elements: elements.into(),
@@ -87,7 +87,7 @@ pub fn seq<T: Into<Vec<SequenceElement>>>(id: usize, elements: T) -> Sequence {
     }
 }
 
-pub fn sub<T: Into<Vec<SequenceElement>>>(elements: T) -> SequenceElement {
+pub fn sub(elements: impl Into<Vec<SequenceElement>>) -> SequenceElement {
     SequenceElement::Subdivision(elements.into())
 }
 
