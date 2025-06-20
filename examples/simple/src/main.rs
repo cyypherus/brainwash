@@ -47,7 +47,7 @@ fn synth(s: &mut Signal) {
             rest(),
             rest(),
             rest(),
-            note(cmin.note(10)),
+            sub([note(cmin.note(10)), note(cmin.note(11))]),
             note(cmin.note(9)),
             rest(),
             rest(),
