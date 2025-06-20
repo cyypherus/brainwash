@@ -11,7 +11,8 @@ fn main() {
 fn synth(s: &mut Signal) {
     subsecond::call(|| {
         s.global_volume = 0.2;
-        let clck = clock(id!()).bpm(100.).bars(4.).output(s);
+        let main_clock = clock(id!()).bpm(100.).bars(4.).output(s);
+        let half_clock = clock(id!()).bpm(100.).bars(2.).output(s);
         let cmin = cmin().shift(-3);
         let sq = seq(
             id!(),
@@ -22,10 +23,10 @@ fn synth(s: &mut Signal) {
                 chord([cmin.note(1), cmin.note(4), cmin.note(6)]),
             ],
         )
-        .output(clck, s);
+        .output(main_clock, s);
 
-        let lfo1 = saw(id!()).value_at(clck).output().clamp(0.4, 0.7);
-        let lfo2 = saw(id!()).value_at(clck).output();
+        let lfo1 = saw(id!()).value_at(main_clock).output().clamp(0.4, 0.7);
+        let lfo2 = saw(id!()).value_at(main_clock).output();
 
         for key in sq {
             let env = adsr(id!())
@@ -51,7 +52,7 @@ fn synth(s: &mut Signal) {
                 .play(s);
         }
 
-        let clck = clock(id!()).bpm(100.).bars(4. / 3.).output(s);
+        let lfo3 = sin(id!()).value_at(main_clock).output();
         let sq = seq(
             id!(),
             [
@@ -73,7 +74,7 @@ fn synth(s: &mut Signal) {
                 rest(),
             ],
         )
-        .output(clck, s);
+        .output(lfo3, s);
         for (i, key) in sq.iter().enumerate() {
             let env = adsr(id!())
                 .index(i)
@@ -88,39 +89,66 @@ fn synth(s: &mut Signal) {
                 .play(s);
         }
 
-        // let seq = seq!([note(0), rest(), note(0), rest()]).output(clock, s);
-        // for (i, key) in seq.iter().enumerate() {
-        //     let env = adsr!().index(i).att(0.).sus(0.).trigger(key.on).output(s);
-        //     let m = rsaw!().index(i).pitch(env).atten(env).run(s).output() * 24.;
-        //     let m2 = rsaw!()
-        //         .index(i)
-        //         .pitch(env + 0.001)
-        //         .atten(env)
-        //         .run(s)
-        //         .output()
-        //         * 24.;
-        //     squ!().index(i).pitch(m + m2 - 24.).atten(env).play(s);
-        //     squ!().index(i).pitch(m + m2 - 36.).atten(env).play(s);
-        // }
+        let kick = seq(id!(), [note(0), note(0), note(0), note(0)]).output(half_clock, s);
+        for (i, key) in kick.iter().enumerate() {
+            let env = adsr(id!())
+                .index(i)
+                .att(0.)
+                .sus(0.)
+                .trigger(key.on)
+                .output(s);
+            let m = rsaw(id!()).index(i).pitch(env).atten(env).run(s).output() * 24.;
+            let m2 = rsaw(id!())
+                .index(i)
+                .pitch(env + 0.001)
+                .atten(env)
+                .run(s)
+                .output()
+                * 24.;
+            squ(id!()).index(i).pitch(m + m2 - 24.).atten(env).play(s);
+            squ(id!()).index(i).pitch(m + m2 - 36.).atten(env).play(s);
+        }
 
-        // let seq = seq!([rest(), note(0), rest(), note(0)]).output(clock, s);
-        // for (i, key) in seq.iter().enumerate() {
-        //     let env = adsr!()
-        //         .index(i)
-        //         .att(0.)
-        //         .dec(0.1)
-        //         .sus(0.)
-        //         .trigger(key.on)
-        //         .output(s);
-        //     let m = rsaw!().index(i).pitch(env).atten(env).run(s).output() * 24.;
-        //     let m2 = rsaw!()
-        //         .index(i)
-        //         .pitch(env + 0.001)
-        //         .atten(env)
-        //         .run(s)
-        //         .output()
-        //         * 24.;
-        //     saw!().index(i).pitch(m + 12. + m2).atten(env).play(s);
-        // }
+        let clap = seq(
+            id!(),
+            [
+                rest(),
+                note(0),
+                rest(),
+                note(0),
+                rest(),
+                note(0),
+                rest(),
+                note(0),
+            ],
+        )
+        .output(half_clock, s);
+        for (i, key) in clap.iter().enumerate() {
+            let env = adsr(id!())
+                .index(i)
+                .att(0.)
+                .dec(0.1)
+                .sus(0.)
+                .trigger(key.on)
+                .output(s);
+            let m = rsaw(id!()).index(i).pitch(env).atten(env).run(s).output() * 24.;
+            let m2 = rsaw(id!())
+                .index(i)
+                .pitch(env + 0.001)
+                .atten(env)
+                .run(s)
+                .output()
+                * 24.;
+            saw(id!())
+                .index(i)
+                .pitch(m + 24. + m2)
+                .atten(env * 0.8)
+                .play(s);
+            saw(id!())
+                .index(i)
+                .pitch(m + 12. + m2)
+                .atten(env * 0.8)
+                .play(s);
+        }
     });
 }
