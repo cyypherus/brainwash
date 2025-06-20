@@ -79,7 +79,6 @@ impl Signal {
                 last_chord_index: usize::MAX,
                 active_notes: std::collections::HashSet::new(),
                 previous_notes: std::collections::HashSet::new(),
-                params_hash: 0,
                 current_bar: 0,
                 last_clock_position: 0.0,
             })

@@ -55,7 +55,6 @@ pub(crate) struct SequenceState {
     pub(crate) last_chord_index: usize,
     pub(crate) active_notes: std::collections::HashSet<i32>,
     pub(crate) previous_notes: std::collections::HashSet<i32>,
-    pub(crate) params_hash: u64,
     pub(crate) current_bar: usize,
     pub(crate) last_clock_position: f32,
 }
@@ -98,50 +97,10 @@ impl Sequence {
         self
     }
 
-    fn hash_params(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        self.elements.len().hash(&mut hasher);
-        Self::hash_elements(&self.elements, &mut hasher);
-        self.bars.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    fn hash_elements(
-        elements: &[SequenceElement],
-        hasher: &mut std::collections::hash_map::DefaultHasher,
-    ) {
-        use std::hash::Hash;
-
-        for element in elements {
-            match element {
-                SequenceElement::Chord(chord) => {
-                    0u8.hash(hasher);
-                    chord.notes.len().hash(hasher);
-                    for &note in &chord.notes {
-                        note.hash(hasher);
-                    }
-                }
-                SequenceElement::Subdivision(sub_elements) => {
-                    1u8.hash(hasher);
-                    sub_elements.len().hash(hasher);
-                    Self::hash_elements(sub_elements, hasher);
-                }
-            }
-        }
-    }
-
     fn ensure_state(&self, state: &mut SequenceState) {
-        let current_hash = self.hash_params();
-
-        if state.params_hash != current_hash {
+        if state.all_notes.is_empty() {
             state.all_notes = self.get_all_notes();
             state.last_chord_index = usize::MAX;
-            state.active_notes.clear();
-            state.previous_notes.clear();
-            state.params_hash = current_hash;
             state.current_bar = 0;
             state.last_clock_position = 0.0;
         }
@@ -177,24 +136,22 @@ impl Sequence {
             state.last_chord_index = chord_index;
         }
 
-        state
-            .all_notes
-            .iter()
-            .map(|&note| {
-                let was_on = state.previous_notes.contains(&note);
-                let is_on = state.active_notes.contains(&note);
+        let mut keys = Vec::with_capacity(state.all_notes.len());
+        for &note in &state.all_notes {
+            let was_on = state.previous_notes.contains(&note);
+            let is_on = state.active_notes.contains(&note);
 
-                Key {
-                    on: if chord_changed && was_on && is_on {
-                        false
-                    } else {
-                        is_on
-                    },
-                    note,
-                    pitch: note as f32,
-                }
-            })
-            .collect()
+            keys.push(Key {
+                on: if chord_changed && was_on && is_on {
+                    false
+                } else {
+                    is_on
+                },
+                note,
+                pitch: note as f32,
+            });
+        }
+        keys
     }
 
     fn find_active_chord(elements: &[SequenceElement], position: f32) -> (usize, Option<&Chord>) {
