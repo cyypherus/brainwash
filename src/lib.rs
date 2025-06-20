@@ -3,6 +3,7 @@ mod clock;
 mod envelopes;
 mod graph;
 mod oscillators;
+mod ramp;
 mod sequencing;
 mod signal;
 
@@ -12,6 +13,7 @@ pub use clock::*;
 pub use envelopes::*;
 pub use graph::*;
 pub use oscillators::*;
+pub use ramp::*;
 pub use sequencing::*;
 pub use signal::*;
 

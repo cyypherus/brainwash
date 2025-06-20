@@ -1,4 +1,5 @@
 use crate::oscillators::OscillatorState;
+use crate::ramp::RampState;
 use crate::{ADSRState, ClockState, SequenceState};
 use std::collections::HashMap;
 
@@ -11,6 +12,7 @@ pub struct Signal {
     sequence_state: HashMap<(i32, i32), SequenceState>,
     clock_state: HashMap<(i32, i32), ClockState>,
     oscillator_state: HashMap<(i32, i32), OscillatorState>,
+    ramp_state: HashMap<(i32, i32), RampState>,
 }
 
 impl Signal {
@@ -24,6 +26,7 @@ impl Signal {
             sequence_state: HashMap::new(),
             clock_state: HashMap::new(),
             oscillator_state: HashMap::new(),
+            ramp_state: HashMap::new(),
         }
     }
 
@@ -46,6 +49,7 @@ impl Signal {
         self.adsr_state.clear();
         self.sequence_state.clear();
         self.oscillator_state.clear();
+        self.ramp_state.clear();
     }
 
     pub fn get_current_sample(&self) -> f32 {
@@ -96,5 +100,14 @@ impl Signal {
             .or_insert(OscillatorState {
                 phase_accumulator: 0,
             })
+    }
+
+    pub(crate) fn get_ramp_state(&mut self, id: i32, index: i32) -> &mut RampState {
+        self.ramp_state.entry((id, index)).or_insert(RampState {
+            current_value: 0.0,
+            target_value: 0.0,
+            start_value: 0.0,
+            start_time: None,
+        })
     }
 }

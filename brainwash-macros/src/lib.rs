@@ -96,3 +96,14 @@ pub fn clock(_input: TokenStream) -> TokenStream {
 
     TokenStream::from(expanded)
 }
+
+#[proc_macro]
+pub fn ramp(_input: TokenStream) -> TokenStream {
+    let id = next_id();
+
+    let expanded = quote! {
+        crate::ramp(#id)
+    };
+
+    TokenStream::from(expanded)
+}
