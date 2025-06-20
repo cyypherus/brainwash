@@ -3,9 +3,9 @@ use dioxus_devtools::{connect_subsecond, subsecond};
 
 fn main() {
     connect_subsecond();
-    // save_wav(synth, "test.wav", 5., 44100).expect("Error saving audio");
+    save_wav(synth, "test.wav", 5., 44100).expect("Error saving audio");
     // graph(synth).expect("Error with graph");
-    play_live(synth).expect("Error with live audio");
+    // play_live(synth).expect("Error with live audio");
 }
 
 fn synth(s: &mut Signal) {

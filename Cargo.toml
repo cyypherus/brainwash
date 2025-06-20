@@ -7,10 +7,13 @@ edition = "2024"
 name = "brainwash"
 path = "src/lib.rs"
 
+[features]
+default = ["assert"]
+assert = []
+
 [[example]]
 name = "simple"
 path = "examples/simple/src/main.rs"
-
 
 [dependencies]
 cpal = "0.15"

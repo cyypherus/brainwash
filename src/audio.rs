@@ -78,7 +78,7 @@ where
     F: FnMut(&mut Signal),
 {
     let spec = hound::WavSpec {
-        channels: 1,
+        channels: 2,
         sample_rate: sample_rate as u32,
         bits_per_sample: 32,
         sample_format: hound::SampleFormat::Float,
@@ -90,7 +90,9 @@ where
 
     for _ in 0..total_samples {
         synth_fn(&mut signal);
-        writer.write_sample(signal.get_current_sample())?;
+        let sample = signal.get_current_sample();
+        writer.write_sample(sample)?; // Left channel
+        writer.write_sample(sample)?; // Right channel
         signal.advance();
     }
 

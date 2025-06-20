@@ -1,7 +1,10 @@
 use crate::oscillators::OscillatorState;
 use crate::ramp::RampState;
 use crate::{ADSRState, ClockState, SequenceState};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+
+#[cfg(feature = "assert")]
+use std::collections::HashSet;
 
 pub struct Signal {
     pub current_sample: f32,
@@ -13,16 +16,8 @@ pub struct Signal {
     clock_state: HashMap<(i32, i32), ClockState>,
     oscillator_state: HashMap<(i32, i32), OscillatorState>,
     ramp_state: HashMap<(i32, i32), RampState>,
+    #[cfg(feature = "assert")]
     accesses: HashSet<(Access, i32, i32)>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Access {
-    Adsr,
-    Clock,
-    Oscillator,
-    Ramp,
-    Sequence,
 }
 
 impl Signal {
@@ -37,6 +32,7 @@ impl Signal {
             clock_state: HashMap::new(),
             oscillator_state: HashMap::new(),
             ramp_state: HashMap::new(),
+            #[cfg(feature = "assert")]
             accesses: HashSet::new(),
         }
     }
@@ -52,6 +48,7 @@ impl Signal {
     pub fn advance(&mut self) {
         self.position += 1;
         self.current_sample = 0.0;
+        #[cfg(feature = "assert")]
         self.accesses.clear();
     }
 
@@ -62,6 +59,7 @@ impl Signal {
         self.sequence_state.clear();
         self.oscillator_state.clear();
         self.ramp_state.clear();
+        #[cfg(feature = "assert")]
         self.accesses.clear();
     }
 
@@ -82,6 +80,7 @@ impl Signal {
     }
 
     pub fn get_adsr_state(&mut self, id: i32, index: i32) -> &mut ADSRState {
+        #[cfg(feature = "assert")]
         self.assert_unique_access(Access::Adsr, id, index, "ADSR");
         self.adsr_state.entry((id, index)).or_insert(ADSRState {
             trigger_time: None,
@@ -90,6 +89,7 @@ impl Signal {
     }
 
     pub(crate) fn get_sequence_state(&mut self, id: i32, index: i32) -> &mut SequenceState {
+        #[cfg(feature = "assert")]
         self.assert_unique_access(Access::Sequence, id, index, "Sequence");
         self.sequence_state
             .entry((id, index))
@@ -104,6 +104,7 @@ impl Signal {
     }
 
     pub(crate) fn get_clock_state(&mut self, id: i32, index: i32) -> &mut ClockState {
+        #[cfg(feature = "assert")]
         self.assert_unique_access(Access::Clock, id, index, "Clock");
         self.clock_state
             .entry((id, index))
@@ -111,6 +112,7 @@ impl Signal {
     }
 
     pub(crate) fn get_oscillator_state(&mut self, id: i32, index: i32) -> &mut OscillatorState {
+        #[cfg(feature = "assert")]
         self.assert_unique_access(Access::Oscillator, id, index, "Oscillator");
         self.oscillator_state
             .entry((id, index))
@@ -120,6 +122,7 @@ impl Signal {
     }
 
     pub(crate) fn get_ramp_state(&mut self, id: i32, index: i32) -> &mut RampState {
+        #[cfg(feature = "assert")]
         self.assert_unique_access(Access::Ramp, id, index, "Ramp");
         self.ramp_state.entry((id, index)).or_insert(RampState {
             current_value: 0.0,
@@ -129,6 +132,7 @@ impl Signal {
         })
     }
 
+    #[cfg(feature = "assert")]
     fn assert_unique_access(&mut self, access_type: Access, id: i32, index: i32, type_name: &str) {
         assert!(
             self.accesses.insert((access_type, id, index)),
@@ -144,4 +148,13 @@ impl Signal {
             index
         );
     }
+}
+#[cfg(feature = "assert")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Access {
+    Adsr,
+    Clock,
+    Oscillator,
+    Ramp,
+    Sequence,
 }
