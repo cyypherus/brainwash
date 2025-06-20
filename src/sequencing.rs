@@ -109,11 +109,12 @@ impl Sequence {
         self.ensure_state(state);
 
         if clock_position < state.last_clock_position {
-            state.current_bar += 1;
+            state.current_bar = ((state.current_bar + 1) as f32 % 1.) as usize;
         }
         state.last_clock_position = clock_position;
 
-        let sequence_position = state.current_bar as f32 + clock_position;
+        let raw_position = state.current_bar as f32 + clock_position;
+        let sequence_position = raw_position;
 
         let (chord_index, active_chord) =
             Self::find_active_chord(&self.elements, sequence_position);
