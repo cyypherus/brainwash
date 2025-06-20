@@ -203,6 +203,7 @@ impl Sequence {
 pub struct Key {
     pub on: bool,
     pub index: usize,
+    /// The index of the key returned from the sequence, not including keys that are off
     pub on_index: usize,
     pub note: i32,
     pub pitch: f32,
