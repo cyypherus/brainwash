@@ -28,7 +28,11 @@ impl Signal {
     }
 
     pub fn add_sample(&mut self, sample: f32) {
-        self.current_sample += sample * self.global_volume;
+        let val = sample * self.global_volume;
+        self.current_sample += val;
+        if self.current_sample > 1. {
+            self.current_sample = 0.;
+        }
     }
 
     pub fn advance(&mut self) {

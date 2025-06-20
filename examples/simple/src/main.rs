@@ -4,12 +4,13 @@ use signal::*;
 fn main() {
     connect_subsecond();
     // save_wav(synth, "test.wav", 5., 44100).expect("Error saving audio");
-    graph(synth).expect("Error with graph");
-    // play_live(synth).expect("Error with live audio");
+    // graph(synth).expect("Error with graph");
+    play_live(synth).expect("Error with live audio");
 }
 
 fn synth(s: &mut Signal) {
     subsecond::call(|| {
+        s.global_volume = 0.2;
         let clock = clock!().bpm(100.).output(s);
         let cmin = cmin().shift(-3);
         let seq = seq!([
@@ -21,7 +22,7 @@ fn synth(s: &mut Signal) {
         .bars(1)
         .output(clock, s);
 
-        let lfo1 = saw!().at_phase(clock).output().max(0.4);
+        let lfo1 = saw!().at_phase(clock).output().max(0.4).min(0.7);
         let lfo2 = saw!().at_phase(clock).output();
         for (i, key) in seq.iter().enumerate() {
             let env = adsr!()
@@ -66,6 +67,41 @@ fn synth(s: &mut Signal) {
                 .trigger(key.on)
                 .output(s);
             sin!().index(i).pitch(key.pitch + 12.).atten(env).play(s);
+        }
+
+        let seq = seq!([note(0), rest(), note(0), rest()]).output(clock, s);
+        for (i, key) in seq.iter().enumerate() {
+            let env = adsr!().index(i).att(0.).sus(0.).trigger(key.on).output(s);
+            let m = rsaw!().index(i).pitch(env).atten(env).run(s).output() * 24.;
+            let m2 = rsaw!()
+                .index(i)
+                .pitch(env + 0.001)
+                .atten(env)
+                .run(s)
+                .output()
+                * 24.;
+            squ!().index(i).pitch(m + m2 - 24.).atten(env).play(s);
+            squ!().index(i).pitch(m + m2 - 36.).atten(env).play(s);
+        }
+
+        let seq = seq!([rest(), note(0), rest(), note(0)]).output(clock, s);
+        for (i, key) in seq.iter().enumerate() {
+            let env = adsr!()
+                .index(i)
+                .att(0.)
+                .dec(0.1)
+                .sus(0.)
+                .trigger(key.on)
+                .output(s);
+            let m = rsaw!().index(i).pitch(env).atten(env).run(s).output() * 24.;
+            let m2 = rsaw!()
+                .index(i)
+                .pitch(env + 0.001)
+                .atten(env)
+                .run(s)
+                .output()
+                * 24.;
+            saw!().index(i).pitch(m + 12. + m2).atten(env).play(s);
         }
     });
 }
