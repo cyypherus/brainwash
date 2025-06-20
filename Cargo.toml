@@ -41,3 +41,11 @@ debug = true
 [[bench]]
 name = "sequence_bench"
 harness = false
+
+[[bench]]
+name = "oscillator_bench"
+harness = false
+
+[[bench]]
+name = "adsr_bench"
+harness = false
