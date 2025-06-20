@@ -85,6 +85,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "brainwash"
+version = "0.1.0"
+dependencies = [
+ "brainwash-macros",
+ "cpal",
+ "crossterm 0.29.0",
+ "dioxus-devtools",
+ "hound",
+ "ratatui",
+]
+
+[[package]]
+name = "brainwash-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1254,18 +1274,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
-name = "signal"
-version = "0.1.0"
-dependencies = [
- "cpal",
- "crossterm 0.29.0",
- "dioxus-devtools",
- "hound",
- "ratatui",
- "signal-macros",
-]
-
-[[package]]
 name = "signal-hook"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1293,14 +1301,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9203b8055f63a2a00e2f593bb0510367fe707d7ff1e5c872de2f537b339e5410"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "signal-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
 ]
 
 [[package]]

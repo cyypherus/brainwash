@@ -1,14 +1,10 @@
 [package]
-name = "signal"
+name = "brainwash"
 version = "0.1.0"
 edition = "2024"
 
-[[bin]]
-name = "signal"
-path = "src/main.rs"
-
 [lib]
-name = "signal"
+name = "brainwash"
 path = "src/lib.rs"
 
 [[example]]
@@ -19,7 +15,7 @@ path = "examples/simple/src/main.rs"
 [dependencies]
 cpal = "0.15"
 hound = "3.5"
-signal-macros = { path = "signal-macros" }
+brainwash-macros = { path = "brainwash-macros" }
 ratatui = "0.29.0"
 crossterm = "0.29.0"
 

@@ -7,13 +7,13 @@ mod sequencing;
 mod signal;
 
 pub use audio::*;
+pub use brainwash_macros::*;
 pub use clock::*;
 pub use envelopes::*;
 pub use graph::*;
 pub use oscillators::*;
 pub use sequencing::*;
 pub use signal::*;
-pub use signal_macros::*;
 
 pub mod utils {
     pub fn midi_to_freq(note: f32) -> f32 {

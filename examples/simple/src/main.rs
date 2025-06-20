@@ -1,5 +1,5 @@
+use brainwash::*;
 use dioxus_devtools::{connect_subsecond, subsecond};
-use signal::*;
 
 fn main() {
     connect_subsecond();
