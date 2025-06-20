@@ -22,7 +22,7 @@ fn synth(s: &mut Signal) {
         .bars(1)
         .output(clock, s);
 
-        let lfo1 = saw!().at_phase(clock).output().max(0.4).min(0.7);
+        let lfo1 = saw!().at_phase(clock).output().clamp(0.4, 0.7);
         let lfo2 = saw!().at_phase(clock).output();
         for (i, key) in seq.iter().enumerate() {
             let env = adsr!()

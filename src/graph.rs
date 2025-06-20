@@ -93,6 +93,7 @@ impl GraphRegistry {
         }
     }
 
+    #[allow(clippy::map_entry)]
     fn register_stream(&mut self, name: String, max_points: usize) {
         if !self.streams.contains_key(&name) {
             let color = self.colors[self.next_color % self.colors.len()];
@@ -232,6 +233,7 @@ impl GraphApp {
         self.render_performance(f, chunks[2]);
     }
 
+    #[allow(clippy::type_complexity)]
     fn render_chart(&self, f: &mut Frame, area: Rect, streams: &HashMap<String, GraphData>) {
         let mut all_data: Vec<(String, Vec<(f64, f64)>, Color)> = Vec::new();
         let mut min_x = f64::MAX;
@@ -418,7 +420,7 @@ where
                             for frame in data.chunks_mut(channels) {
                                 let start_time = Instant::now();
 
-                                synth_lock(&mut *signal_lock);
+                                synth_lock(&mut signal_lock);
                                 let sample = signal_lock.get_current_sample();
 
                                 for channel_sample in frame.iter_mut() {

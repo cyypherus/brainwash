@@ -46,8 +46,7 @@ impl Scale {
             index / scale_len
         };
         let wrapped_index = ((index % scale_len) + scale_len) % scale_len;
-        let note = self.notes[wrapped_index as usize] + octave_offset * 12;
-        note
+        self.notes[wrapped_index as usize] + octave_offset * 12
     }
 }
 
@@ -105,13 +104,12 @@ impl Sequence {
 
         let mut hasher = DefaultHasher::new();
         self.elements.len().hash(&mut hasher);
-        self.hash_elements(&self.elements, &mut hasher);
+        Self::hash_elements(&self.elements, &mut hasher);
         self.bars.hash(&mut hasher);
         hasher.finish()
     }
 
     fn hash_elements(
-        &self,
         elements: &[SequenceElement],
         hasher: &mut std::collections::hash_map::DefaultHasher,
     ) {
@@ -129,7 +127,7 @@ impl Sequence {
                 SequenceElement::Subdivision(sub_elements) => {
                     1u8.hash(hasher);
                     sub_elements.len().hash(hasher);
-                    self.hash_elements(sub_elements, hasher);
+                    Self::hash_elements(sub_elements, hasher);
                 }
             }
         }
@@ -165,7 +163,8 @@ impl Sequence {
 
         let sequence_position = (state.current_bar as f32 + clock_position) / self.bars as f32;
 
-        let (chord_index, active_chord) = self.find_active_chord(&self.elements, sequence_position);
+        let (chord_index, active_chord) =
+            Self::find_active_chord(&self.elements, sequence_position);
 
         let chord_changed = chord_index != state.last_chord_index;
 
@@ -198,11 +197,7 @@ impl Sequence {
             .collect()
     }
 
-    fn find_active_chord<'a>(
-        &'a self,
-        elements: &'a [SequenceElement],
-        position: f32,
-    ) -> (usize, Option<&'a Chord>) {
+    fn find_active_chord(elements: &[SequenceElement], position: f32) -> (usize, Option<&Chord>) {
         if elements.is_empty() {
             return (0, None);
         }
@@ -213,7 +208,7 @@ impl Sequence {
         match &elements[element_index] {
             SequenceElement::Chord(chord) => (element_index, Some(chord)),
             SequenceElement::Subdivision(sub_elements) => {
-                let (sub_index, chord) = self.find_active_chord(sub_elements, element_position);
+                let (sub_index, chord) = Self::find_active_chord(sub_elements, element_position);
                 (element_index * 1000 + sub_index, chord)
             }
         }
@@ -221,14 +216,13 @@ impl Sequence {
 
     fn get_all_notes(&self) -> Vec<i32> {
         let mut all_notes = std::collections::HashSet::new();
-        self.collect_notes_from_elements(&self.elements, &mut all_notes);
+        Self::collect_notes_from_elements(&self.elements, &mut all_notes);
         let mut notes: Vec<i32> = all_notes.into_iter().collect();
         notes.sort();
         notes
     }
 
     fn collect_notes_from_elements(
-        &self,
         elements: &[SequenceElement],
         all_notes: &mut std::collections::HashSet<i32>,
     ) {
@@ -240,7 +234,7 @@ impl Sequence {
                     }
                 }
                 SequenceElement::Subdivision(sub_elements) => {
-                    self.collect_notes_from_elements(sub_elements, all_notes);
+                    Self::collect_notes_from_elements(sub_elements, all_notes);
                 }
             }
         }

@@ -36,7 +36,7 @@ impl AudioPlayer {
                 let mut synth_lock = synth_fn.lock().unwrap();
 
                 for frame in data.chunks_mut(channels) {
-                    synth_lock(&mut *signal_lock);
+                    synth_lock(&mut signal_lock);
 
                     let sample = signal_lock.get_current_sample();
 
