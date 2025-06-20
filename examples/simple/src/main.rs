@@ -4,30 +4,32 @@ use dioxus_devtools::{connect_subsecond, subsecond};
 fn main() {
     connect_subsecond();
     // save_wav(synth, "test.wav", 5., 44100).expect("Error saving audio");
-    graph(synth).expect("Error with graph");
-    // play_live(synth).expect("Error with live audio");
+    // graph(synth).expect("Error with graph");
+    play_live(synth).expect("Error with live audio");
 }
 
 fn synth(s: &mut Signal) {
     subsecond::call(|| {
         s.global_volume = 0.2;
-        let clock = clock!().bpm(100.).output(s);
+        let clock = clock(id!()).bpm(100.).output(s);
         let cmin = cmin().shift(-3);
-        let seq = seq!([
-            chord(&[cmin.note(0), cmin.note(2), cmin.note(4)]),
-            chord(&[cmin.note(4), cmin.note(3), cmin.note(5)]),
-            chord(&[cmin.note(2), cmin.note(4), cmin.note(6)]),
-            chord(&[cmin.note(1), cmin.note(4), cmin.note(6)]),
-        ])
+        let seq = seq(
+            id!(),
+            [
+                chord(&[cmin.note(0), cmin.note(2), cmin.note(4)]),
+                chord(&[cmin.note(4), cmin.note(3), cmin.note(5)]),
+                chord(&[cmin.note(2), cmin.note(4), cmin.note(6)]),
+                chord(&[cmin.note(1), cmin.note(4), cmin.note(6)]),
+            ],
+        )
         .bars(1)
         .output(clock, s);
 
-        let lfo1 = saw!().at_phase(clock).output().clamp(0.4, 0.7);
-        let lfo2 = saw!().at_phase(clock).output();
-        let mut on_index = 0;
-        for (i, key) in seq.iter().enumerate() {
-            let env = adsr!()
-                .index(i)
+        let lfo1 = saw(id!()).at_phase(clock).output().clamp(0.4, 0.7);
+        let lfo2 = saw(id!()).at_phase(clock).output();
+        for key in seq {
+            let env = adsr(id!())
+                .index(key.index)
                 .att(0.001)
                 .sus(1.)
                 .dec(0.1)
@@ -35,17 +37,21 @@ fn synth(s: &mut Signal) {
                 .output(s);
             let mut pitch = key.pitch;
             if key.on {
-                pitch = ramp!().index(on_index).to(key.pitch).time(0.3).output(s);
-                on_index += 1;
-                s.graph(format!("r{}", on_index).as_str(), pitch, 100000);
+                pitch = ramp(id!())
+                    .index(key.on_index)
+                    .value(key.pitch)
+                    .time(0.3)
+                    .output(s);
             }
-            let m = squ!().index(i).pitch(pitch).run(s).output();
-            rsaw!()
-                .index(i)
+            let m = squ(id!()).index(key.index).pitch(pitch).run(s).output();
+            rsaw(id!())
+                .index(key.index)
                 .pitch(pitch + (m * lfo2))
                 .atten(env * lfo1)
                 .play(s);
         }
+        // for (i, key) in seq.iter().enumerate() {
+        // }
         // let seq = seq!([
         //     note(cmin.note(6)),
         //     note(cmin.note(7)),

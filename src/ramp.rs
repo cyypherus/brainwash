@@ -29,7 +29,7 @@ impl Ramp {
         self
     }
 
-    pub fn to(mut self, target: f32) -> Self {
+    pub fn value(mut self, target: f32) -> Self {
         self.target = target;
         self
     }

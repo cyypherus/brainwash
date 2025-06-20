@@ -1,7 +1,7 @@
 use crate::oscillators::OscillatorState;
 use crate::ramp::RampState;
 use crate::{ADSRState, ClockState, SequenceState};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct Signal {
     pub current_sample: f32,
@@ -13,6 +13,16 @@ pub struct Signal {
     clock_state: HashMap<(i32, i32), ClockState>,
     oscillator_state: HashMap<(i32, i32), OscillatorState>,
     ramp_state: HashMap<(i32, i32), RampState>,
+    accesses: HashSet<(Access, i32, i32)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum Access {
+    Adsr,
+    Clock,
+    Oscillator,
+    Ramp,
+    Sequence,
 }
 
 impl Signal {
@@ -27,6 +37,7 @@ impl Signal {
             clock_state: HashMap::new(),
             oscillator_state: HashMap::new(),
             ramp_state: HashMap::new(),
+            accesses: HashSet::new(),
         }
     }
 
@@ -41,6 +52,7 @@ impl Signal {
     pub fn advance(&mut self) {
         self.position += 1;
         self.current_sample = 0.0;
+        self.accesses.clear();
     }
 
     pub fn reset(&mut self) {
@@ -50,6 +62,7 @@ impl Signal {
         self.sequence_state.clear();
         self.oscillator_state.clear();
         self.ramp_state.clear();
+        self.accesses.clear();
     }
 
     pub fn get_current_sample(&self) -> f32 {
@@ -69,6 +82,7 @@ impl Signal {
     }
 
     pub fn get_adsr_state(&mut self, id: i32, index: i32) -> &mut ADSRState {
+        self.assert_unique_access(Access::Adsr, id, index, "ADSR");
         self.adsr_state.entry((id, index)).or_insert(ADSRState {
             trigger_time: None,
             release_time: None,
@@ -76,6 +90,7 @@ impl Signal {
     }
 
     pub(crate) fn get_sequence_state(&mut self, id: i32, index: i32) -> &mut SequenceState {
+        self.assert_unique_access(Access::Sequence, id, index, "Sequence");
         self.sequence_state
             .entry((id, index))
             .or_insert(SequenceState {
@@ -89,12 +104,14 @@ impl Signal {
     }
 
     pub(crate) fn get_clock_state(&mut self, id: i32, index: i32) -> &mut ClockState {
+        self.assert_unique_access(Access::Clock, id, index, "Clock");
         self.clock_state
             .entry((id, index))
             .or_insert(ClockState { position: 0 })
     }
 
     pub(crate) fn get_oscillator_state(&mut self, id: i32, index: i32) -> &mut OscillatorState {
+        self.assert_unique_access(Access::Oscillator, id, index, "Oscillator");
         self.oscillator_state
             .entry((id, index))
             .or_insert(OscillatorState {
@@ -103,11 +120,28 @@ impl Signal {
     }
 
     pub(crate) fn get_ramp_state(&mut self, id: i32, index: i32) -> &mut RampState {
+        self.assert_unique_access(Access::Ramp, id, index, "Ramp");
         self.ramp_state.entry((id, index)).or_insert(RampState {
             current_value: 0.0,
             target_value: 0.0,
             start_value: 0.0,
             start_time: None,
         })
+    }
+
+    fn assert_unique_access(&mut self, access_type: Access, id: i32, index: i32, type_name: &str) {
+        debug_assert!(
+            self.accesses.insert((access_type, id, index)),
+            r#"
+            *********************************************
+            Error: A module was used twice in one sample.
+            If you use a module in a loop make sure it has a unique index by calling `module.index(key.index)`
+            Module Info: type: {}, id: {}, index: {}
+            *********************************************
+            "#,
+            type_name,
+            id,
+            index
+        );
     }
 }

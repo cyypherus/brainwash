@@ -3,7 +3,7 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 fn bench_sequence_basic_usage(c: &mut Criterion) {
     c.bench_function("sequence_basic_usage", |b| {
-        let mut seq = sequence(
+        let mut seq = seq(
             0,
             vec![chord(&[60, 64, 67]), note(62), chord(&[59, 62, 66]), rest()],
         );

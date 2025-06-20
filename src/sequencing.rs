@@ -79,7 +79,7 @@ pub fn rest() -> SequenceElement {
     chord(&[])
 }
 
-pub fn sequence<T: Into<Vec<SequenceElement>>>(id: usize, elements: T) -> Sequence {
+pub fn seq<T: Into<Vec<SequenceElement>>>(id: usize, elements: T) -> Sequence {
     Sequence {
         id,
         elements: elements.into(),
@@ -137,9 +137,14 @@ impl Sequence {
         }
 
         let mut keys = Vec::with_capacity(state.all_notes.len());
-        for &note in &state.all_notes {
+        let mut on_index = 0;
+        for (index, &note) in state.all_notes.iter().enumerate() {
             let was_on = state.previous_notes.contains(&note);
             let is_on = state.active_notes.contains(&note);
+
+            if is_on {
+                on_index += 1;
+            }
 
             keys.push(Key {
                 on: if chord_changed && was_on && is_on {
@@ -148,6 +153,8 @@ impl Sequence {
                     is_on
                 },
                 note,
+                index,
+                on_index,
                 pitch: note as f32,
             });
         }
@@ -201,6 +208,8 @@ impl Sequence {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Key {
     pub on: bool,
+    pub index: usize,
+    pub on_index: usize,
     pub note: i32,
     pub pitch: f32,
 }
