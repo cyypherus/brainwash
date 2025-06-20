@@ -42,6 +42,7 @@ pub fn saw(id: usize) -> Oscillator {
     Oscillator::new(id, WaveType::SawUp)
 }
 
+/// Saw down
 pub fn rsaw(id: usize) -> Oscillator {
     Oscillator::new(id, WaveType::SawDown)
 }

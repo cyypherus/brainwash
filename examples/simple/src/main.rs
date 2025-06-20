@@ -11,7 +11,7 @@ fn main() {
 fn synth(s: &mut Signal) {
     subsecond::call(|| {
         s.global_volume = 0.2;
-        let clock = clock(id!()).bpm(100.).bars(4.).output(s);
+        let clck = clock(id!()).bpm(100.).bars(4.).output(s);
         let cmin = cmin().shift(-3);
         let sq = seq(
             id!(),
@@ -22,10 +22,10 @@ fn synth(s: &mut Signal) {
                 chord([cmin.note(1), cmin.note(4), cmin.note(6)]),
             ],
         )
-        .output(clock, s);
+        .output(clck, s);
 
-        let lfo1 = saw(id!()).value_at(clock).output().clamp(0.4, 0.7);
-        let lfo2 = saw(id!()).value_at(clock).output();
+        let lfo1 = saw(id!()).value_at(clck).output().clamp(0.4, 0.7);
+        let lfo2 = saw(id!()).value_at(clck).output();
 
         for key in sq {
             let env = adsr(id!())
@@ -51,6 +51,7 @@ fn synth(s: &mut Signal) {
                 .play(s);
         }
 
+        let clck = clock(id!()).bpm(100.).bars(4. / 3.).output(s);
         let sq = seq(
             id!(),
             [
@@ -72,8 +73,7 @@ fn synth(s: &mut Signal) {
                 rest(),
             ],
         )
-        .bars(0.3)
-        .output(clock, s);
+        .output(clck, s);
         for (i, key) in sq.iter().enumerate() {
             let env = adsr(id!())
                 .index(i)

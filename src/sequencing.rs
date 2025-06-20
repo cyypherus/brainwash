@@ -62,7 +62,6 @@ pub(crate) struct SequenceState {
 pub struct Sequence {
     id: usize,
     elements: Vec<SequenceElement>,
-    bars: f32,
 }
 
 pub fn chord(notes: impl Into<Vec<i32>>) -> SequenceElement {
@@ -83,7 +82,6 @@ pub fn seq(id: usize, elements: impl Into<Vec<SequenceElement>>) -> Sequence {
     Sequence {
         id,
         elements: elements.into(),
-        bars: 1.,
     }
 }
 
@@ -92,11 +90,6 @@ pub fn sub(elements: impl Into<Vec<SequenceElement>>) -> SequenceElement {
 }
 
 impl Sequence {
-    pub fn bars(mut self, bars: f32) -> Self {
-        self.bars = bars;
-        self
-    }
-
     fn ensure_state(&self, state: &mut SequenceState) {
         if state.all_notes.is_empty() {
             state.all_notes = self.get_all_notes();
@@ -116,11 +109,11 @@ impl Sequence {
         self.ensure_state(state);
 
         if clock_position < state.last_clock_position {
-            state.current_bar = ((state.current_bar + 1) as f32 % self.bars) as usize;
+            state.current_bar += 1;
         }
         state.last_clock_position = clock_position;
 
-        let sequence_position = (state.current_bar as f32 + clock_position) / self.bars;
+        let sequence_position = state.current_bar as f32 + clock_position;
 
         let (chord_index, active_chord) =
             Self::find_active_chord(&self.elements, sequence_position);
