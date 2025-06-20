@@ -11,7 +11,7 @@ fn main() {
 fn synth(s: &mut Signal) {
     subsecond::call(|| {
         s.global_volume = 0.2;
-        let clock = clock(id!()).bpm(100.).bars(4).output(s);
+        let clock = clock(id!()).bpm(100.).bars(4.).output(s);
         let cmin = cmin().shift(-3);
         let sq = seq(
             id!(),
@@ -72,7 +72,7 @@ fn synth(s: &mut Signal) {
                 rest(),
             ],
         )
-        .bars(2)
+        .bars(0.3)
         .output(clock, s);
         for (i, key) in sq.iter().enumerate() {
             let env = adsr(id!())
