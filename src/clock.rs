@@ -1,21 +1,17 @@
-use crate::Signal;
+use crate::{Signal, oscillators::saw};
 
-pub(crate) struct ClockState {
-    pub(crate) position: usize,
+pub fn clock(id: usize) -> Clock {
+    Clock {
+        id,
+        bpm: 120.0,
+        bars: 1.0,
+    }
 }
 
 pub struct Clock {
     id: usize,
     bpm: f32,
     bars: f32,
-}
-
-pub fn clock(id: usize) -> Clock {
-    Clock {
-        id,
-        bpm: 120.0,
-        bars: 1.,
-    }
 }
 
 impl Clock {
@@ -30,16 +26,11 @@ impl Clock {
     }
 
     pub fn output(self, signal: &mut Signal) -> f32 {
-        let sample_rate = signal.sample_rate;
-        let state = signal.get_clock_state(self.id as i32, 0);
+        let beats_per_minute = self.bpm;
+        let beats_per_second = beats_per_minute / 60.0;
+        let bars_per_second = beats_per_second / 4.0;
+        let frequency = bars_per_second / self.bars;
 
-        let beats_per_second = self.bpm / 60.0;
-        let samples_per_beat = sample_rate as f32 / beats_per_second;
-        let samples_per_bar = samples_per_beat * 4.0 * self.bars;
-
-        let position_in_bar = (state.position as f32) % samples_per_bar;
-        state.position += 1;
-
-        position_in_bar / samples_per_bar
+        saw(self.id).freq(frequency).run(signal).output()
     }
 }

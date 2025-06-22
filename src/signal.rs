@@ -1,6 +1,6 @@
 use crate::oscillators::OscillatorState;
 use crate::ramp::RampState;
-use crate::{ADSRState, ClockState, SequenceState};
+use crate::{ADSRState, SequenceState};
 use std::collections::HashMap;
 
 #[cfg(feature = "assert")]
@@ -13,7 +13,6 @@ pub struct Signal {
     pub global_volume: f32,
     adsr_state: HashMap<(i32, i32), ADSRState>,
     sequence_state: HashMap<(i32, i32), SequenceState>,
-    clock_state: HashMap<(i32, i32), ClockState>,
     oscillator_state: HashMap<(i32, i32), OscillatorState>,
     ramp_state: HashMap<(i32, i32), RampState>,
     #[cfg(feature = "assert")]
@@ -29,7 +28,6 @@ impl Signal {
             global_volume: 1.0,
             adsr_state: HashMap::new(),
             sequence_state: HashMap::new(),
-            clock_state: HashMap::new(),
             oscillator_state: HashMap::new(),
             ramp_state: HashMap::new(),
             #[cfg(feature = "assert")]
@@ -103,14 +101,6 @@ impl Signal {
             })
     }
 
-    pub(crate) fn get_clock_state(&mut self, id: i32, index: i32) -> &mut ClockState {
-        #[cfg(feature = "assert")]
-        self.assert_unique_access(Access::Clock, id, index, "Clock");
-        self.clock_state
-            .entry((id, index))
-            .or_insert(ClockState { position: 0 })
-    }
-
     pub(crate) fn get_oscillator_state(&mut self, id: i32, index: i32) -> &mut OscillatorState {
         #[cfg(feature = "assert")]
         self.assert_unique_access(Access::Oscillator, id, index, "Oscillator");
@@ -153,7 +143,6 @@ impl Signal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Access {
     Adsr,
-    Clock,
     Oscillator,
     Ramp,
     Sequence,
