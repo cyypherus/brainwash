@@ -1,9 +1,9 @@
-use crate::{OscillatorType, SawUp, Signal};
+use crate::{Osc, Signal, Wave};
 
 pub struct Clock {
     bpm: f32,
     bars: f32,
-    osc: SawUp,
+    osc: Osc,
 }
 
 impl Default for Clock {
@@ -11,7 +11,7 @@ impl Default for Clock {
         Self {
             bpm: 100.,
             bars: 1.,
-            osc: SawUp::default(),
+            osc: Osc::default(),
         }
     }
 }
@@ -33,8 +33,10 @@ impl Clock {
         let bars_per_second = beats_per_second / 4.0;
         let frequency = bars_per_second / self.bars;
 
-        self.osc.freq(frequency);
-        self.osc.run(signal);
-        self.osc.output()
+        self.osc
+            .wave(Wave::SawUp)
+            .freq(frequency)
+            .run(signal)
+            .output()
     }
 }

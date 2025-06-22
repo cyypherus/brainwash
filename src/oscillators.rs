@@ -1,7 +1,7 @@
 use crate::{Signal, utils};
 
 #[derive(Clone, Copy)]
-pub enum WaveType {
+pub enum Wave {
     Sine,
     Square,
     Triangle,
@@ -9,84 +9,9 @@ pub enum WaveType {
     SawDown,
 }
 
-#[derive(Default)]
-pub struct Sine {
-    osc: Oscillator,
-}
-impl OscillatorType for Sine {
-    fn oscillator(&mut self) -> &mut Oscillator {
-        &mut self.osc
-    }
-}
-
-pub struct Square {
-    osc: Oscillator,
-}
-impl Default for Square {
-    fn default() -> Self {
-        Self {
-            osc: Oscillator::new(WaveType::Square),
-        }
-    }
-}
-impl OscillatorType for Square {
-    fn oscillator(&mut self) -> &mut Oscillator {
-        &mut self.osc
-    }
-}
-
-pub struct Triangle {
-    osc: Oscillator,
-}
-impl Default for Triangle {
-    fn default() -> Self {
-        Self {
-            osc: Oscillator::new(WaveType::Triangle),
-        }
-    }
-}
-impl OscillatorType for Triangle {
-    fn oscillator(&mut self) -> &mut Oscillator {
-        &mut self.osc
-    }
-}
-
-pub struct SawUp {
-    osc: Oscillator,
-}
-impl Default for SawUp {
-    fn default() -> Self {
-        Self {
-            osc: Oscillator::new(WaveType::SawUp),
-        }
-    }
-}
-impl OscillatorType for SawUp {
-    fn oscillator(&mut self) -> &mut Oscillator {
-        &mut self.osc
-    }
-}
-
-pub struct SawDown {
-    osc: Oscillator,
-}
-impl Default for SawDown {
-    fn default() -> Self {
-        Self {
-            osc: Oscillator::new(WaveType::SawDown),
-        }
-    }
-}
-impl OscillatorType for SawDown {
-    fn oscillator(&mut self) -> &mut Oscillator {
-        &mut self.osc
-    }
-}
-
-pub struct Oscillator {
-    index: usize,
+pub struct Osc {
     computed_sample: f32,
-    wave_type: WaveType,
+    wave_type: Wave,
     pitch: f32,
     frequency: f32,
     attenuation: f32,
@@ -95,66 +20,35 @@ pub struct Oscillator {
     pub(crate) phase_accumulator: u32,
 }
 
-impl Default for Oscillator {
+impl Default for Osc {
     fn default() -> Self {
-        Self::new(WaveType::Sine)
+        Self::new(Wave::Sine)
     }
 }
 
-pub trait OscillatorType {
-    fn oscillator(&mut self) -> &mut Oscillator;
-
-    fn phase(&mut self, p: f32) -> &mut Self {
-        self.oscillator().phase_offset = p;
-        self
-    }
-
-    fn pitch(&mut self, p: f32) -> &mut Self {
-        self.oscillator().pitch = p;
-        self.oscillator().frequency = utils::note_to_freq(p);
-        self
-    }
-
-    fn freq(&mut self, f: f32) -> &mut Self {
-        self.oscillator().frequency = f;
-        self
-    }
-
-    fn atten(&mut self, a: f32) -> &mut Self {
-        self.oscillator().attenuation = a;
-        self
-    }
-
-    fn bipolar(&mut self) -> &mut Self {
-        self.oscillator().is_bipolar = true;
-        self
-    }
-
-    fn play(&mut self, signal: &mut Signal) -> &mut Self {
-        self.oscillator().calculate_time_based(signal);
-        signal.add_sample(self.oscillator().computed_sample);
-        self
-    }
-
-    fn run(&mut self, signal: &mut Signal) -> &mut Self {
-        self.oscillator().calculate_time_based(signal);
-        self
-    }
-
-    fn value_at(&mut self, phase: f32) -> &mut Self {
-        self.oscillator().calculate_phase_based(phase);
-        self
-    }
-
-    fn output(&mut self) -> f32 {
-        self.oscillator().computed_sample
-    }
+pub fn sin() -> Wave {
+    Wave::Sine
 }
 
-impl Oscillator {
-    fn new(wave_type: WaveType) -> Self {
+pub fn square() -> Wave {
+    Wave::Square
+}
+
+pub fn triangle() -> Wave {
+    Wave::Triangle
+}
+
+pub fn saw() -> Wave {
+    Wave::SawUp
+}
+
+pub fn saw_d() -> Wave {
+    Wave::SawDown
+}
+
+impl Osc {
+    fn new(wave_type: Wave) -> Self {
         Self {
-            index: 0,
             wave_type,
             pitch: 0.0,
             frequency: 440.0,
@@ -166,9 +60,55 @@ impl Oscillator {
         }
     }
 
-    pub fn index(mut self, id: usize) -> Self {
-        self.index = id;
+    pub fn wave(&mut self, wave_type: Wave) -> &mut Self {
+        self.wave_type = wave_type;
         self
+    }
+
+    pub fn phase(&mut self, p: f32) -> &mut Self {
+        self.phase_offset = p;
+        self
+    }
+
+    pub fn pitch(&mut self, p: f32) -> &mut Self {
+        self.pitch = p;
+        self.frequency = utils::note_to_freq(p);
+        self
+    }
+
+    pub fn freq(&mut self, f: f32) -> &mut Self {
+        self.frequency = f;
+        self
+    }
+
+    pub fn atten(&mut self, a: f32) -> &mut Self {
+        self.attenuation = a;
+        self
+    }
+
+    pub fn bipolar(&mut self) -> &mut Self {
+        self.is_bipolar = true;
+        self
+    }
+
+    pub fn play(&mut self, signal: &mut Signal) -> &mut Self {
+        self.calculate_time_based(signal);
+        signal.add_sample(self.computed_sample);
+        self
+    }
+
+    pub fn run(&mut self, signal: &mut Signal) -> &mut Self {
+        self.calculate_time_based(signal);
+        self
+    }
+
+    pub fn value_at(&mut self, phase: f32) -> &mut Self {
+        self.calculate_phase_based(phase);
+        self
+    }
+
+    pub fn output(&mut self) -> f32 {
+        self.computed_sample
     }
 
     fn calculate_time_based(&mut self, signal: &mut Signal) {
@@ -186,7 +126,7 @@ impl Oscillator {
         let adjusted_phase = (phase + self.phase_offset / (2.0 * std::f32::consts::PI)) % 1.0;
 
         let sample = match self.wave_type {
-            WaveType::Sine => {
+            Wave::Sine => {
                 let bipolar_sample = (adjusted_phase * 2.0 * std::f32::consts::PI).sin();
                 if self.is_bipolar {
                     bipolar_sample
@@ -194,7 +134,7 @@ impl Oscillator {
                     (bipolar_sample + 1.0) * 0.5
                 }
             }
-            WaveType::Square => {
+            Wave::Square => {
                 let bipolar_sample = if adjusted_phase < 0.5 { 1.0 } else { -1.0 };
                 if self.is_bipolar {
                     bipolar_sample
@@ -202,7 +142,7 @@ impl Oscillator {
                     (bipolar_sample + 1.0) * 0.5
                 }
             }
-            WaveType::Triangle => {
+            Wave::Triangle => {
                 let bipolar_sample = if adjusted_phase < 0.5 {
                     -1.0 + 4.0 * adjusted_phase
                 } else {
@@ -214,7 +154,7 @@ impl Oscillator {
                     (bipolar_sample + 1.0) * 0.5
                 }
             }
-            WaveType::SawUp => {
+            Wave::SawUp => {
                 let bipolar_sample = -1.0 + 2.0 * adjusted_phase;
                 if self.is_bipolar {
                     bipolar_sample
@@ -222,7 +162,7 @@ impl Oscillator {
                     (bipolar_sample + 1.0) * 0.5
                 }
             }
-            WaveType::SawDown => {
+            Wave::SawDown => {
                 let bipolar_sample = 1.0 - 2.0 * adjusted_phase;
                 if self.is_bipolar {
                     bipolar_sample
