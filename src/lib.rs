@@ -10,7 +10,6 @@ mod signal;
 mod synth;
 
 pub use audio::*;
-pub use brainwash_macros::*;
 pub use clock::*;
 pub use envelopes::*;
 pub use graph::*;

@@ -100,21 +100,12 @@ dependencies = [
 name = "brainwash"
 version = "0.1.0"
 dependencies = [
- "brainwash-macros",
  "cpal",
  "criterion",
  "crossterm 0.29.0",
  "dioxus-devtools",
  "hound",
  "ratatui",
-]
-
-[[package]]
-name = "brainwash-macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
 ]
 
 [[package]]
