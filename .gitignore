@@ -6,3 +6,4 @@ dist/
 traces/
 *.DS_Store
 .cargo/
+.zed/

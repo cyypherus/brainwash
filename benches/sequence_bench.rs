@@ -3,11 +3,13 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 fn bench_sequence_basic_usage(c: &mut Criterion) {
     c.bench_function("sequence_basic_usage", |b| {
-        let mut seq = seq(
-            0,
-            vec![chord([60, 64, 67]), note(62), chord([59, 62, 66]), rest()],
-        );
-        let mut signal = Signal::new(44100);
+        let mut seq = Sequence::default();
+        seq.elements(vec![
+            chord([60, 64, 67]),
+            note(62),
+            chord([59, 62, 66]),
+            rest(),
+        ]);
         let mut position = 0.0;
 
         b.iter(|| {
@@ -15,7 +17,7 @@ fn bench_sequence_basic_usage(c: &mut Criterion) {
             if position > 1.0 {
                 position = 0.0;
             }
-            let keys = seq.output(black_box(position), &mut signal);
+            let keys = seq.output(black_box(position));
             black_box(keys);
         });
     });

@@ -10,7 +10,8 @@ fn bench_ramp_basic_usage(c: &mut Criterion) {
             if target > 10.0 {
                 target = 0.0;
             }
-            let ramper = ramp(0).time(black_box(0.5)).value(black_box(target));
+            let mut ramp = Ramp::default();
+            let ramper = ramp.time(black_box(0.5)).value(black_box(target));
             let output = ramper.output(&mut signal);
             signal.advance();
             black_box(output);

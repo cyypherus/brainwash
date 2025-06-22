@@ -1,5 +1,3 @@
-use crate::Signal;
-
 pub struct Chord {
     notes: Vec<i32>,
 }
@@ -50,18 +48,28 @@ impl Scale {
     }
 }
 
-pub(crate) struct SequenceState {
-    pub(crate) all_notes: Vec<i32>,
-    pub(crate) last_chord_index: usize,
+pub struct Sequence {
+    elements: Vec<SequenceElement>,
+    // pub(crate) all_notes: Vec<i32>,
+    pub(crate) last_chord_index: Option<usize>,
     pub(crate) active_notes: std::collections::HashSet<i32>,
     pub(crate) previous_notes: std::collections::HashSet<i32>,
     pub(crate) current_bar: usize,
     pub(crate) last_clock_position: f32,
 }
 
-pub struct Sequence {
-    id: usize,
-    elements: Vec<SequenceElement>,
+impl Default for Sequence {
+    fn default() -> Self {
+        Self {
+            elements: Vec::new(),
+            // all_notes: Vec::new(),
+            last_chord_index: None,
+            active_notes: std::collections::HashSet::new(),
+            previous_notes: std::collections::HashSet::new(),
+            current_bar: 0,
+            last_clock_position: 0.0,
+        }
+    }
 }
 
 pub fn chord(notes: impl Into<Vec<i32>>) -> SequenceElement {
@@ -78,63 +86,49 @@ pub fn rest() -> SequenceElement {
     chord([])
 }
 
-pub fn seq(id: usize, elements: impl Into<Vec<SequenceElement>>) -> Sequence {
-    Sequence {
-        id,
-        elements: elements.into(),
-    }
-}
-
 pub fn sub(elements: impl Into<Vec<SequenceElement>>) -> SequenceElement {
     SequenceElement::Subdivision(elements.into())
 }
 
 impl Sequence {
-    fn ensure_state(&self, state: &mut SequenceState) {
-        if state.all_notes.is_empty() {
-            state.all_notes = self.get_all_notes();
-            state.last_chord_index = usize::MAX;
-            state.current_bar = 0;
-            state.last_clock_position = 0.0;
-        }
+    pub fn elements(&mut self, elements: impl Into<Vec<SequenceElement>>) -> &mut Self {
+        self.elements = elements.into();
+        self
     }
-
-    pub fn output(&mut self, clock_position: f32, signal: &mut Signal) -> Vec<Key> {
+    pub fn output(&mut self, clock_position: f32) -> Vec<Key> {
         if self.elements.is_empty() {
             return Vec::new();
         }
 
-        let state = signal.get_sequence_state(self.id as i32, 0);
-
-        self.ensure_state(state);
-
-        if clock_position < state.last_clock_position {
-            state.current_bar = ((state.current_bar + 1) as f32 % 1.) as usize;
+        if clock_position < self.last_clock_position {
+            self.current_bar = ((self.current_bar + 1) as f32 % 1.) as usize;
         }
-        state.last_clock_position = clock_position;
+        self.last_clock_position = clock_position;
 
-        let raw_position = state.current_bar as f32 + clock_position;
+        let raw_position = self.current_bar as f32 + clock_position;
         let sequence_position = raw_position;
 
         let (chord_index, active_chord) =
             Self::find_active_chord(&self.elements, sequence_position);
 
-        let chord_changed = chord_index != state.last_chord_index;
+        let chord_changed = self
+            .last_chord_index
+            .is_some_and(|last| last != chord_index);
 
-        if chord_changed {
-            state.previous_notes = state.active_notes.clone();
-            state.active_notes.clear();
+        if chord_changed || self.last_chord_index.is_none() {
+            self.previous_notes = self.active_notes.clone();
+            self.active_notes.clear();
             if let Some(chord) = active_chord {
-                state.active_notes.extend(chord.notes.iter().cloned());
+                self.active_notes.extend(chord.notes.iter().cloned());
             }
-            state.last_chord_index = chord_index;
+            self.last_chord_index = Some(chord_index);
         }
 
-        let mut keys = Vec::with_capacity(state.all_notes.len());
+        let mut keys = Vec::with_capacity(self.active_notes.len());
         let mut on_index = 0;
-        for (index, &note) in state.all_notes.iter().enumerate() {
-            let was_on = state.previous_notes.contains(&note);
-            let is_on = state.active_notes.contains(&note);
+        for (index, &note) in self.active_notes.iter().enumerate() {
+            let was_on = self.previous_notes.contains(&note);
+            let is_on = self.active_notes.contains(&note);
 
             if is_on {
                 on_index += 1;
@@ -172,31 +166,31 @@ impl Sequence {
         }
     }
 
-    fn get_all_notes(&self) -> Vec<i32> {
-        let mut all_notes = std::collections::HashSet::new();
-        Self::collect_notes_from_elements(&self.elements, &mut all_notes);
-        let mut notes: Vec<i32> = all_notes.into_iter().collect();
-        notes.sort();
-        notes
-    }
+    // fn get_all_notes(&self) -> Vec<i32> {
+    //     let mut all_notes = std::collections::HashSet::new();
+    //     Self::collect_notes_from_elements(&self.elements, &mut all_notes);
+    //     let mut notes: Vec<i32> = all_notes.into_iter().collect();
+    //     notes.sort();
+    //     notes
+    // }
 
-    fn collect_notes_from_elements(
-        elements: &[SequenceElement],
-        all_notes: &mut std::collections::HashSet<i32>,
-    ) {
-        for element in elements {
-            match element {
-                SequenceElement::Chord(chord) => {
-                    for &note in &chord.notes {
-                        all_notes.insert(note);
-                    }
-                }
-                SequenceElement::Subdivision(sub_elements) => {
-                    Self::collect_notes_from_elements(sub_elements, all_notes);
-                }
-            }
-        }
-    }
+    // fn collect_notes_from_elements(
+    //     elements: &[SequenceElement],
+    //     all_notes: &mut std::collections::HashSet<i32>,
+    // ) {
+    //     for element in elements {
+    //         match element {
+    //             SequenceElement::Chord(chord) => {
+    //                 for &note in &chord.notes {
+    //                     all_notes.insert(note);
+    //                 }
+    //             }
+    //             SequenceElement::Subdivision(sub_elements) => {
+    //                 Self::collect_notes_from_elements(sub_elements, all_notes);
+    //             }
+    //         }
+    //     }
+    // }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

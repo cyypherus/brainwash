@@ -7,7 +7,8 @@ fn bench_adsr_basic_usage(c: &mut Criterion) {
         let mut trigger = false;
         b.iter(|| {
             trigger = !trigger;
-            let envelope = adsr(0)
+            let mut adsr = ADSR::default();
+            let envelope = adsr
                 .att(black_box(0.1))
                 .dec(black_box(0.2))
                 .sus(black_box(0.7))

@@ -20,23 +20,20 @@ impl AudioPlayer {
         Ok(AudioPlayer { device, config })
     }
 
-    pub fn play_live<F>(&self, synth_fn: F) -> Result<(), Box<dyn std::error::Error>>
-    where
-        F: FnMut(&mut Signal) + Send + 'static,
-    {
+    pub fn play_live(&self, synth: impl Synth) -> Result<(), Box<dyn std::error::Error>> {
         let signal = Arc::new(Mutex::new(Signal::new(self.config.sample_rate.0 as usize)));
         let channels = self.config.channels as usize;
 
-        let synth_fn = Arc::new(Mutex::new(synth_fn));
+        let synth = Arc::new(Mutex::new(synth));
 
         let stream = self.device.build_output_stream(
             &self.config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 let mut signal_lock = signal.lock().unwrap();
-                let mut synth_lock = synth_fn.lock().unwrap();
+                let mut synth = synth.lock().unwrap();
 
                 for frame in data.chunks_mut(channels) {
-                    synth_lock(&mut signal_lock);
+                    synth.output(&mut signal_lock);
 
                     let sample = signal_lock.get_current_sample();
 
@@ -60,12 +57,9 @@ impl AudioPlayer {
     }
 }
 
-pub fn play_live<F>(synth_fn: F) -> Result<(), Box<dyn std::error::Error>>
-where
-    F: FnMut(&mut Signal) + Send + 'static,
-{
+pub fn play_live(synth: impl Synth) -> Result<(), Box<dyn std::error::Error>> {
     let player = AudioPlayer::new()?;
-    player.play_live(synth_fn)
+    player.play_live(synth)
 }
 
 pub fn save_wav<F>(

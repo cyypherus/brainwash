@@ -5,7 +5,8 @@ fn bench_oscillator_basic_usage(c: &mut Criterion) {
     c.bench_function("oscillator_basic_usage", |b| {
         let mut signal = Signal::new(44100);
         b.iter(|| {
-            let osc = sin(0).pitch(black_box(60.0)).freq(black_box(440.0));
+            let mut sin = Sine::default();
+            let osc = sin.pitch(black_box(60.0)).freq(black_box(440.0));
             let output = osc.run(&mut signal).output();
             signal.advance();
             black_box(output);
