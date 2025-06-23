@@ -42,7 +42,7 @@ pub fn saw() -> Wave {
     Wave::SawUp
 }
 
-pub fn saw_d() -> Wave {
+pub fn rsaw() -> Wave {
     Wave::SawDown
 }
 
@@ -65,7 +65,7 @@ impl Osc {
         self
     }
 
-    pub fn phase(&mut self, p: f32) -> &mut Self {
+    pub fn phase_offset(&mut self, p: f32) -> &mut Self {
         self.phase_offset = p;
         self
     }
@@ -91,23 +91,13 @@ impl Osc {
         self
     }
 
-    pub fn play(&mut self, signal: &mut Signal) -> &mut Self {
-        self.calculate_time_based(signal);
-        signal.add_sample(self.computed_sample);
-        self
-    }
-
-    pub fn run(&mut self, signal: &mut Signal) -> &mut Self {
-        self.calculate_time_based(signal);
-        self
-    }
-
-    pub fn value_at(&mut self, phase: f32) -> &mut Self {
+    pub fn output_phase(&mut self, phase: f32) -> f32 {
         self.calculate_phase_based(phase);
-        self
+        self.computed_sample
     }
 
-    pub fn output(&mut self) -> f32 {
+    pub fn output(&mut self, signal: &mut Signal) -> f32 {
+        self.calculate_time_based(signal);
         self.computed_sample
     }
 

@@ -50,7 +50,7 @@ impl Scale {
 
 pub struct Sequence {
     elements: Vec<SequenceElement>,
-    // pub(crate) all_notes: Vec<i32>,
+    pub(crate) all_notes: Vec<i32>,
     pub(crate) last_chord_index: Option<usize>,
     pub(crate) active_notes: std::collections::HashSet<i32>,
     pub(crate) previous_notes: std::collections::HashSet<i32>,
@@ -62,7 +62,7 @@ impl Default for Sequence {
     fn default() -> Self {
         Self {
             elements: Vec::new(),
-            // all_notes: Vec::new(),
+            all_notes: Vec::new(),
             last_chord_index: None,
             active_notes: std::collections::HashSet::new(),
             previous_notes: std::collections::HashSet::new(),
@@ -99,7 +99,7 @@ impl Sequence {
         if self.elements.is_empty() {
             return Vec::new();
         }
-
+        self.all_notes = self.get_all_notes();
         if clock_position < self.last_clock_position {
             self.current_bar = ((self.current_bar + 1) as f32 % 1.) as usize;
         }
@@ -126,7 +126,7 @@ impl Sequence {
 
         let mut keys = Vec::with_capacity(self.active_notes.len());
         let mut on_index = 0;
-        for (index, &note) in self.active_notes.iter().enumerate() {
+        for (index, &note) in self.all_notes.iter().enumerate() {
             let was_on = self.previous_notes.contains(&note);
             let is_on = self.active_notes.contains(&note);
 
@@ -166,31 +166,31 @@ impl Sequence {
         }
     }
 
-    // fn get_all_notes(&self) -> Vec<i32> {
-    //     let mut all_notes = std::collections::HashSet::new();
-    //     Self::collect_notes_from_elements(&self.elements, &mut all_notes);
-    //     let mut notes: Vec<i32> = all_notes.into_iter().collect();
-    //     notes.sort();
-    //     notes
-    // }
+    fn get_all_notes(&self) -> Vec<i32> {
+        let mut all_notes = std::collections::HashSet::new();
+        Self::collect_notes_from_elements(&self.elements, &mut all_notes);
+        let mut notes: Vec<i32> = all_notes.into_iter().collect();
+        notes.sort();
+        notes
+    }
 
-    // fn collect_notes_from_elements(
-    //     elements: &[SequenceElement],
-    //     all_notes: &mut std::collections::HashSet<i32>,
-    // ) {
-    //     for element in elements {
-    //         match element {
-    //             SequenceElement::Chord(chord) => {
-    //                 for &note in &chord.notes {
-    //                     all_notes.insert(note);
-    //                 }
-    //             }
-    //             SequenceElement::Subdivision(sub_elements) => {
-    //                 Self::collect_notes_from_elements(sub_elements, all_notes);
-    //             }
-    //         }
-    //     }
-    // }
+    fn collect_notes_from_elements(
+        elements: &[SequenceElement],
+        all_notes: &mut std::collections::HashSet<i32>,
+    ) {
+        for element in elements {
+            match element {
+                SequenceElement::Chord(chord) => {
+                    for &note in &chord.notes {
+                        all_notes.insert(note);
+                    }
+                }
+                SequenceElement::Subdivision(sub_elements) => {
+                    Self::collect_notes_from_elements(sub_elements, all_notes);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

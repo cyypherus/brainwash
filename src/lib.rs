@@ -1,31 +1,31 @@
+mod allpass;
 mod audio;
 mod clock;
+mod comb;
+mod distortion;
 mod envelopes;
+#[cfg(feature = "graph")]
 mod graph;
 mod multimodule;
 mod oscillators;
 mod ramp;
+mod reverb;
 mod sequencing;
 mod signal;
 mod synth;
+mod utils;
 
 pub use audio::*;
 pub use clock::*;
+pub use distortion::*;
 pub use envelopes::*;
+#[cfg(feature = "graph")]
 pub use graph::*;
 pub use multimodule::*;
 pub use oscillators::*;
 pub use ramp::*;
+pub use reverb::*;
 pub use sequencing::*;
 pub use signal::*;
 pub use synth::*;
-
-pub mod utils {
-    pub fn midi_to_freq(note: f32) -> f32 {
-        440.0 * 2.0_f32.powf((note - 69.0) / 12.0)
-    }
-
-    pub fn note_to_freq(note: f32) -> f32 {
-        midi_to_freq(note + 60.0)
-    }
-}
+pub use utils::*;

@@ -27,25 +27,4 @@ impl Signal {
         self.position += 1;
         self.current_sample = 0.0;
     }
-
-    pub fn reset(&mut self) {
-        self.position = 0;
-        self.current_sample = 0.0;
-    }
-
-    pub fn get_current_sample(&self) -> f32 {
-        self.current_sample
-    }
-
-    pub fn set_global_volume(&mut self, volume: f32) {
-        self.global_volume = volume.max(0.0);
-    }
-
-    pub fn get_global_volume(&self) -> f32 {
-        self.global_volume
-    }
-
-    pub fn get_time_seconds(&self) -> f32 {
-        self.position as f32 / self.sample_rate as f32
-    }
 }

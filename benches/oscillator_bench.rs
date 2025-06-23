@@ -10,7 +10,7 @@ fn bench_oscillator_basic_usage(c: &mut Criterion) {
                 .wave(Wave::Sine)
                 .pitch(black_box(60.0))
                 .freq(black_box(440.0));
-            let output = osc.run(&mut signal).output();
+            let output = osc.output(&mut signal);
             signal.advance();
             black_box(output);
         });

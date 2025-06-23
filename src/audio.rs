@@ -33,9 +33,7 @@ impl AudioPlayer {
                 let mut synth = synth.lock().unwrap();
 
                 for frame in data.chunks_mut(channels) {
-                    synth.output(&mut signal_lock);
-
-                    let sample = signal_lock.get_current_sample();
+                    let sample = synth.limited(&mut signal_lock);
 
                     for channel_sample in frame.iter_mut() {
                         *channel_sample = sample;
@@ -62,15 +60,12 @@ pub fn play_live(synth: impl Synth) -> Result<(), Box<dyn std::error::Error>> {
     player.play_live(synth)
 }
 
-pub fn save_wav<F>(
-    mut synth_fn: F,
+pub fn save_wav(
+    mut synth: impl Synth,
     filename: &str,
     duration_seconds: f32,
     sample_rate: usize,
-) -> Result<(), Box<dyn std::error::Error>>
-where
-    F: FnMut(&mut Signal),
-{
+) -> Result<(), Box<dyn std::error::Error>> {
     let spec = hound::WavSpec {
         channels: 2,
         sample_rate: sample_rate as u32,
@@ -83,8 +78,7 @@ where
     let total_samples = (duration_seconds * sample_rate as f32) as usize;
 
     for _ in 0..total_samples {
-        synth_fn(&mut signal);
-        let sample = signal.get_current_sample();
+        let sample = synth.limited(&mut signal);
         writer.write_sample(sample)?; // Left channel
         writer.write_sample(sample)?; // Right channel
         signal.advance();

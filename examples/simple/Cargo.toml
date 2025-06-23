@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-brainwash = { path = "../../" }
+brainwash = { path = "../../", features = ["graph"] }
 dioxus-devtools = { version = "0.7.0-alpha.1" }
 
 [profile]

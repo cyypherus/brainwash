@@ -1,4 +1,4 @@
-use crate::Signal;
+use crate::{Signal, Synth};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -364,10 +364,7 @@ impl GraphApp {
     }
 }
 
-pub fn graph<F>(synth_fn: F) -> Result<(), Box<dyn std::error::Error>>
-where
-    F: FnMut(&mut Signal) + Send + 'static,
-{
+pub fn graph(synth: impl Synth) -> Result<(), Box<dyn std::error::Error>> {
     let (tx, rx) = mpsc::channel();
     let (deadline_tx, deadline_rx) = mpsc::channel();
 
@@ -404,7 +401,7 @@ where
                 let channels = config.channels() as usize;
 
                 let signal = Arc::new(Mutex::new(Signal::new(config.sample_rate().0 as usize)));
-                let synth_fn = Arc::new(Mutex::new(synth_fn));
+                let synth_fn = Arc::new(Mutex::new(synth));
 
                 let stream = device.build_output_stream(
                     &config.into(),
@@ -420,8 +417,7 @@ where
                             for frame in data.chunks_mut(channels) {
                                 let start_time = Instant::now();
 
-                                synth_lock(&mut signal_lock);
-                                let sample = signal_lock.get_current_sample();
+                                let sample = synth_lock.limited(&mut signal_lock);
 
                                 for channel_sample in frame.iter_mut() {
                                     *channel_sample = sample;
