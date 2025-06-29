@@ -16,7 +16,7 @@ pub struct Osc {
     frequency: f32,
     attenuation: f32,
     phase_offset: f32,
-    is_bipolar: bool,
+    unipolar: bool,
     pub(crate) phase_accumulator: u32,
 }
 
@@ -55,7 +55,7 @@ impl Osc {
             attenuation: 1.0,
             phase_offset: 0.0,
             computed_sample: 0.0,
-            is_bipolar: false,
+            unipolar: false,
             phase_accumulator: 0,
         }
     }
@@ -86,8 +86,8 @@ impl Osc {
         self
     }
 
-    pub fn bipolar(&mut self) -> &mut Self {
-        self.is_bipolar = true;
+    pub fn unipolar(&mut self) -> &mut Self {
+        self.unipolar = true;
         self
     }
 
@@ -118,18 +118,18 @@ impl Osc {
         let sample = match self.wave_type {
             Wave::Sine => {
                 let bipolar_sample = (adjusted_phase * 2.0 * std::f32::consts::PI).sin();
-                if self.is_bipolar {
-                    bipolar_sample
-                } else {
+                if self.unipolar {
                     (bipolar_sample + 1.0) * 0.5
+                } else {
+                    bipolar_sample
                 }
             }
             Wave::Square => {
                 let bipolar_sample = if adjusted_phase < 0.5 { 1.0 } else { -1.0 };
-                if self.is_bipolar {
-                    bipolar_sample
-                } else {
+                if self.unipolar {
                     (bipolar_sample + 1.0) * 0.5
+                } else {
+                    bipolar_sample
                 }
             }
             Wave::Triangle => {
@@ -138,26 +138,26 @@ impl Osc {
                 } else {
                     3.0 - 4.0 * adjusted_phase
                 };
-                if self.is_bipolar {
-                    bipolar_sample
-                } else {
+                if self.unipolar {
                     (bipolar_sample + 1.0) * 0.5
+                } else {
+                    bipolar_sample
                 }
             }
             Wave::SawUp => {
                 let bipolar_sample = -1.0 + 2.0 * adjusted_phase;
-                if self.is_bipolar {
-                    bipolar_sample
-                } else {
+                if self.unipolar {
                     (bipolar_sample + 1.0) * 0.5
+                } else {
+                    bipolar_sample
                 }
             }
             Wave::SawDown => {
                 let bipolar_sample = 1.0 - 2.0 * adjusted_phase;
-                if self.is_bipolar {
-                    bipolar_sample
-                } else {
+                if self.unipolar {
                     (bipolar_sample + 1.0) * 0.5
+                } else {
+                    bipolar_sample
                 }
             }
         };

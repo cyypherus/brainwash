@@ -25,11 +25,9 @@ impl<T: Default, U: Default, const N: usize> MultiModule<T, U, N> {
             if key.on {
                 let on_module = &mut self.on_modules[on_i];
                 f(module, Some(on_module), key);
+                on_i += 1;
             } else {
                 f(module, None, key);
-            }
-            if i == on_i {
-                on_i += 1;
             }
             i += 1;
         }

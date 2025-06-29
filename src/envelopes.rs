@@ -12,6 +12,7 @@ pub struct ADSR {
     trigger: bool,
     pub(crate) trigger_time: Option<usize>,
     pub(crate) release_time: Option<usize>,
+    retrigger_start_value: f32,
 }
 
 impl Default for ADSR {
@@ -28,6 +29,7 @@ impl Default for ADSR {
             trigger: false,
             trigger_time: None,
             release_time: None,
+            retrigger_start_value: 0.0,
         }
     }
 }
@@ -86,11 +88,18 @@ impl ADSR {
             (true, None, _) => {
                 self.trigger_time = Some(current_time);
                 self.release_time = None;
+                self.retrigger_start_value = 0.0;
             }
             (false, Some(_), None) => {
                 self.release_time = Some(current_time);
             }
-            (true, _, Some(_)) => {
+            (true, _, Some(release)) => {
+                let trigger_elapsed = (release - self.trigger_time.unwrap()) as f32 / sample_rate;
+                let release_elapsed = (current_time - release) as f32 / sample_rate;
+                let release_start_value = self.calculate_envelope_value(trigger_elapsed);
+                let release_progress = (release_elapsed / self.release).min(1.0);
+                let curved_progress = self.apply_curve(release_progress, self.release_curve);
+                self.retrigger_start_value = release_start_value * (1.0 - curved_progress);
                 self.trigger_time = Some(current_time);
                 self.release_time = None;
             }
@@ -124,7 +133,8 @@ impl ADSR {
     fn calculate_envelope_value(&self, elapsed: f32) -> f32 {
         if elapsed < self.attack {
             let t = elapsed / self.attack;
-            self.apply_curve(t, self.attack_curve)
+            let curved_t = self.apply_curve(t, self.attack_curve);
+            self.retrigger_start_value + (1.0 - self.retrigger_start_value) * curved_t
         } else if elapsed < self.attack + self.decay {
             let decay_progress = (elapsed - self.attack) / self.decay;
             let curved_progress = self.apply_curve(decay_progress, self.decay_curve);

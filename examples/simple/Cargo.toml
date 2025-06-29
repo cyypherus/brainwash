@@ -4,5 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-brainwash = { path = "../../", features = ["live"] }
+brainwash = { path = "../../", features = ["live", "wav"] }
 dioxus-devtools = { version = "0.7.0-alpha.1" }
+
+[profile]
+
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 1
+
+[profile.server-dev]
+inherits = "dev"
+
+[profile.android-dev]
+inherits = "dev"

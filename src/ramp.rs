@@ -1,8 +1,9 @@
 use crate::Signal;
 
+#[derive(Debug)]
 pub struct Ramp {
     ramp_time: f32,
-    target: f32,
+    new_target: f32,
     pub(crate) current_value: Option<f32>,
     pub(crate) target_value: f32,
     pub(crate) start_value: f32,
@@ -13,7 +14,7 @@ impl Default for Ramp {
     fn default() -> Self {
         Ramp {
             ramp_time: 0.1,
-            target: 0.0,
+            new_target: 0.0,
             current_value: None,
             target_value: 0.0,
             start_value: 0.0,
@@ -29,7 +30,7 @@ impl Ramp {
     }
 
     pub fn value(&mut self, target: f32) -> &mut Self {
-        self.target = target;
+        self.new_target = target;
         self
     }
 
@@ -38,13 +39,13 @@ impl Ramp {
         let sample_rate = signal.sample_rate as f32;
 
         let Some(ref mut current_value) = self.current_value else {
-            self.current_value = Some(self.target);
+            self.current_value = Some(self.new_target);
             return self.target_value;
         };
 
-        if (self.target_value - self.target).abs() > f32::EPSILON {
+        if (self.target_value - self.new_target).abs() > f32::EPSILON {
             self.start_value = *current_value;
-            self.target_value = self.target;
+            self.target_value = self.new_target;
             self.start_time = Some(current_time);
         }
 
@@ -56,8 +57,9 @@ impl Ramp {
                 self.start_time = None;
             } else {
                 let progress = elapsed / self.ramp_time;
-                *current_value =
+                let new_value =
                     self.start_value + (self.target_value - self.start_value) * progress;
+                *current_value = new_value;
             }
         }
 

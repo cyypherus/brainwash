@@ -33,6 +33,10 @@ impl Clock {
         let bars_per_second = beats_per_second / 4.0;
         let frequency = bars_per_second / self.bars;
 
-        self.osc.wave(Wave::SawUp).freq(frequency).output(signal)
+        self.osc
+            .wave(Wave::SawUp)
+            .unipolar()
+            .freq(frequency)
+            .output(signal)
     }
 }

@@ -1,10 +1,10 @@
 use crate::Signal;
 
 pub fn save_wav(
-    mut synth: impl FnMut(&mut Signal) -> f32 + Send + 'static,
     filename: &str,
     duration_seconds: f32,
     sample_rate: usize,
+    mut synth: impl FnMut(&mut Signal) -> f32 + Send + 'static,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let spec = hound::WavSpec {
         channels: 2,

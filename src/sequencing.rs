@@ -88,6 +88,7 @@ pub enum SequenceValue {
 pub fn bar(v: ChordValue) -> SequenceValue {
     SequenceValue::Bar(Some(v))
 }
+
 fn slice_to_seq_value<const N: usize>(elements: [ChordValue; N]) -> SequenceValue {
     match N {
         2 => SequenceValue::Half([Some(elements[0]), Some(elements[1])]),

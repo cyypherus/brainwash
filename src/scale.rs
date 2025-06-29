@@ -21,7 +21,7 @@ impl Scale {
             index / scale_len
         };
         let wrapped_index = ((index % scale_len) + scale_len) % scale_len;
-        self.notes[wrapped_index as usize] + octave_offset * 12
+        (self.notes[wrapped_index as usize] + self.shift) + octave_offset * 12
     }
 }
 
