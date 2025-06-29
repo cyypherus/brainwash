@@ -3,8 +3,6 @@ use dioxus_devtools::{connect_subsecond, subsecond};
 
 fn main() {
     connect_subsecond();
-    // save_wav(synth, "test.wav", 5., 44100).expect("Error saving audio");
-    // graph(synth).expect("Error with graph");
     let mut seq = Sequence::default();
     let mut clock = Clock::default();
     let mut mm = MultiModule::<(ADSR, Osc), (), 28>::default();

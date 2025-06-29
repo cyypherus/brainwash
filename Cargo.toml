@@ -8,40 +8,33 @@ name = "brainwash"
 path = "src/lib.rs"
 
 [features]
-default = []
-graph = ["ratatui"]
+default = ["tui"]
+live = ["cpal"]
+wav = ["hound"]
+tui = ["live", "ratatui", "crossterm"]
 
 [[example]]
 name = "simple"
 path = "examples/simple/src/main.rs"
 
 [dependencies]
-cpal = "0.15"
-hound = "3.5"
-ratatui = { version = "0.29.0", optional = true }
-crossterm = "0.29.0"
 assert_no_alloc = { git = "https://github.com/Windfisch/rust-assert-no-alloc.git", rev = "d31f2d5f550ce339d1c2f0c1ab7da951224b20df", default-features = false, features = [
     "backtrace",
 ] }
 
+#LIVE
+cpal = { version = "0.15", optional = true }
+
+# WAV
+hound = { version = "3.5", optional = true }
+
+# TUI
+ratatui = { version = "0.29.0", optional = true }
+crossterm = { version = "0.29.0", optional = true }
+
 [dev-dependencies]
 dioxus-devtools = { version = "0.7.0-alpha.1" }
 criterion = { version = "0.5", features = ["html_reports"] }
-
-[profile]
-
-[profile.wasm-dev]
-inherits = "dev"
-opt-level = 1
-
-[profile.server-dev]
-inherits = "dev"
-
-[profile.android-dev]
-inherits = "dev"
-
-[profile.release]
-debug = true
 
 [[bin]]
 name = "generate_wavetables"
