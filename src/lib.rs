@@ -3,6 +3,7 @@ mod clock;
 mod comb;
 mod distortion;
 mod envelopes;
+mod filters;
 #[cfg(feature = "live")]
 mod live;
 mod multimodule;
@@ -21,6 +22,7 @@ mod wav;
 pub use clock::*;
 pub use distortion::*;
 pub use envelopes::*;
+pub use filters::*;
 #[cfg(feature = "live")]
 pub use live::*;
 pub use multimodule::*;

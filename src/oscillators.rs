@@ -7,6 +7,7 @@ pub enum Wave {
     Triangle,
     SawUp,
     SawDown,
+    WhiteNoise,
 }
 
 pub struct Osc {
@@ -18,6 +19,7 @@ pub struct Osc {
     phase_offset: f32,
     unipolar: bool,
     pub(crate) phase_accumulator: u32,
+    noise_seed: u32,
 }
 
 impl Default for Osc {
@@ -46,6 +48,10 @@ pub fn rsaw() -> Wave {
     Wave::SawDown
 }
 
+pub fn noise() -> Wave {
+    Wave::WhiteNoise
+}
+
 impl Osc {
     fn new(wave_type: Wave) -> Self {
         Self {
@@ -57,6 +63,7 @@ impl Osc {
             computed_sample: 0.0,
             unipolar: false,
             phase_accumulator: 0,
+            noise_seed: 22222,
         }
     }
 
@@ -154,6 +161,18 @@ impl Osc {
             }
             Wave::SawDown => {
                 let bipolar_sample = 1.0 - 2.0 * adjusted_phase;
+                if self.unipolar {
+                    (bipolar_sample + 1.0) * 0.5
+                } else {
+                    bipolar_sample
+                }
+            }
+            Wave::WhiteNoise => {
+                self.noise_seed = self
+                    .noise_seed
+                    .wrapping_mul(196314165)
+                    .wrapping_add(907633515);
+                let bipolar_sample = (self.noise_seed as f32 / u32::MAX as f32) * 2.0 - 1.0;
                 if self.unipolar {
                     (bipolar_sample + 1.0) * 0.5
                 } else {
