@@ -4,12 +4,12 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 fn bench_sequence_basic_usage(c: &mut Criterion) {
     c.bench_function("sequence_basic_usage", |b| {
         let mut seq = Sequence::default();
-        seq.elements(vec![
-            chord([60, 64, 67]),
+        seq.elements(chords([
+            tri([60, 64, 67]),
             note(62),
-            chord([59, 62, 66]),
+            tri([60, 64, 67]),
             rest(),
-        ]);
+        ]));
         let mut position = 0.0;
 
         b.iter(|| {

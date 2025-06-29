@@ -3,6 +3,12 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, StreamConfig};
 use std::sync::{Arc, Mutex};
 
+use assert_no_alloc::*;
+
+#[cfg(debug_assertions)] // required when disable_release is set (default)
+#[global_allocator]
+static A: AllocDisabler = AllocDisabler;
+
 pub struct AudioPlayer {
     device: Device,
     config: StreamConfig,
@@ -20,7 +26,10 @@ impl AudioPlayer {
         Ok(AudioPlayer { device, config })
     }
 
-    pub fn play_live(&self, synth: impl Synth) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn play_live(
+        &self,
+        synth: impl FnMut(&mut Signal) -> f32 + Send + 'static,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let signal = Arc::new(Mutex::new(Signal::new(self.config.sample_rate.0 as usize)));
         let channels = self.config.channels as usize;
 
@@ -33,7 +42,7 @@ impl AudioPlayer {
                 let mut synth = synth.lock().unwrap();
 
                 for frame in data.chunks_mut(channels) {
-                    let sample = synth.limited(&mut signal_lock);
+                    let sample = assert_no_alloc(|| synth(&mut signal_lock).clamp(-1., 1.));
 
                     for channel_sample in frame.iter_mut() {
                         *channel_sample = sample;
@@ -55,7 +64,9 @@ impl AudioPlayer {
     }
 }
 
-pub fn play_live(synth: impl Synth) -> Result<(), Box<dyn std::error::Error>> {
+pub fn play_live(
+    synth: impl FnMut(&mut Signal) -> f32 + Send + 'static,
+) -> Result<(), Box<dyn std::error::Error>> {
     let player = AudioPlayer::new()?;
     player.play_live(synth)
 }

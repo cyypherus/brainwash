@@ -17,7 +17,7 @@ impl<T: Default, U: Default, const N: usize> Default for MultiModule<T, U, N> {
 }
 
 impl<T: Default, U: Default, const N: usize> MultiModule<T, U, N> {
-    pub fn per_key(&mut self, keys: Vec<Key>, mut f: impl FnMut(&mut T, Option<&mut U>, Key)) {
+    pub fn per_key(&mut self, keys: &Vec<Key>, mut f: impl FnMut(&mut T, Option<&mut U>, &Key)) {
         let mut i = 0;
         let mut on_i = 0;
         for key in keys {
