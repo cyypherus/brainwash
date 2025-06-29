@@ -16,12 +16,12 @@ fn main() {
             let clock = clock.bpm(bpm).bars(base_bars).output(s);
             let cmin = scale.shift(-6);
             let sq = seq
-                .elements(chords([
+                .elements([
                     tri([cmin.note(0), cmin.note(2), cmin.note(4)]),
                     tri([cmin.note(-1), cmin.note(2), cmin.note(4)]),
                     tri([cmin.note(-2), cmin.note(2), cmin.note(3)]),
                     tet([cmin.note(-2), cmin.note(0), cmin.note(2), cmin.note(4)]),
-                ]))
+                ])
                 .output(clock);
             let mut output = 0.;
 
