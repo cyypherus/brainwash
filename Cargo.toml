@@ -43,6 +43,10 @@ inherits = "dev"
 [profile.release]
 debug = true
 
+[[bin]]
+name = "generate_wavetables"
+path = "src/bin/generate_wavetables.rs"
+
 [[bench]]
 name = "sequence_bench"
 harness = false
