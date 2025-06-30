@@ -89,7 +89,7 @@ impl Osc {
     }
 
     pub fn atten(&mut self, a: f32) -> &mut Self {
-        self.attenuation = a;
+        self.attenuation = a.clamp(0., 1.);
         self
     }
 

@@ -71,42 +71,43 @@ impl ChordValue {
 }
 
 pub enum SequenceValue {
-    Bar(Option<ChordValue>),
-    Half([Option<ChordValue>; 2]),
-    Third([Option<ChordValue>; 3]),
-    Quarter([Option<ChordValue>; 4]),
-    Fifth([Option<ChordValue>; 5]),
-    Sixth([Option<ChordValue>; 6]),
-    Seventh([Option<ChordValue>; 7]),
-    Eighth([Option<ChordValue>; 8]),
-    Ninth([Option<ChordValue>; 9]),
-    Tenth([Option<ChordValue>; 10]),
-    Twelfth([Option<ChordValue>; 12]),
-    Sixteenth([Option<ChordValue>; 16]),
+    Seq1(Option<ChordValue>),
+    Seq2([Option<ChordValue>; 2]),
+    Seq3([Option<ChordValue>; 3]),
+    Seq4([Option<ChordValue>; 4]),
+    Seq5([Option<ChordValue>; 5]),
+    Seq6([Option<ChordValue>; 6]),
+    Seq7([Option<ChordValue>; 7]),
+    Seq8([Option<ChordValue>; 8]),
+    Seq9([Option<ChordValue>; 9]),
+    Seq10([Option<ChordValue>; 10]),
+    Seq12([Option<ChordValue>; 12]),
+    Seq16([Option<ChordValue>; 16]),
 }
 
 pub fn bar(v: ChordValue) -> SequenceValue {
-    SequenceValue::Bar(Some(v))
+    SequenceValue::Seq1(Some(v))
 }
 
 fn slice_to_seq_value<const N: usize>(elements: [ChordValue; N]) -> SequenceValue {
     match N {
-        2 => SequenceValue::Half([Some(elements[0]), Some(elements[1])]),
-        3 => SequenceValue::Third([Some(elements[0]), Some(elements[1]), Some(elements[2])]),
-        4 => SequenceValue::Quarter([
+        1 => SequenceValue::Seq1(Some(elements[0])),
+        2 => SequenceValue::Seq2([Some(elements[0]), Some(elements[1])]),
+        3 => SequenceValue::Seq3([Some(elements[0]), Some(elements[1]), Some(elements[2])]),
+        4 => SequenceValue::Seq4([
             Some(elements[0]),
             Some(elements[1]),
             Some(elements[2]),
             Some(elements[3]),
         ]),
-        5 => SequenceValue::Fifth([
+        5 => SequenceValue::Seq5([
             Some(elements[0]),
             Some(elements[1]),
             Some(elements[2]),
             Some(elements[3]),
             Some(elements[4]),
         ]),
-        6 => SequenceValue::Sixth([
+        6 => SequenceValue::Seq6([
             Some(elements[0]),
             Some(elements[1]),
             Some(elements[2]),
@@ -114,7 +115,7 @@ fn slice_to_seq_value<const N: usize>(elements: [ChordValue; N]) -> SequenceValu
             Some(elements[4]),
             Some(elements[5]),
         ]),
-        7 => SequenceValue::Seventh([
+        7 => SequenceValue::Seq7([
             Some(elements[0]),
             Some(elements[1]),
             Some(elements[2]),
@@ -123,7 +124,7 @@ fn slice_to_seq_value<const N: usize>(elements: [ChordValue; N]) -> SequenceValu
             Some(elements[5]),
             Some(elements[6]),
         ]),
-        8 => SequenceValue::Eighth([
+        8 => SequenceValue::Seq8([
             Some(elements[0]),
             Some(elements[1]),
             Some(elements[2]),
@@ -133,7 +134,7 @@ fn slice_to_seq_value<const N: usize>(elements: [ChordValue; N]) -> SequenceValu
             Some(elements[6]),
             Some(elements[7]),
         ]),
-        9 => SequenceValue::Ninth([
+        9 => SequenceValue::Seq9([
             Some(elements[0]),
             Some(elements[1]),
             Some(elements[2]),
@@ -144,7 +145,7 @@ fn slice_to_seq_value<const N: usize>(elements: [ChordValue; N]) -> SequenceValu
             Some(elements[7]),
             Some(elements[8]),
         ]),
-        10 => SequenceValue::Tenth([
+        10 => SequenceValue::Seq10([
             Some(elements[0]),
             Some(elements[1]),
             Some(elements[2]),
@@ -156,7 +157,7 @@ fn slice_to_seq_value<const N: usize>(elements: [ChordValue; N]) -> SequenceValu
             Some(elements[8]),
             Some(elements[9]),
         ]),
-        12 => SequenceValue::Twelfth([
+        12 => SequenceValue::Seq12([
             Some(elements[0]),
             Some(elements[1]),
             Some(elements[2]),
@@ -170,7 +171,7 @@ fn slice_to_seq_value<const N: usize>(elements: [ChordValue; N]) -> SequenceValu
             Some(elements[10]),
             Some(elements[11]),
         ]),
-        16 => SequenceValue::Sixteenth([
+        16 => SequenceValue::Seq16([
             Some(elements[0]),
             Some(elements[1]),
             Some(elements[2]),
@@ -188,7 +189,7 @@ fn slice_to_seq_value<const N: usize>(elements: [ChordValue; N]) -> SequenceValu
             Some(elements[14]),
             Some(elements[15]),
         ]),
-        _ => panic!("Unsupported sequence length"),
+        _ => panic!("Unsupported sequence length {}", elements.len()),
     }
 }
 
@@ -207,7 +208,7 @@ pub struct Sequence {
 impl Default for Sequence {
     fn default() -> Self {
         Self {
-            elements: SequenceValue::Bar(None),
+            elements: SequenceValue::Seq1(None),
             all_notes: Vec::with_capacity(64),
             last_chord_index: None,
             active_notes: std::collections::HashSet::with_capacity(16),
@@ -282,48 +283,48 @@ impl Sequence {
         let pos = position % 1.0;
 
         match &self.elements {
-            SequenceValue::Bar(val) => (0, *val),
-            SequenceValue::Half(arr) => {
+            SequenceValue::Seq1(val) => (0, *val),
+            SequenceValue::Seq2(arr) => {
                 let index = (pos * 2.0) as usize % 2;
                 (index, arr[index])
             }
-            SequenceValue::Third(arr) => {
+            SequenceValue::Seq3(arr) => {
                 let index = (pos * 3.0) as usize % 3;
                 (index, arr[index])
             }
-            SequenceValue::Quarter(arr) => {
+            SequenceValue::Seq4(arr) => {
                 let index = (pos * 4.0) as usize % 4;
                 (index, arr[index])
             }
-            SequenceValue::Fifth(arr) => {
+            SequenceValue::Seq5(arr) => {
                 let index = (pos * 5.0) as usize % 5;
                 (index, arr[index])
             }
-            SequenceValue::Sixth(arr) => {
+            SequenceValue::Seq6(arr) => {
                 let index = (pos * 6.0) as usize % 6;
                 (index, arr[index])
             }
-            SequenceValue::Seventh(arr) => {
+            SequenceValue::Seq7(arr) => {
                 let index = (pos * 7.0) as usize % 7;
                 (index, arr[index])
             }
-            SequenceValue::Eighth(arr) => {
+            SequenceValue::Seq8(arr) => {
                 let index = (pos * 8.0) as usize % 8;
                 (index, arr[index])
             }
-            SequenceValue::Ninth(arr) => {
+            SequenceValue::Seq9(arr) => {
                 let index = (pos * 9.0) as usize % 9;
                 (index, arr[index])
             }
-            SequenceValue::Sixteenth(arr) => {
+            SequenceValue::Seq16(arr) => {
                 let index = (pos * 16.0) as usize % 16;
                 (index, arr[index])
             }
-            SequenceValue::Tenth(arr) => {
+            SequenceValue::Seq10(arr) => {
                 let index = (pos * 10.0) as usize % 10;
                 (index, arr[index])
             }
-            SequenceValue::Twelfth(arr) => {
+            SequenceValue::Seq12(arr) => {
                 let index = (pos * 12.0) as usize % 12;
                 (index, arr[index])
             }
@@ -341,84 +342,84 @@ impl Sequence {
 
     fn collect_notes_from_sequence(&mut self) {
         match &self.elements {
-            SequenceValue::Bar(val) => {
+            SequenceValue::Seq1(val) => {
                 if let Some(chord_value) = val {
                     chord_value.for_each_note(|note| {
                         self.all_notes_set.insert(note);
                     });
                 }
             }
-            SequenceValue::Half(arr) => {
+            SequenceValue::Seq2(arr) => {
                 for chord_value in arr.iter().flatten() {
                     chord_value.for_each_note(|note| {
                         self.all_notes_set.insert(note);
                     });
                 }
             }
-            SequenceValue::Third(arr) => {
+            SequenceValue::Seq3(arr) => {
                 for chord_value in arr.iter().flatten() {
                     chord_value.for_each_note(|note| {
                         self.all_notes_set.insert(note);
                     });
                 }
             }
-            SequenceValue::Quarter(arr) => {
+            SequenceValue::Seq4(arr) => {
                 for chord_value in arr.iter().flatten() {
                     chord_value.for_each_note(|note| {
                         self.all_notes_set.insert(note);
                     });
                 }
             }
-            SequenceValue::Fifth(arr) => {
+            SequenceValue::Seq5(arr) => {
                 for chord_value in arr.iter().flatten() {
                     chord_value.for_each_note(|note| {
                         self.all_notes_set.insert(note);
                     });
                 }
             }
-            SequenceValue::Sixth(arr) => {
+            SequenceValue::Seq6(arr) => {
                 for chord_value in arr.iter().flatten() {
                     chord_value.for_each_note(|note| {
                         self.all_notes_set.insert(note);
                     });
                 }
             }
-            SequenceValue::Seventh(arr) => {
+            SequenceValue::Seq7(arr) => {
                 for chord_value in arr.iter().flatten() {
                     chord_value.for_each_note(|note| {
                         self.all_notes_set.insert(note);
                     });
                 }
             }
-            SequenceValue::Eighth(arr) => {
+            SequenceValue::Seq8(arr) => {
                 for chord_value in arr.iter().flatten() {
                     chord_value.for_each_note(|note| {
                         self.all_notes_set.insert(note);
                     });
                 }
             }
-            SequenceValue::Ninth(arr) => {
+            SequenceValue::Seq9(arr) => {
                 for chord_value in arr.iter().flatten() {
                     chord_value.for_each_note(|note| {
                         self.all_notes_set.insert(note);
                     });
                 }
             }
-            SequenceValue::Tenth(arr) => {
+            SequenceValue::Seq10(arr) => {
                 for chord_value in arr.iter().flatten() {
                     chord_value.for_each_note(|note| {
                         self.all_notes_set.insert(note);
                     });
                 }
             }
-            SequenceValue::Twelfth(arr) => {
+            SequenceValue::Seq12(arr) => {
                 for chord_value in arr.iter().flatten() {
                     chord_value.for_each_note(|note| {
                         self.all_notes_set.insert(note);
                     });
                 }
             }
-            SequenceValue::Sixteenth(arr) => {
+            SequenceValue::Seq16(arr) => {
                 for chord_value in arr.iter().flatten() {
                     chord_value.for_each_note(|note| {
                         self.all_notes_set.insert(note);
