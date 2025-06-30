@@ -10,7 +10,7 @@ fn main() {
     let mut reverb = Reverb::default();
     let mut lpf = LowpassFilter::default();
     let mut seq2 = Sequence::default();
-    let mut bank2 = Bank::<(ADSR, Osc, Osc), (), 28>::default();
+    let mut bank2 = Bank::<(ADSR, Osc, Osc, Osc), (), 28>::default();
     let mut wn = Osc::default();
     let mut sin_clock = Osc::default();
     let mut tri_clock = Osc::default();
@@ -77,7 +77,7 @@ fn main() {
                 );
 
             let wn = wn.output(s);
-            bank2.per_key(sq, |(adsr1, osc1, osc2), _, key| {
+            bank2.per_key(sq, |(adsr1, osc1, osc2, osc3), _, key| {
                 let env = adsr1.att(0.05).dec(0.1).sus(0.4).trigger(key.on).output(s);
                 let md = osc2
                     .wave(square())
@@ -88,10 +88,14 @@ fn main() {
                     * env;
                 let signal = osc1
                     .wave(sin())
-                    .pitch(key.pitch + 12. + md + wn)
+                    .pitch(key.pitch + 24. + md + wn)
                     .atten(env)
                     .output(s)
-                    * 2.;
+                    + osc3
+                        .wave(triangle())
+                        .pitch(key.pitch + 12.)
+                        .atten(env)
+                        .output(s);
                 output += signal;
             });
 
