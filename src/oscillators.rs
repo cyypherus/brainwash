@@ -67,8 +67,33 @@ impl Osc {
         }
     }
 
-    pub fn wave(&mut self, wave_type: Wave) -> &mut Self {
-        self.wave_type = wave_type;
+    pub fn saw(&mut self) -> &mut Self {
+        self.wave_type = saw();
+        self
+    }
+
+    pub fn rsaw(&mut self) -> &mut Self {
+        self.wave_type = rsaw();
+        self
+    }
+
+    pub fn tri(&mut self) -> &mut Self {
+        self.wave_type = triangle();
+        self
+    }
+
+    pub fn square(&mut self) -> &mut Self {
+        self.wave_type = square();
+        self
+    }
+
+    pub fn sin(&mut self) -> &mut Self {
+        self.wave_type = sin();
+        self
+    }
+
+    pub fn noise(&mut self) -> &mut Self {
+        self.wave_type = noise();
         self
     }
 
@@ -88,7 +113,7 @@ impl Osc {
         self
     }
 
-    pub fn atten(&mut self, a: f32) -> &mut Self {
+    pub fn gain(&mut self, a: f32) -> &mut Self {
         self.attenuation = a.clamp(0., 1.);
         self
     }

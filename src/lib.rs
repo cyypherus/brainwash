@@ -1,3 +1,10 @@
+#[global_allocator]
+static A: rlsf::GlobalTlsf = rlsf::GlobalTlsf::new();
+
+#[cfg(all(debug_assertions, feature = "no-alloc"))]
+#[global_allocator]
+static A: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+
 mod allpass;
 mod clock;
 mod comb;
@@ -6,13 +13,13 @@ mod envelopes;
 mod filters;
 #[cfg(feature = "live")]
 mod live;
-mod multimodule;
+mod keyboard;
 mod oscillators;
 mod ramp;
 mod reverb;
 mod scale;
-mod sequencing;
 mod signal;
+mod track;
 #[cfg(feature = "tui")]
 mod tui;
 mod utils;
@@ -25,13 +32,13 @@ pub use envelopes::*;
 pub use filters::*;
 #[cfg(feature = "live")]
 pub use live::*;
-pub use multimodule::*;
+pub use keyboard::*;
 pub use oscillators::*;
 pub use ramp::*;
 pub use reverb::*;
 pub use scale::*;
-pub use sequencing::*;
 pub use signal::*;
+pub use track::*;
 #[cfg(feature = "tui")]
 pub use tui::*;
 pub use utils::*;

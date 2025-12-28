@@ -26,15 +26,19 @@ impl Scale {
 }
 
 pub fn cmaj() -> Scale {
-    Scale {
+    let mut scale = Scale {
         notes: [0, 2, 4, 5, 7, 9, 11],
         shift: 0,
-    }
+    };
+    scale.shift(52);
+    scale
 }
 
 pub fn cmin() -> Scale {
-    Scale {
+    let mut scale = Scale {
         notes: [0, 2, 3, 5, 7, 8, 10],
         shift: 0,
-    }
+    };
+    scale.shift(52);
+    scale
 }

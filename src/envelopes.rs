@@ -1,7 +1,6 @@
-use crate::Signal;
+use crate::{Signal, KeyState};
 
 pub struct ADSR {
-    index: usize,
     attack: f32,
     decay: f32,
     sustain: f32,
@@ -9,16 +8,12 @@ pub struct ADSR {
     attack_curve: f32,
     decay_curve: f32,
     release_curve: f32,
-    trigger: bool,
-    pub(crate) trigger_time: Option<usize>,
-    pub(crate) release_time: Option<usize>,
     retrigger_start_value: f32,
 }
 
 impl Default for ADSR {
     fn default() -> Self {
         ADSR {
-            index: 0,
             attack: 0.01,
             decay: 0.1,
             sustain: 0.7,
@@ -26,9 +21,6 @@ impl Default for ADSR {
             attack_curve: 0.0,
             decay_curve: 0.0,
             release_curve: 0.0,
-            trigger: false,
-            trigger_time: None,
-            release_time: None,
             retrigger_start_value: 0.0,
         }
     }
@@ -70,58 +62,24 @@ impl ADSR {
         self
     }
 
-    pub fn trigger(&mut self, trigger: bool) -> &mut Self {
-        self.trigger = trigger;
-        self
-    }
-
-    pub fn index(&mut self, id: usize) -> &mut Self {
-        self.index = id;
-        self
-    }
-
-    pub fn output(&mut self, signal: &mut Signal) -> f32 {
+    pub fn output(&self, key_state: KeyState, signal: &Signal) -> f32 {
         let current_time = signal.position;
         let sample_rate = signal.sample_rate as f32;
 
-        match (self.trigger, self.trigger_time, self.release_time) {
-            (true, None, _) => {
-                self.trigger_time = Some(current_time);
-                self.release_time = None;
-                self.retrigger_start_value = 0.0;
-            }
-            (false, Some(_), None) => {
-                self.release_time = Some(current_time);
-            }
-            (true, _, Some(release)) => {
-                let trigger_elapsed = (release - self.trigger_time.unwrap()) as f32 / sample_rate;
-                let release_elapsed = (current_time - release) as f32 / sample_rate;
-                let release_start_value = self.calculate_envelope_value(trigger_elapsed);
-                let release_progress = (release_elapsed / self.release).min(1.0);
-                let curved_progress = self.apply_curve(release_progress, self.release_curve);
-                self.retrigger_start_value = release_start_value * (1.0 - curved_progress);
-                self.trigger_time = Some(current_time);
-                self.release_time = None;
-            }
-            _ => {}
-        }
-
-        match (self.trigger_time, self.release_time) {
-            (None, _) => 0.0,
-            (Some(trigger), None) => {
-                let elapsed = (current_time - trigger) as f32 / sample_rate;
+        match key_state {
+            KeyState::Idle => 0.0,
+            KeyState::Pressed { pressed_at } => {
+                let elapsed = (current_time - pressed_at) as f32 / sample_rate;
                 self.calculate_envelope_value(elapsed)
             }
-            (Some(trigger), Some(release)) => {
-                let trigger_elapsed = (release - trigger) as f32 / sample_rate;
-                let release_elapsed = (current_time - release) as f32 / sample_rate;
-                let release_start_value = self.calculate_envelope_value(trigger_elapsed);
+            KeyState::Released { pressed_at, released_at } => {
+                let trigger_elapsed = (released_at - pressed_at) as f32 / sample_rate;
+                let release_elapsed = (current_time - released_at) as f32 / sample_rate;
 
                 if release_elapsed >= self.release {
-                    self.trigger_time = None;
-                    self.release_time = None;
                     0.0
                 } else {
+                    let release_start_value = self.calculate_envelope_value(trigger_elapsed);
                     let release_progress = release_elapsed / self.release;
                     let curved_progress = self.apply_curve(release_progress, self.release_curve);
                     release_start_value * (1.0 - curved_progress)

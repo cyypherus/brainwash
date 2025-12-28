@@ -3,103 +3,49 @@ use dioxus_devtools::{connect_subsecond, subsecond};
 
 fn main() {
     connect_subsecond();
-    let mut seq1 = Sequence::default();
     let mut clock = Clock::default();
-    let mut bank1 = Bank::<(ADSR, Osc), Ramp, 28>::default();
-    let mut scale = cmin();
+    let scale = cmin();
     let mut reverb = Reverb::default();
-    let mut lpf = LowpassFilter::default();
-    let mut seq2 = Sequence::default();
-    let mut bank2 = Bank::<(ADSR, Osc, Osc, Osc), (), 28>::default();
-    let mut wn = Osc::default();
-    let mut sin_clock = Osc::default();
-    let mut tri_clock = Osc::default();
+    let mut lpf1 = LowpassFilter::default();
 
-    // save_wav("t.wav", 4., 44100, move |s| {
+    let track_notation = "
+    {
+        {0%3%5}/{1%3%5%7}/{2%4%6}/{1%3%6}
+        %
+        (12/13/14/(15/16/15/14)/12)
+    }
+    ";
+    let mut track = Track::from_notation(track_notation, &scale).expect("Failed to parse track");
+    let mut keyboard: Keyboard<(ADSR, Osc)> =
+        Keyboard::with_builder(|| (ADSR::default(), Osc::default()));
 
     play_live(move |s| {
         subsecond::call(|| {
             let bpm = 110.;
             let base_bars = 4.;
-            let clock = clock.bpm(bpm).bars(base_bars).output(s);
-            let cmin = scale.shift(-6);
-            let sq = seq1
-                .elements([
-                    tri([cmin.note(0), cmin.note(2), cmin.note(4)]),
-                    tri([cmin.note(-1), cmin.note(2), cmin.note(4)]),
-                    tri([cmin.note(-2), cmin.note(2), cmin.note(3)]),
-                    tet([cmin.note(-2), cmin.note(0), cmin.note(2), cmin.note(4)]),
-                ])
-                .output(clock);
+            let clock_pos = clock.bpm(bpm).bars(base_bars).output(s);
+
+            let events = track.advance(clock_pos);
+            keyboard.update(events, s);
+
             let mut output = 0.;
 
-            bank1.per_key(sq, |(adsr1, osc), rmp, key| {
-                let env = adsr1
+            keyboard.per_key(|(adsr, osc), key| {
+                let env = adsr
                     .att(0.3)
                     .dec(0.1)
                     .sus(0.4)
                     .rel(0.2)
-                    .trigger(key.on)
-                    .output(s);
-                let mut pitch = key.pitch;
-                if let Some(rmp) = rmp {
-                    pitch = rmp.time(0.2).value(pitch).output(s);
-                }
+                    .output(key.state, s);
 
-                output += osc.wave(saw()).pitch(pitch).atten(env).output(s);
+                output += osc.saw().freq(key.freq).gain(env).output(s);
             });
 
-            output = mix(lpf.freq(0.05).output(output, s), output, 0.2);
+            let filtered = lpf1.freq(0.05).output(output, s);
+            output = mix(&[filtered, output]);
 
-            let sq = seq2
-                .elements([
-                    note(cmin.note(0)),
-                    note(cmin.note(2)),
-                    note(cmin.note(4)),
-                    note(cmin.note(5)),
-                    note(cmin.note(5)),
-                    note(cmin.note(4)),
-                    note(cmin.note(6)),
-                    note(cmin.note(2)),
-                    note(cmin.note(3)),
-                    note(cmin.note(-2)),
-                    note(cmin.note(0)),
-                    note(cmin.note(2)),
-                ])
-                .output(
-                    (sin_clock.wave(sin()).unipolar().output_phase(clock)
-                        + tri_clock
-                            .wave(triangle())
-                            .phase_offset(0.5)
-                            .unipolar()
-                            .output_phase(clock))
-                        * 0.3,
-                );
-
-            let wn = wn.output(s);
-            bank2.per_key(sq, |(adsr1, osc1, osc2, osc3), _, key| {
-                let env = adsr1.att(0.05).dec(0.1).sus(0.4).trigger(key.on).output(s);
-                let md = osc2
-                    .wave(square())
-                    .pitch(key.pitch + wn - 12.)
-                    .phase_offset(0.5)
-                    .output(s)
-                    * 3.
-                    * env;
-                let signal = osc1
-                    .wave(sin())
-                    .pitch(key.pitch + 24. + md + wn)
-                    .atten(env)
-                    .output(s)
-                    + osc3
-                        .wave(triangle())
-                        .pitch(key.pitch + 12.)
-                        .atten(env)
-                        .output(s);
-                output += signal;
-            });
-
-            output = mix(reverb.damp(0.1).roomsize(0.9).output(output), output, 0.5);
+            let reverbed = reverb.damp(0.1).roomsize(0.9).output(output);
+            output = mix(&[reverbed, output]);
 
             output * 0.3
         })
