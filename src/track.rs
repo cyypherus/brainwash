@@ -138,26 +138,13 @@ fn parse_polyphonic_divisions(input: &str) -> nom::IResult<&str, Vec<Division>> 
         return Ok((input, poly_layers.into_iter().next().unwrap()));
     }
 
-    let max_divs = poly_layers.iter().map(|l| l.len()).max().unwrap_or(0);
-    let result = (0..max_divs)
-        .map(|div_idx| {
-            let layers: Vec<Vec<Division>> = poly_layers
-                .iter()
-                .filter_map(|layer| {
-                    if div_idx < layer.len() {
-                        Some(vec![layer[div_idx].clone()])
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            Division {
-                item: Item::Polyphony(layers),
-                nudge_before: None,
-                nudge_after: None,
-            }
-        })
-        .collect();
+    // Create a single division containing all layers as complete sequences
+    // Each layer independently subdivides the full bar time
+    let result = vec![Division {
+        item: Item::Polyphony(poly_layers),
+        nudge_before: None,
+        nudge_after: None,
+    }];
 
     Ok((input, result))
 }
@@ -279,7 +266,7 @@ impl Track {
         })
     }
 
-    pub fn advance(&mut self, to: f32) -> Vec<NoteEvent> {
+    pub fn play(&mut self, to: f32) -> Vec<NoteEvent> {
         let to = to.fract(); // Wrap to 0.0..1.0 range
         if to == self.playhead {
             return Vec::new();
@@ -544,16 +531,12 @@ mod tests {
         let ast = result.unwrap();
         assert_eq!(ast.layers[0].bars.len(), 1);
         let divs = &ast.layers[0].bars[0].divisions;
-        assert_eq!(divs.len(), 2, "Expected 2 divisions in polyphony");
+        assert_eq!(divs.len(), 1, "Should be 1 polyphonic division");
         match &divs[0].item {
             Item::Polyphony(layers) => {
-                assert_eq!(layers.len(), 2);
-            }
-            _ => panic!("Expected polyphony"),
-        }
-        match &divs[1].item {
-            Item::Polyphony(layers) => {
-                assert_eq!(layers.len(), 2);
+                assert_eq!(layers.len(), 2, "Should have 2 layers");
+                assert_eq!(layers[0].len(), 2, "First layer has 2 divisions (0/1)");
+                assert_eq!(layers[1].len(), 2, "Second layer has 2 divisions (2/3)");
             }
             _ => panic!("Expected polyphony"),
         }
@@ -567,9 +550,17 @@ mod tests {
         let divs = &ast.layers[0].bars[0].divisions;
         assert_eq!(
             divs.len(),
-            3,
-            "First layer has 3 divs, second has 2, max_divs=3"
+            1,
+            "Should be 1 polyphonic division with independent layers"
         );
+        match &divs[0].item {
+            Item::Polyphony(layers) => {
+                assert_eq!(layers.len(), 2, "Should have 2 layers");
+                assert_eq!(layers[0].len(), 3, "First layer has 3 divisions");
+                assert_eq!(layers[1].len(), 2, "Second layer has 2 divisions");
+            }
+            _ => panic!("Expected polyphony"),
+        }
     }
 
     #[test]
@@ -634,7 +625,7 @@ mod tests {
     fn test_track_advance_no_change() {
         let scale = crate::scale::cmaj();
         let mut track = Track::from_notation("(0/1/2)", &scale).unwrap();
-        let events = track.advance(0.0);
+        let events = track.play(0.0);
         assert_eq!(events.len(), 0);
     }
 
@@ -670,13 +661,21 @@ mod tests {
 
     #[test]
     fn test_parse_curly_polyphony_with_sequences() {
-        // Test that {(0/1)%(2/3)} creates a bar with 2 divisions, each polyphonic
+        // Test that {(0/1)%(2/3)} creates a bar with 1 polyphonic division containing 2 layers
         let result = parse_notation("{(0/1)%(2/3)}");
         assert!(result.is_ok());
         let ast = result.unwrap();
         assert_eq!(ast.layers[0].bars.len(), 1);
         let divs = &ast.layers[0].bars[0].divisions;
-        assert_eq!(divs.len(), 2, "Expected 2 divisions");
+        assert_eq!(divs.len(), 1, "Expected 1 polyphonic division");
+        match &divs[0].item {
+            Item::Polyphony(layers) => {
+                assert_eq!(layers.len(), 2);
+                assert_eq!(layers[0].len(), 2);
+                assert_eq!(layers[1].len(), 2);
+            }
+            _ => panic!("Expected polyphony"),
+        }
     }
 
     #[test]
@@ -684,7 +683,7 @@ mod tests {
         let scale = crate::scale::cmaj();
         let mut track = Track::from_notation("(0)", &scale).unwrap();
         assert!(!track.note_timeline.is_empty(), "Timeline is empty!");
-        let events = track.advance(0.5);
+        let events = track.play(0.5);
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], NoteEvent::Press { .. }));
     }
@@ -693,11 +692,11 @@ mod tests {
     fn test_track_note_press_and_release() {
         let scale = crate::scale::cmaj();
         let mut track = Track::from_notation("(0/1)", &scale).unwrap();
-        let events1 = track.advance(0.25);
+        let events1 = track.play(0.25);
         assert_eq!(events1.len(), 1);
         assert!(matches!(events1[0], NoteEvent::Press { .. }));
 
-        let events2 = track.advance(0.75);
+        let events2 = track.play(0.75);
         assert_eq!(events2.len(), 2);
         assert!(matches!(events2[0], NoteEvent::Release { .. }));
         assert!(matches!(events2[1], NoteEvent::Press { .. }));
@@ -708,16 +707,16 @@ mod tests {
         let scale = crate::scale::cmaj();
         let mut track = Track::from_notation("(0/1/2)", &scale).unwrap();
 
-        let events1 = track.advance(0.1);
+        let events1 = track.play(0.1);
         assert_eq!(events1.len(), 1);
         assert!(matches!(events1[0], NoteEvent::Press { .. }));
 
-        let events2 = track.advance(0.4);
+        let events2 = track.play(0.4);
         assert_eq!(events2.len(), 2);
         assert!(matches!(events2[0], NoteEvent::Release { .. }));
         assert!(matches!(events2[1], NoteEvent::Press { .. }));
 
-        let events3 = track.advance(0.7);
+        let events3 = track.play(0.7);
         assert_eq!(events3.len(), 2);
         assert!(matches!(events3[0], NoteEvent::Release { .. }));
         assert!(matches!(events3[1], NoteEvent::Press { .. }));
@@ -728,15 +727,15 @@ mod tests {
         let scale = crate::scale::cmaj();
         let mut track = Track::from_notation("(0/_/1)", &scale).unwrap();
 
-        let events1 = track.advance(0.15);
+        let events1 = track.play(0.15);
         assert_eq!(events1.len(), 1);
         assert!(matches!(events1[0], NoteEvent::Press { .. }));
 
-        let events2 = track.advance(0.5);
+        let events2 = track.play(0.5);
         assert_eq!(events2.len(), 1);
         assert!(matches!(events2[0], NoteEvent::Release { .. }));
 
-        let events3 = track.advance(0.85);
+        let events3 = track.play(0.85);
         assert_eq!(events3.len(), 1);
         assert!(matches!(events3[0], NoteEvent::Press { .. }));
     }
@@ -746,7 +745,7 @@ mod tests {
         let scale = crate::scale::cmaj();
         let mut track = Track::from_notation("{0%1%2}", &scale).unwrap();
 
-        let events = track.advance(0.5);
+        let events = track.play(0.5);
         assert_eq!(events.len(), 3);
         assert!(events.iter().all(|e| matches!(e, NoteEvent::Press { .. })));
     }
@@ -756,11 +755,11 @@ mod tests {
         let scale = crate::scale::cmaj();
         let mut track = Track::from_notation("{(0/1)%(1/2)}", &scale).unwrap();
 
-        let events1 = track.advance(0.25);
+        let events1 = track.play(0.25);
         assert_eq!(events1.len(), 2);
         assert!(events1.iter().all(|e| matches!(e, NoteEvent::Press { .. })));
 
-        let events2 = track.advance(0.75);
+        let events2 = track.play(0.75);
         assert!(!events2.is_empty());
     }
 
@@ -832,14 +831,14 @@ mod tests {
         let scale = crate::scale::cmaj();
         let mut track = Track::from_notation("(0)(1)(2)", &scale).unwrap();
 
-        let events1 = track.advance(0.15);
+        let events1 = track.play(0.15);
         assert_eq!(events1.len(), 1);
         assert!(matches!(events1[0], NoteEvent::Press { .. }));
 
-        let events2 = track.advance(0.5);
+        let events2 = track.play(0.5);
         assert_eq!(events2.len(), 2);
 
-        let events3 = track.advance(0.85);
+        let events3 = track.play(0.85);
         assert_eq!(events3.len(), 2);
     }
 
@@ -848,13 +847,50 @@ mod tests {
         let scale = crate::scale::cmaj();
         let mut track = Track::from_notation("((0/1)/(2/3))", &scale).unwrap();
 
-        let events1 = track.advance(0.1);
+        let events1 = track.play(0.1);
         assert!(matches!(events1[0], NoteEvent::Press { .. }));
 
-        let events2 = track.advance(0.3);
+        let events2 = track.play(0.3);
         assert_eq!(events2.len(), 2);
 
-        let events3 = track.advance(0.6);
+        let events3 = track.play(0.6);
         assert_eq!(events3.len(), 2);
+    }
+
+    #[test]
+    fn test_polyrhythm_different_divisions() {
+        let notation = r#"{
+            {0%3%5}/{1%3%5%7}/{2%4%6}/{1%3%6}
+            %
+            (12/13/14/(15/16/15/14)/12)
+        }"#;
+
+        let result = parse_notation(notation);
+        assert!(result.is_ok(), "Should parse polyrhythm notation");
+
+        let ast = result.unwrap();
+        assert_eq!(ast.layers.len(), 1);
+        assert_eq!(ast.layers[0].bars.len(), 1);
+
+        let divisions = &ast.layers[0].bars[0].divisions;
+
+        // Should be a single division containing polyphony with 2 complete layers
+        assert_eq!(divisions.len(), 1, "Should be 1 polyphonic division");
+
+        match &divisions[0].item {
+            Item::Polyphony(layers) => {
+                assert_eq!(layers.len(), 2, "Should have 2 layers");
+
+                // First layer: {0%3%5}/{1%3%5%7}/{2%4%6}/{1%3%6} = 4 divisions
+                assert_eq!(layers[0].len(), 4, "First layer should have 4 divisions");
+
+                // Second layer: (12/13/14/(15/16/15/14)/12) = 5 divisions
+                assert_eq!(layers[1].len(), 5, "Second layer should have 5 divisions");
+
+                // Each layer independently subdivides the same time span
+                // creating a polyrhythm
+            }
+            _ => panic!("Expected polyphony"),
+        }
     }
 }

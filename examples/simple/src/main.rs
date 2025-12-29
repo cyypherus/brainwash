@@ -3,7 +3,10 @@ use dioxus_devtools::{connect_subsecond, subsecond};
 
 fn main() {
     connect_subsecond();
+    let bpm = 110.;
+    let base_bars = 4.;
     let mut clock = Clock::default();
+    clock.bpm(bpm).bars(base_bars);
     let scale = cmin();
     let mut reverb = Reverb::default();
     let mut lpf1 = LowpassFilter::default();
@@ -12,7 +15,7 @@ fn main() {
     {
         {0%3%5}/{1%3%5%7}/{2%4%6}/{1%3%6}
         %
-        (12/13/14/(15/16/15/14)/12)
+        (12/13/14/(15/16+/15/14)/12)
     }
     ";
     let mut track = Track::from_notation(track_notation, &scale).expect("Failed to parse track");
@@ -21,12 +24,7 @@ fn main() {
 
     play_live(move |s| {
         subsecond::call(|| {
-            let bpm = 110.;
-            let base_bars = 4.;
-            let clock_pos = clock.bpm(bpm).bars(base_bars).output(s);
-
-            let events = track.advance(clock_pos);
-            keyboard.update(events, s);
+            keyboard.update(track.play(clock.output(s)), s);
 
             let mut output = 0.;
 
