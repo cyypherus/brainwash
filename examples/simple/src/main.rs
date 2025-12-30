@@ -10,6 +10,7 @@ fn main() {
     let scale = cmin();
     let mut reverb = Reverb::default();
     let mut lpf1 = LowpassFilter::default();
+    let mut flng = Flanger::default();
 
     let new_track_notation = "
     {
@@ -34,7 +35,7 @@ fn main() {
     }
     ";
     let mut new_track =
-        Track::from_notation(new_track_notation, &scale).expect("Failed to parse new track");
+        Track::parse(new_track_notation, &scale).expect("Failed to parse new track");
     let mut keyboard: Keyboard<(ADSR, ADSR, Osc, Osc, Osc)> = Keyboard::with_builder(|| {
         (
             ADSR::default(),
@@ -47,37 +48,23 @@ fn main() {
 
     play_live(move |s| {
         subsecond::call(|| {
-            keyboard.update(new_track.play(clock.output(s)), s);
-
             let mut output = 0.;
-
+            keyboard.update(new_track.play(clock.output(s)), s);
             keyboard.per_key(|(adsr, vibrato_env, osc1, osc2, osc3), key| {
-                let env = adsr
-                    .pad()
-                    // .att(0.05)
-                    // .dec(0.02)
-                    // .sus(0.7)
-                    // .rel(0.1)
-                    .output(key.state, s);
+                let env = adsr.pad().output(key.state, s);
 
-                // let vibrato_depth = vibrato_env.pad().output(key.state, s);
-                // let vibrato = osc2.sin().freq(5.).gain(env).output(s) * 2. * vibrato_depth;
-                let thing = osc1.saw().freq(key.freq + 0.001).shift(-12.).output(s);
-                output += osc3.square().freq(key.freq + thing).gain(env).output(s);
-                // output += osc1
-                //     .sin()
-                //     .freq(key.freq)
-                //     // .freq(key.freq + vibrato)
-                //     .gain(env)
-                //     .output(s);
-                // + osc3.sin().freq(key.freq).shift(-12.).gain(env).output(s);
+                let vibrato_depth = vibrato_env.pad().output(key.state, s);
+                let vibrato = osc2.sin().freq(5.).gain(env).output(s) * 2. * vibrato_depth;
+                output += osc1.sin().freq(key.freq + vibrato).gain(env).output(s)
+                    + osc3.squ().freq(key.freq).shift(-12.).gain(env).output(s);
             });
+            output = flng.freq(0.05).depth(1.).feedback(0.8).output(output, s) * 0.3;
 
-            // let filtered = lpf1.freq(0.1).output(output, s);
-            // output += filtered * 0.5;
+            let filtered = lpf1.freq(0.1).output(output, s);
+            output += filtered * 0.5;
 
-            // let reverbed = reverb.damp(0.).roomsize(1.).output(output);
-            // output += reverbed * 0.3;
+            let reverbed = reverb.damp(0.).roomsize(1.).output(output);
+            output += reverbed * 0.3;
 
             output * 0.1
         })

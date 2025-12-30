@@ -84,7 +84,7 @@ impl Osc {
         self
     }
 
-    pub fn square(&mut self) -> &mut Self {
+    pub fn squ(&mut self) -> &mut Self {
         self.wave_type = square();
         self
     }

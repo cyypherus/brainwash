@@ -25,6 +25,15 @@ impl Scale {
     }
 }
 
+pub fn chromatic() -> Scale {
+    let mut scale = Scale {
+        notes: [0, 1, 2, 3, 4, 5, 6],
+        shift: 0,
+    };
+    scale.shift(52);
+    scale
+}
+
 pub fn cmaj() -> Scale {
     let mut scale = Scale {
         notes: [0, 2, 4, 5, 7, 9, 11],

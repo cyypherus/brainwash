@@ -3,7 +3,7 @@ use nom::{
     branch::alt,
     character::complete::{char, digit1},
     combinator::{map, opt},
-    multi::{many1, separated_list1},
+    multi::{many0, many1, separated_list1},
     sequence::{delimited, tuple},
 };
 
@@ -24,8 +24,7 @@ pub enum Item {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Division {
     pub item: Item,
-    pub nudge_before: Option<u32>,
-    pub nudge_after: Option<u32>,
+    pub weight: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -53,10 +52,7 @@ fn parse_number(input: &str) -> IResult<&str, i32> {
     )(input)
 }
 
-fn parse_nudge(input: &str) -> IResult<&str, u32> {
-    delimited(char('<'), digit1, char('>'))(input)
-        .map(|(rest, digits)| (rest, digits.parse::<u32>().unwrap()))
-}
+
 
 fn parse_note(input: &str) -> IResult<&str, Item> {
     let (input, degree) = parse_number(input)?;
@@ -97,24 +93,16 @@ fn parse_item(input: &str) -> IResult<&str, Item> {
     ))(input)
 }
 
-fn parse_division(input: &str) -> IResult<&str, (Item, Option<u32>)> {
+fn parse_division(input: &str) -> IResult<&str, (Item, usize)> {
     let (input, item) = parse_item(input)?;
-    let (input, nudge) = opt(parse_nudge)(input)?;
-    Ok((input, (item, nudge)))
+    let (input, asterisks) = many0(char('*'))(input)?;
+    let weight = 1 + asterisks.len();
+    Ok((input, (item, weight)))
 }
 
 fn parse_division_with_separator(input: &str) -> IResult<&str, Division> {
-    let (input, nudge_before) = opt(parse_nudge)(input)?;
-    let (input, (item, nudge_after)) = parse_division(input)?;
-
-    Ok((
-        input,
-        Division {
-            item,
-            nudge_before,
-            nudge_after,
-        },
-    ))
+    let (input, (item, weight)) = parse_division(input)?;
+    Ok((input, Division { item, weight }))
 }
 
 fn parse_divisions(input: &str) -> IResult<&str, Vec<Division>> {
@@ -145,8 +133,7 @@ fn parse_polyphonic_divisions(input: &str) -> IResult<&str, Vec<Division>> {
                     .collect();
                 Division {
                     item: Item::Polyphony(layers),
-                    nudge_before: None,
-                    nudge_after: None,
+                    weight: 1,
                 }
             })
             .collect()
@@ -248,27 +235,28 @@ impl ParsedTrack {
 
     pub fn from_track(track: &Track, scale: &crate::Scale) -> Self {
         let mut notes = Vec::new();
-        let mut total_divisions = 0;
+        let mut total_weight = 0;
 
-        // First pass: count total divisions to calculate granularity
+        // First pass: sum total weight across all divisions
         for layer in &track.layers {
             for bar in &layer.bars {
-                total_divisions += bar.divisions.len();
+                for division in &bar.divisions {
+                    total_weight += division.weight;
+                }
             }
         }
 
-        let mut division_idx = 0;
+        let mut weight_idx = 0;
 
-        // Second pass: extract notes with percentage positions
+        // Second pass: extract notes with percentage positions based on weight
         for layer in &track.layers {
             for bar in &layer.bars {
-                let divisions_count = bar.divisions.len();
                 for division in &bar.divisions {
-                    let div_start = division_idx as f32 / total_divisions as f32;
-                    let div_end = (division_idx + 1) as f32 / total_divisions as f32;
+                    let div_start = weight_idx as f32 / total_weight as f32;
+                    let div_end = (weight_idx + division.weight) as f32 / total_weight as f32;
 
                     Self::extract_notes(&division.item, div_start, div_end, &mut notes, scale);
-                    division_idx += 1;
+                    weight_idx += division.weight;
                 }
             }
         }
@@ -300,11 +288,13 @@ impl ParsedTrack {
             }
             Item::Sequence(divs) => {
                 let div_span = end - start;
-                let samples_per_subdiv = div_span / divs.len() as f32;
-                for (sub_idx, subdiv) in divs.iter().enumerate() {
-                    let sub_start = start + (sub_idx as f32 * samples_per_subdiv);
-                    let sub_end = sub_start + samples_per_subdiv;
+                let total_weight: usize = divs.iter().map(|d| d.weight).sum();
+                let mut weight_idx = 0;
+                for subdiv in divs.iter() {
+                    let sub_start = start + (weight_idx as f32 / total_weight as f32) * div_span;
+                    let sub_end = start + ((weight_idx + subdiv.weight) as f32 / total_weight as f32) * div_span;
                     Self::extract_notes(&subdiv.item, sub_start, sub_end, notes, scale);
+                    weight_idx += subdiv.weight;
                 }
             }
             Item::Polyphony(layers) => {
@@ -313,11 +303,13 @@ impl ParsedTrack {
                         continue;
                     }
                     let div_span = end - start;
-                    let samples_per_subdiv = div_span / layer_divs.len() as f32;
-                    for (sub_idx, subdiv) in layer_divs.iter().enumerate() {
-                        let sub_start = start + (sub_idx as f32 * samples_per_subdiv);
-                        let sub_end = sub_start + samples_per_subdiv;
+                    let total_weight: usize = layer_divs.iter().map(|d| d.weight).sum();
+                    let mut weight_idx = 0;
+                    for subdiv in layer_divs.iter() {
+                        let sub_start = start + (weight_idx as f32 / total_weight as f32) * div_span;
+                        let sub_end = start + ((weight_idx + subdiv.weight) as f32 / total_weight as f32) * div_span;
                         Self::extract_notes(&subdiv.item, sub_start, sub_end, notes, scale);
+                        weight_idx += subdiv.weight;
                     }
                 }
             }
@@ -366,10 +358,30 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_nudge() {
-        assert_eq!(parse_nudge("<30>rest"), Ok(("rest", 30)));
-        assert_eq!(parse_nudge("<0>"), Ok(("", 0)));
-        assert_eq!(parse_nudge("<100>"), Ok(("", 100)));
+    fn test_parse_weight_single_asterisk() {
+        let result = parse("(0*/1)").unwrap();
+        assert_eq!(result.layers[0].bars[0].divisions[0].weight, 2);
+        assert_eq!(result.layers[0].bars[0].divisions[1].weight, 1);
+    }
+
+    #[test]
+    fn test_parse_weight_multiple_asterisks() {
+        let result = parse("(0**/1)").unwrap();
+        assert_eq!(result.layers[0].bars[0].divisions[0].weight, 3);
+        assert_eq!(result.layers[0].bars[0].divisions[1].weight, 1);
+    }
+
+    #[test]
+    fn test_parse_weight_with_chromatic_shift() {
+        let result = parse("(0+**/1)").unwrap();
+        assert_eq!(result.layers[0].bars[0].divisions[0].weight, 3);
+        assert!(matches!(
+            result.layers[0].bars[0].divisions[0].item,
+            Item::Note(Note {
+                degree: 0,
+                chromatic_shift: 1
+            })
+        ));
     }
 
     #[test]
@@ -420,19 +432,7 @@ mod tests {
         assert_eq!(result.layers[0].bars[2].divisions.len(), 1);
     }
 
-    #[test]
-    fn test_parse_nudge_before_separator() {
-        let result = parse("(0<30>/1)").unwrap();
-        let div = &result.layers[0].bars[0].divisions[0];
-        assert_eq!(div.nudge_after, Some(30));
-    }
 
-    #[test]
-    fn test_parse_nudge_after_separator() {
-        let result = parse("(0/<10>1)").unwrap();
-        let div = &result.layers[0].bars[0].divisions[1];
-        assert_eq!(div.nudge_before, Some(10));
-    }
 
     #[test]
     fn test_parse_negative_degrees() {
@@ -461,8 +461,8 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_complex_pattern() {
-        let result = parse("(0/<30>1<10>/2)").unwrap();
+    fn test_parse_complex_pattern_with_weights() {
+        let result = parse("(0*/1**/2)").unwrap();
         assert_eq!(result.layers[0].bars[0].divisions.len(), 3);
 
         let div0 = &result.layers[0].bars[0].divisions[0];
@@ -473,8 +473,7 @@ mod tests {
                 chromatic_shift: 0
             })
         ));
-        assert_eq!(div0.nudge_after, None);
-        assert_eq!(div0.nudge_before, None);
+        assert_eq!(div0.weight, 2);
 
         let div1 = &result.layers[0].bars[0].divisions[1];
         assert!(matches!(
@@ -484,8 +483,7 @@ mod tests {
                 chromatic_shift: 0
             })
         ));
-        assert_eq!(div1.nudge_before, Some(30));
-        assert_eq!(div1.nudge_after, Some(10));
+        assert_eq!(div1.weight, 3);
 
         let div2 = &result.layers[0].bars[0].divisions[2];
         assert!(matches!(
@@ -495,8 +493,7 @@ mod tests {
                 chromatic_shift: 0
             })
         ));
-        assert_eq!(div2.nudge_after, None);
-        assert_eq!(div2.nudge_before, None);
+        assert_eq!(div2.weight, 1);
     }
 
     #[test]
@@ -529,13 +526,13 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_boundaries() {
-        let result = parse("(0<0>/1<100>/2)").unwrap();
-        let div0 = &result.layers[0].bars[0].divisions[0];
-        assert_eq!(div0.nudge_after, Some(0));
-
-        let div1 = &result.layers[0].bars[0].divisions[1];
-        assert_eq!(div1.nudge_after, Some(100));
+    fn test_parse_rest_with_weight() {
+        let result = parse("(_***/0)").unwrap();
+        assert_eq!(result.layers[0].bars[0].divisions[0].weight, 4);
+        assert!(matches!(
+            result.layers[0].bars[0].divisions[0].item,
+            Item::Rest
+        ));
     }
 
     #[test]

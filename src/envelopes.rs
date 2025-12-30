@@ -1,5 +1,133 @@
 use crate::{KeyState, Signal};
 
+#[derive(Clone, Debug, Copy)]
+pub enum PointType {
+    Linear,
+    Curve,
+}
+
+#[derive(Clone, Debug)]
+pub struct EnvelopePoint {
+    pub time: f32,
+    pub value: f32,
+    pub point_type: PointType,
+}
+
+pub fn point(time: f32, value: f32) -> EnvelopePoint {
+    EnvelopePoint {
+        time,
+        value,
+        point_type: PointType::Linear,
+    }
+}
+
+pub fn curve(time: f32, value: f32) -> EnvelopePoint {
+    EnvelopePoint {
+        time,
+        value,
+        point_type: PointType::Curve,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Envelope {
+    points: Vec<EnvelopePoint>,
+}
+
+impl Envelope {
+    pub fn new(points: Vec<EnvelopePoint>) -> Self {
+        let mut sorted_points = points;
+        sorted_points.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+
+        for point in &sorted_points {
+            assert!(
+                (0.0..=1.0).contains(&point.time),
+                "Envelope point time must be between 0.0 and 1.0"
+            );
+            assert!(
+                (0.0..=1.0).contains(&point.value),
+                "Envelope point value must be between 0.0 and 1.0"
+            );
+        }
+
+        Envelope {
+            points: sorted_points,
+        }
+    }
+
+    pub fn output(&self, time: f32) -> f32 {
+        let time = time.clamp(0.0, 1.0);
+
+        if self.points.is_empty() {
+            return 0.0;
+        }
+
+        if self.points.len() == 1 {
+            return self.points[0].value;
+        }
+
+        if time <= self.points[0].time {
+            return self.points[0].value;
+        }
+
+        if time >= self.points[self.points.len() - 1].time {
+            return self.points[self.points.len() - 1].value;
+        }
+
+        for i in 0..self.points.len() - 1 {
+            let p1 = &self.points[i];
+            let p2 = &self.points[i + 1];
+
+            if time >= p1.time && time <= p2.time {
+                let segment_duration = p2.time - p1.time;
+                if segment_duration < 1e-6 {
+                    return p1.value;
+                }
+
+                let t = (time - p1.time) / segment_duration;
+
+                return match (p1.point_type, p2.point_type) {
+                    (PointType::Linear, PointType::Linear) => p1.value + (p2.value - p1.value) * t,
+                    _ => {
+                        let p0_val = if i > 0 {
+                            self.points[i - 1].value
+                        } else {
+                            p1.value - (p2.value - p1.value) * 0.5
+                        };
+
+                        let p3_val = if i + 2 < self.points.len() {
+                            self.points[i + 2].value
+                        } else {
+                            p2.value + (p2.value - p1.value) * 0.5
+                        };
+
+                        self.catmull_rom(p0_val, p1.value, p2.value, p3_val, t)
+                            .clamp(0.0, 1.0)
+                    }
+                };
+            }
+        }
+
+        self.points[self.points.len() - 1].value
+    }
+
+    fn catmull_rom(&self, p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
+        let t2 = t * t;
+        let t3 = t2 * t;
+
+        0.5 * ((2.0 * p1)
+            + (-p0 + p2) * t
+            + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+            + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
+    }
+}
+
+impl Default for Envelope {
+    fn default() -> Self {
+        Envelope::new(vec![point(0.0, 0.0), point(1.0, 1.0)])
+    }
+}
+
 #[derive(Clone)]
 pub struct ADSR {
     attack: f32,
@@ -133,5 +261,157 @@ impl ADSR {
 
     pub fn pad(&mut self) -> &mut Self {
         self.att(0.5).dec(0.5).sus(0.7).rel(1.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_envelope_single_point() {
+        let env = Envelope::new(vec![point(0.5, 0.7)]);
+        assert_eq!(env.output(0.0), 0.7);
+        assert_eq!(env.output(0.5), 0.7);
+        assert_eq!(env.output(1.0), 0.7);
+    }
+
+    #[test]
+    fn test_envelope_linear_interpolation() {
+        let env = Envelope::new(vec![point(0.0, 0.0), point(1.0, 1.0)]);
+        assert_eq!(env.output(0.0), 0.0);
+        assert_eq!(env.output(0.25), 0.25);
+        assert_eq!(env.output(0.5), 0.5);
+        assert_eq!(env.output(0.75), 0.75);
+        assert_eq!(env.output(1.0), 1.0);
+    }
+
+    #[test]
+    fn test_envelope_multiple_segments_linear() {
+        let env = Envelope::new(vec![
+            point(0.0, 0.0),
+            point(0.2, 1.0),
+            point(0.5, 0.7),
+            point(1.0, 0.0),
+        ]);
+
+        assert_eq!(env.output(0.0), 0.0);
+        assert_eq!(env.output(0.1), 0.5);
+        assert_eq!(env.output(0.2), 1.0);
+
+        let mid = env.output(0.35);
+        assert!((mid - 0.85).abs() < 0.01);
+
+        assert_eq!(env.output(1.0), 0.0);
+    }
+
+    #[test]
+    fn test_envelope_clamp_time() {
+        let env = Envelope::new(vec![point(0.0, 0.2), point(1.0, 0.8)]);
+
+        assert_eq!(env.output(-0.5), 0.2);
+        assert_eq!(env.output(1.5), 0.8);
+    }
+
+    #[test]
+    fn test_envelope_unsorted_points() {
+        let env = Envelope::new(vec![point(0.5, 0.5), point(0.0, 0.0), point(1.0, 1.0)]);
+
+        assert_eq!(env.output(0.0), 0.0);
+        assert_eq!(env.output(0.5), 0.5);
+        assert_eq!(env.output(1.0), 1.0);
+    }
+
+    #[test]
+    fn test_envelope_attack_decay_linear() {
+        let env = Envelope::new(vec![
+            point(0.0, 0.0),
+            point(0.1, 1.0),
+            point(0.4, 0.7),
+            point(1.0, 0.7),
+        ]);
+
+        assert_eq!(env.output(0.0), 0.0);
+        assert_eq!(env.output(0.05), 0.5);
+        assert_eq!(env.output(0.1), 1.0);
+
+        let decay_mid = env.output(0.25);
+        assert!((decay_mid - 0.85).abs() < 0.01);
+
+        assert_eq!(env.output(0.7), 0.7);
+        assert_eq!(env.output(1.0), 0.7);
+    }
+
+    #[test]
+    fn test_envelope_curve_interpolation() {
+        let env = Envelope::new(vec![
+            curve(0.0, 0.0),
+            curve(0.25, 1.0),
+            curve(0.75, 0.5),
+            curve(1.0, 0.0),
+        ]);
+
+        assert_eq!(env.output(0.0), 0.0);
+        assert_eq!(env.output(0.25), 1.0);
+        assert_eq!(env.output(0.75), 0.5);
+        assert_eq!(env.output(1.0), 0.0);
+
+        let curve_val = env.output(0.5);
+        assert!(curve_val > 0.5 && curve_val < 1.0);
+    }
+
+    #[test]
+    fn test_envelope_mixed_linear_curve() {
+        let env = Envelope::new(vec![point(0.0, 0.0), curve(0.5, 1.0), point(1.0, 0.0)]);
+
+        assert_eq!(env.output(0.0), 0.0);
+        assert_eq!(env.output(0.5), 1.0);
+        assert_eq!(env.output(1.0), 0.0);
+
+        let before_peak = env.output(0.25);
+        assert!(before_peak > 0.0 && before_peak < 1.0);
+    }
+
+    #[test]
+    fn test_envelope_curve_smooth_attack() {
+        let env = Envelope::new(vec![curve(0.0, 0.0), curve(0.1, 1.0), curve(1.0, 1.0)]);
+
+        assert_eq!(env.output(0.0), 0.0);
+        assert_eq!(env.output(0.1), 1.0);
+
+        let early = env.output(0.05);
+        assert!(early > 0.0 && early < 1.0);
+    }
+
+    #[test]
+    fn test_envelope_empty() {
+        let env = Envelope::new(vec![]);
+        assert_eq!(env.output(0.0), 0.0);
+        assert_eq!(env.output(0.5), 0.0);
+        assert_eq!(env.output(1.0), 0.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Envelope point time must be between 0.0 and 1.0")]
+    fn test_envelope_invalid_time_low() {
+        Envelope::new(vec![point(-0.1, 0.5)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Envelope point time must be between 0.0 and 1.0")]
+    fn test_envelope_invalid_time_high() {
+        Envelope::new(vec![point(1.1, 0.5)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Envelope point value must be between 0.0 and 1.0")]
+    fn test_envelope_invalid_value_low() {
+        Envelope::new(vec![point(0.5, -0.1)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Envelope point value must be between 0.0 and 1.0")]
+    fn test_envelope_invalid_value_high() {
+        Envelope::new(vec![point(0.5, 1.1)]);
     }
 }

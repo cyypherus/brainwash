@@ -3,7 +3,7 @@ use nom::{
     branch::alt,
     character::complete::{char, digit1},
     combinator::opt,
-    multi::{many1, separated_list1},
+    multi::{many0, many1, separated_list1},
     sequence::delimited,
 };
 
@@ -24,8 +24,7 @@ enum Item {
 #[derive(Clone, Debug, PartialEq)]
 struct Division {
     item: Item,
-    nudge_before: Option<u32>,
-    nudge_after: Option<u32>,
+    weight: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -48,11 +47,6 @@ fn parse_number(input: &str) -> nom::IResult<&str, i32> {
     let (input, num) = digit1.parse(input)?;
     let val: i32 = num.parse().unwrap();
     Ok((input, if sign.is_some() { -val } else { val }))
-}
-
-fn parse_nudge(input: &str) -> nom::IResult<&str, u32> {
-    let (input, digits) = delimited(char('<'), digit1, char('>')).parse(input)?;
-    Ok((input, digits.parse::<u32>().unwrap()))
 }
 
 fn parse_note(input: &str) -> nom::IResult<&str, Item> {
@@ -98,24 +92,16 @@ fn parse_item(input: &str) -> nom::IResult<&str, Item> {
     .parse(input)
 }
 
-fn parse_division(input: &str) -> nom::IResult<&str, (Item, Option<u32>)> {
+fn parse_division(input: &str) -> nom::IResult<&str, (Item, usize)> {
     let (input, item) = parse_item(input)?;
-    let (input, nudge) = opt(|i| parse_nudge(i)).parse(input)?;
-    Ok((input, (item, nudge)))
+    let (input, asterisks) = many0(char('*')).parse(input)?;
+    let weight = 1 + asterisks.len();
+    Ok((input, (item, weight)))
 }
 
 fn parse_division_with_separator(input: &str) -> nom::IResult<&str, Division> {
-    let (input, nudge_before) = opt(|i| parse_nudge(i)).parse(input)?;
-    let (input, (item, nudge_after)) = parse_division(input)?;
-
-    Ok((
-        input,
-        Division {
-            item,
-            nudge_before,
-            nudge_after,
-        },
-    ))
+    let (input, (item, weight)) = parse_division(input)?;
+    Ok((input, Division { item, weight }))
 }
 
 fn parse_divisions(input: &str) -> nom::IResult<&str, Vec<Division>> {
@@ -142,8 +128,7 @@ fn parse_polyphonic_divisions(input: &str) -> nom::IResult<&str, Vec<Division>> 
     // Each layer independently subdivides the full bar time
     let result = vec![Division {
         item: Item::Polyphony(poly_layers),
-        nudge_before: None,
-        nudge_after: None,
+        weight: 1,
     }];
 
     Ok((input, result))
@@ -204,11 +189,14 @@ fn extract_notes(
         Item::Rest => {}
         Item::Sequence(divs) => {
             let div_span = end - start;
-            let samples_per_subdiv = div_span / divs.len() as f32;
-            for (sub_idx, subdiv) in divs.iter().enumerate() {
-                let sub_start = start + (sub_idx as f32 * samples_per_subdiv);
-                let sub_end = sub_start + samples_per_subdiv;
+            let total_weight: usize = divs.iter().map(|d| d.weight).sum();
+            let mut weight_idx = 0;
+            for subdiv in divs.iter() {
+                let sub_start = start + (weight_idx as f32 / total_weight as f32) * div_span;
+                let sub_end =
+                    start + ((weight_idx + subdiv.weight) as f32 / total_weight as f32) * div_span;
                 extract_notes(&subdiv.item, sub_start, sub_end, notes, scale);
+                weight_idx += subdiv.weight;
             }
         }
         Item::Polyphony(layers) => {
@@ -217,11 +205,14 @@ fn extract_notes(
                     continue;
                 }
                 let div_span = end - start;
-                let samples_per_subdiv = div_span / layer_divs.len() as f32;
-                for (sub_idx, subdiv) in layer_divs.iter().enumerate() {
-                    let sub_start = start + (sub_idx as f32 * samples_per_subdiv);
-                    let sub_end = sub_start + samples_per_subdiv;
+                let total_weight: usize = layer_divs.iter().map(|d| d.weight).sum();
+                let mut weight_idx = 0;
+                for subdiv in layer_divs.iter() {
+                    let sub_start = start + (weight_idx as f32 / total_weight as f32) * div_span;
+                    let sub_end = start
+                        + ((weight_idx + subdiv.weight) as f32 / total_weight as f32) * div_span;
                     extract_notes(&subdiv.item, sub_start, sub_end, notes, scale);
+                    weight_idx += subdiv.weight;
                 }
             }
         }
@@ -240,20 +231,25 @@ pub struct Track {
 }
 
 impl Track {
-    pub fn from_notation(notation: &str, scale: &crate::Scale) -> Result<Self, String> {
+    pub fn parse(notation: &str, scale: &crate::Scale) -> Result<Self, String> {
         let ast = parse_notation(notation)?;
         let mut events = Vec::new();
 
         for layer in &ast.layers {
-            let total_divisions: usize = layer.bars.iter().map(|b| b.divisions.len()).sum();
-            let mut division_idx = 0;
+            let total_weight: usize = layer
+                .bars
+                .iter()
+                .flat_map(|b| b.divisions.iter())
+                .map(|d| d.weight)
+                .sum();
+            let mut weight_idx = 0;
 
             for bar in &layer.bars {
                 for division in &bar.divisions {
-                    let div_start = division_idx as f32 / total_divisions as f32;
-                    let div_end = (division_idx + 1) as f32 / total_divisions as f32;
+                    let div_start = weight_idx as f32 / total_weight as f32;
+                    let div_end = (weight_idx + division.weight) as f32 / total_weight as f32;
                     extract_notes(&division.item, div_start, div_end, &mut events, scale);
-                    division_idx += 1;
+                    weight_idx += division.weight;
                 }
             }
         }
@@ -440,31 +436,48 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_nudge_before() {
-        let result = parse_notation("(0<30>/1)");
+    fn test_parse_weight_single_asterisk() {
+        let result = parse_notation("(0*/1)");
         assert!(result.is_ok());
         let ast = result.unwrap();
-        assert_eq!(ast.layers[0].bars[0].divisions[0].nudge_after, Some(30));
+        assert_eq!(ast.layers[0].bars[0].divisions[0].weight, 2);
+        assert_eq!(ast.layers[0].bars[0].divisions[1].weight, 1);
     }
 
     #[test]
-    fn test_parse_nudge_after() {
-        let result = parse_notation("(0/<10>1)");
+    fn test_parse_weight_multiple_asterisks() {
+        let result = parse_notation("(0**/1)");
         assert!(result.is_ok());
         let ast = result.unwrap();
-        assert_eq!(ast.layers[0].bars[0].divisions[1].nudge_before, Some(10));
+        assert_eq!(ast.layers[0].bars[0].divisions[0].weight, 3);
+        assert_eq!(ast.layers[0].bars[0].divisions[1].weight, 1);
     }
 
     #[test]
-    fn test_parse_complex_nudges() {
-        let result = parse_notation("(0/<30>1<10>/2)");
+    fn test_parse_weight_with_chromatic_shift() {
+        let result = parse_notation("(0+**/1)");
         assert!(result.is_ok());
         let ast = result.unwrap();
-        let divs = &ast.layers[0].bars[0].divisions;
-        assert_eq!(divs[0].nudge_after, None);
-        assert_eq!(divs[1].nudge_before, Some(30));
-        assert_eq!(divs[1].nudge_after, Some(10));
-        assert_eq!(divs[2].nudge_before, None);
+        assert_eq!(ast.layers[0].bars[0].divisions[0].weight, 3);
+        match &ast.layers[0].bars[0].divisions[0].item {
+            Item::Note(n) => {
+                assert_eq!(n.degree, 0);
+                assert_eq!(n.chromatic_shift, 1);
+            }
+            _ => panic!("Expected note with chromatic shift"),
+        }
+    }
+
+    #[test]
+    fn test_parse_rest_with_weight() {
+        let result = parse_notation("(_***/0)");
+        assert!(result.is_ok());
+        let ast = result.unwrap();
+        assert_eq!(ast.layers[0].bars[0].divisions[0].weight, 4);
+        assert!(matches!(
+            ast.layers[0].bars[0].divisions[0].item,
+            Item::Rest
+        ));
     }
 
     #[test]
@@ -624,7 +637,7 @@ mod tests {
     #[test]
     fn test_track_advance_no_change() {
         let scale = crate::scale::cmaj();
-        let mut track = Track::from_notation("(0/1/2)", &scale).unwrap();
+        let mut track = Track::parse("(0/1/2)", &scale).unwrap();
         let events = track.play(0.0);
         assert_eq!(events.len(), 0);
     }
@@ -632,7 +645,7 @@ mod tests {
     #[test]
     fn test_debug_timeline() {
         let scale = crate::scale::cmaj();
-        let track = Track::from_notation("(0)", &scale).unwrap();
+        let track = Track::parse("(0)", &scale).unwrap();
         assert!(!track.note_timeline.is_empty(), "Timeline is empty!");
         assert_eq!(track.note_timeline.len(), 1);
     }
@@ -681,7 +694,7 @@ mod tests {
     #[test]
     fn test_track_simple_note_press() {
         let scale = crate::scale::cmaj();
-        let mut track = Track::from_notation("(0)", &scale).unwrap();
+        let mut track = Track::parse("(0)", &scale).unwrap();
         assert!(!track.note_timeline.is_empty(), "Timeline is empty!");
         let events = track.play(0.5);
         assert_eq!(events.len(), 1);
@@ -691,7 +704,7 @@ mod tests {
     #[test]
     fn test_track_note_press_and_release() {
         let scale = crate::scale::cmaj();
-        let mut track = Track::from_notation("(0/1)", &scale).unwrap();
+        let mut track = Track::parse("(0/1)", &scale).unwrap();
         let events1 = track.play(0.25);
         assert_eq!(events1.len(), 1);
         assert!(matches!(events1[0], NoteEvent::Press { .. }));
@@ -705,7 +718,7 @@ mod tests {
     #[test]
     fn test_track_three_division_sequence() {
         let scale = crate::scale::cmaj();
-        let mut track = Track::from_notation("(0/1/2)", &scale).unwrap();
+        let mut track = Track::parse("(0/1/2)", &scale).unwrap();
 
         let events1 = track.play(0.1);
         assert_eq!(events1.len(), 1);
@@ -725,7 +738,7 @@ mod tests {
     #[test]
     fn test_track_rest_no_press() {
         let scale = crate::scale::cmaj();
-        let mut track = Track::from_notation("(0/_/1)", &scale).unwrap();
+        let mut track = Track::parse("(0/_/1)", &scale).unwrap();
 
         let events1 = track.play(0.15);
         assert_eq!(events1.len(), 1);
@@ -743,7 +756,7 @@ mod tests {
     #[test]
     fn test_track_polyphony_multiple_presses() {
         let scale = crate::scale::cmaj();
-        let mut track = Track::from_notation("{0%1%2}", &scale).unwrap();
+        let mut track = Track::parse("{0%1%2}", &scale).unwrap();
 
         let events = track.play(0.5);
         assert_eq!(events.len(), 3);
@@ -753,7 +766,7 @@ mod tests {
     #[test]
     fn test_track_polyphony_mixed_durations() {
         let scale = crate::scale::cmaj();
-        let mut track = Track::from_notation("{(0/1)%(1/2)}", &scale).unwrap();
+        let mut track = Track::parse("{(0/1)%(1/2)}", &scale).unwrap();
 
         let events1 = track.play(0.25);
         assert_eq!(events1.len(), 2);
@@ -769,7 +782,7 @@ mod tests {
         // Note 0.0 -> 1.0
         // Expected: 1 Press, 0 Release
         let scale = crate::scale::cmaj();
-        let mut track = Track::from_notation("(0)", &scale).unwrap();
+        let mut track = Track::parse("(0)", &scale).unwrap();
         let events = track.advance_with_direction(0.9, true);
         assert_eq!(events.len(), 1, "Expected 1 Press");
         assert!(matches!(events[0], NoteEvent::Press { .. }));
@@ -781,7 +794,7 @@ mod tests {
         // Note 0.0 -> 1.0
         // Expected: 1 Press, 0 Release
         let scale = crate::scale::cmaj();
-        let mut track = Track::from_notation("(0)", &scale).unwrap();
+        let mut track = Track::parse("(0)", &scale).unwrap();
         track.advance_with_direction(1.0f32.next_down(), false);
         let events = track.advance_with_direction(0.0, false);
         assert_eq!(events.len(), 1, "Expected 1 Press");
@@ -794,7 +807,7 @@ mod tests {
         // Note 0.0 -> 0.5
         // Expected: 0 Press, 1 Release
         let scale = crate::scale::cmaj();
-        let mut track = Track::from_notation("(0/_)", &scale).unwrap();
+        let mut track = Track::parse("(0/_)", &scale).unwrap();
         track.advance_with_direction(0.5, true);
         let events = track.advance_with_direction(1.0, true);
         assert_eq!(events.len(), 1, "Expected 1 Release");
@@ -807,7 +820,7 @@ mod tests {
         // Note 0.0 -> 0.5
         // Expected: 0 Press, 0 Release
         let scale = crate::scale::cmaj();
-        let mut track = Track::from_notation("(0)", &scale).unwrap();
+        let mut track = Track::parse("(0)", &scale).unwrap();
         track.advance_with_direction(1.0, true);
         let events = track.advance_with_direction(0.5, false);
         assert_eq!(events.len(), 0, "Expected 0 events");
@@ -819,7 +832,7 @@ mod tests {
         // Play forward to 0.9 (inside note 1)
         // Then play backward to 0.1 (inside note 0)
         let scale = crate::scale::cmaj();
-        let mut track = Track::from_notation("(0/1)", &scale).unwrap();
+        let mut track = Track::parse("(0/1)", &scale).unwrap();
         let _events = track.advance_with_direction(0.9, true);
         let events = track.advance_with_direction(0.1, false);
         // Moving backward should have some events (at minimum releasing note 1)
@@ -829,7 +842,7 @@ mod tests {
     #[test]
     fn test_track_multi_bar_sequence() {
         let scale = crate::scale::cmaj();
-        let mut track = Track::from_notation("(0)(1)(2)", &scale).unwrap();
+        let mut track = Track::parse("(0)(1)(2)", &scale).unwrap();
 
         let events1 = track.play(0.15);
         assert_eq!(events1.len(), 1);
@@ -845,7 +858,7 @@ mod tests {
     #[test]
     fn test_track_nested_sequence_structure() {
         let scale = crate::scale::cmaj();
-        let mut track = Track::from_notation("((0/1)/(2/3))", &scale).unwrap();
+        let mut track = Track::parse("((0/1)/(2/3))", &scale).unwrap();
 
         let events1 = track.play(0.1);
         assert!(matches!(events1[0], NoteEvent::Press { .. }));
