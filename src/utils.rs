@@ -4,8 +4,12 @@ pub fn mix(samples: &[f32]) -> f32 {
     }
     samples.iter().sum::<f32>() / samples.len() as f32
 }
-pub(crate) fn midi_to_freq(note: f32) -> f32 {
+pub fn midi_to_freq(note: f32) -> f32 {
     440.0 * 2.0_f32.powf((note - 69.0) / 12.0)
+}
+
+pub fn semitones_to_hz(semitones: f32) -> f32 {
+    440.0 * 2.0_f32.powf(semitones / 12.0)
 }
 
 pub(crate) fn note_to_freq(note: f32) -> f32 {

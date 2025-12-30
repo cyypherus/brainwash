@@ -5,7 +5,7 @@
 - **Bars**: `(...)` Top-level parentheses define bars, executed sequentially
 - **Divisions**: Subdivide bar time equally. `/` separates divisions within a level
 - **Rest**: `_` silence for one division
-- **Legato**: `~` connects notes without release, creating slides/bends
+
 - **Nudge**: `<N>` on separator adjusts transition timing (0-100, % of duration)
   - Before separator: `<30>/` nudges end of preceding note 30% later, start of following note 30% later
   - After separator: `/<10>` nudges end of preceding note 10% earlier, start of following note 10% earlier
@@ -32,7 +32,7 @@
 | `(0)` | Play scale degree 0 for entire bar |
 | `(0/_/2)` | Degree 0, rest, degree 2 (three equal divisions) |
 | `(0/1/2)` | Three divisions: degrees 0, 1, 2 (release between each) |
-| `(0~1~2)` | Degrees 0→1→2 legato (no release, continuous bend) |
+
 | `(0/<30>1<10>/2)` | Note 0 ends 30% late, note 1 starts 30% late and ends 10% early, note 2 starts 10% early |
 | `((0/_/1/2)/(0/_/1))` | First half: 0,rest,1,2. Second half: 0,rest,1 |
 | `(0)(1)` | Two bars: degree 0, then degree 1 |

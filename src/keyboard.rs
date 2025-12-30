@@ -19,6 +19,12 @@ pub struct Key {
     pub state: KeyState,
 }
 
+impl Key {
+    pub fn pressed(&self) -> bool {
+        matches!(self.state, KeyState::Pressed { .. })
+    }
+}
+
 pub struct Keyboard<V> {
     voices: [V; 128],
     states: [KeyState; 128],

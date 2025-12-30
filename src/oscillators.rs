@@ -20,6 +20,7 @@ pub struct Osc {
     unipolar: bool,
     pub(crate) phase_accumulator: u32,
     noise_seed: u32,
+    shift_semitones: f32,
 }
 
 impl Default for Osc {
@@ -64,6 +65,7 @@ impl Osc {
             unipolar: false,
             phase_accumulator: 0,
             noise_seed: 22222,
+            shift_semitones: 0.0,
         }
     }
 
@@ -97,14 +99,8 @@ impl Osc {
         self
     }
 
-    pub fn phase_offset(&mut self, p: f32) -> &mut Self {
-        self.phase_offset = p;
-        self
-    }
-
-    pub fn pitch(&mut self, p: f32) -> &mut Self {
-        self.pitch = p;
-        self.frequency = utils::note_to_freq(p);
+    pub fn shift(&mut self, semitones: f32) -> &mut Self {
+        self.shift_semitones = semitones;
         self
     }
 
@@ -135,9 +131,10 @@ impl Osc {
 
     fn calculate_time_based(&mut self, signal: &mut Signal) {
         let sample_rate = signal.sample_rate as f32;
+        let shifted_freq = self.frequency * 2.0_f32.powf(self.shift_semitones / 12.0);
 
         let phase_increment =
-            ((self.frequency as f64 / sample_rate as f64) * (u32::MAX as f64 + 1.0)) as u32;
+            ((shifted_freq as f64 / sample_rate as f64) * (u32::MAX as f64 + 1.0)) as u32;
 
         self.phase_accumulator = self.phase_accumulator.wrapping_add(phase_increment);
         let phase = self.phase_accumulator as f32 / (u32::MAX as f32 + 1.0);

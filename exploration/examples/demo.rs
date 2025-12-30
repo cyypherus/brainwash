@@ -1,7 +1,7 @@
 use brainwash2::*;
 
 fn main() {
-    let bpm = 80.0;
+    let bpm = 100.0;
 
     let track_str = "
     (
@@ -24,31 +24,23 @@ fn main() {
         let mut clock = rsaw();
         let mut osc1 = saw();
         let mut osc2 = tri();
+        let mut osc3 = sin();
         move |key, _sample_time: usize| {
             let clock_pos = clock.hz(1.).unipolar().play(0.5);
 
             let press_state = track.query(key, clock_pos);
 
-            // dbg!(key.frequency);
-            // gain(
-            //     adsr(lead(), press_state),
-            //     mix(vec![
-            //         osc2.shift(-12.).play(key.frequency),
-            //         osc1.shift(-12.).play(key.frequency),
-            //     ]),
-            // )
-            if let PressState::Pressed {
-                pressed_at,
-                time_in_state,
-            } = press_state
-            {
-                osc1.play(key.frequency)
-            } else {
-                0.
-            }
+            gain(
+                adsr(lead(), press_state),
+                mix(vec![
+                    osc3.shift(-24.).play(key.frequency * 0.5),
+                    osc2.shift(-12.).play(key.frequency),
+                    osc1.shift(-12.).play(key.frequency),
+                ]),
+            )
         }
     });
 
-    play_live(move |sample_time| instrument.output(sample_time) * 0.3)
+    play_live(move |sample_time| instrument.output(sample_time) * 0.2)
         .expect("Failed to play live");
 }

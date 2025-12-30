@@ -1,5 +1,6 @@
-use crate::{Signal, KeyState};
+use crate::{KeyState, Signal};
 
+#[derive(Clone)]
 pub struct ADSR {
     attack: f32,
     decay: f32,
@@ -72,7 +73,10 @@ impl ADSR {
                 let elapsed = (current_time - pressed_at) as f32 / sample_rate;
                 self.calculate_envelope_value(elapsed)
             }
-            KeyState::Released { pressed_at, released_at } => {
+            KeyState::Released {
+                pressed_at,
+                released_at,
+            } => {
                 let trigger_elapsed = (released_at - pressed_at) as f32 / sample_rate;
                 let release_elapsed = (current_time - released_at) as f32 / sample_rate;
 
@@ -113,5 +117,21 @@ impl ADSR {
         } else {
             1.0 - ((-exp_curve) * (1.0 - t)).exp() / ((-exp_curve).exp())
         }
+    }
+
+    pub fn pluck(&mut self) -> &mut Self {
+        self.att(0.005).dec(0.5).sus(0.0).rel(0.2)
+    }
+
+    pub fn stab(&mut self) -> &mut Self {
+        self.att(0.001).dec(0.1).sus(0.0).rel(0.3)
+    }
+
+    pub fn lead(&mut self) -> &mut Self {
+        self.att(0.05).dec(0.3).sus(0.7).rel(0.4)
+    }
+
+    pub fn pad(&mut self) -> &mut Self {
+        self.att(0.5).dec(0.5).sus(0.7).rel(1.0)
     }
 }
