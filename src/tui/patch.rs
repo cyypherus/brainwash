@@ -140,24 +140,25 @@ impl Patch {
     pub fn move_modules(&mut self, moves: &[(ModuleId, GridPos)]) -> usize {
         self.grid.clear_channels();
 
-        let mut module_data: Vec<(ModuleId, GridPos, u8, u8)> = Vec::new();
-        for (id, new_pos) in moves {
-            let Some(module) = self.modules.get(id) else { continue };
-            module_data.push((*id, *new_pos, module.width(), module.height()));
+        let module_data: Vec<(ModuleId, GridPos, u8, u8)> = moves.iter()
+            .filter_map(|(id, new_pos)| {
+                let module = self.modules.get(id)?;
+                Some((*id, *new_pos, module.width(), module.height()))
+            })
+            .collect();
+
+        for &(id, _, _, _) in &module_data {
+            self.grid.remove_module(id);
         }
 
-        for (id, _, _, _) in &module_data {
-            self.grid.remove_module(*id);
-        }
-
-        for (id, new_pos, width, height) in &module_data {
-            for dy in 0..*height {
-                for dx in 0..*width {
+        for &(_, new_pos, width, height) in &module_data {
+            for dy in 0..height {
+                for dx in 0..width {
                     let p = GridPos::new(new_pos.x + dx as u16, new_pos.y + dy as u16);
                     if !self.grid.in_bounds(p) || !self.grid.get(p).is_empty() {
-                        for (rid, _, rw, rh) in &module_data {
-                            if let Some(old_pos) = self.positions.get(rid) {
-                                self.grid.place_module(*rid, *old_pos, *rw, *rh);
+                        for &(id, _, width, height) in &module_data {
+                            if let Some(&old_pos) = self.positions.get(&id) {
+                                self.grid.place_module(id, old_pos, width, height);
                             }
                         }
                         self.rebuild_channels();
@@ -167,15 +168,13 @@ impl Patch {
             }
         }
 
-        let mut moved = 0;
-        for (id, new_pos, width, height) in &module_data {
-            self.grid.place_module(*id, *new_pos, *width, *height);
-            self.positions.insert(*id, *new_pos);
-            moved += 1;
+        for &(id, new_pos, width, height) in &module_data {
+            self.grid.place_module(id, new_pos, width, height);
+            self.positions.insert(id, new_pos);
         }
 
         self.rebuild_channels();
-        moved
+        module_data.len()
     }
 
     pub fn rotate_module(&mut self, id: ModuleId) -> bool {

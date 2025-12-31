@@ -26,6 +26,8 @@ use tui_textarea::TextArea;
 use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
 use std::{io, time::Duration};
+use std::process::Command;
+use std::fs;
 
 #[derive(Clone, PartialEq)]
 enum Mode {
@@ -39,14 +41,18 @@ enum Mode {
     AdsrEdit { module_id: ModuleId, param_idx: usize },
     EnvEdit { module_id: ModuleId, point_idx: usize, editing: bool },
     ProbeEdit { module_id: ModuleId, param_idx: usize },
-    TrackEdit,
     SavePrompt,
+}
+
+enum AppRequest {
+    EditTrack,
 }
 
 struct App<'a> {
     patch: Patch,
     cursor: GridPos,
     mode: Mode,
+    pending_request: Option<AppRequest>,
     palette_category: usize,
     palette_selections: [usize; 7],
     palette_filter: String,
@@ -61,7 +67,6 @@ struct App<'a> {
     track_textarea: TextArea<'a>,
     file_path: Option<PathBuf>,
     file_textarea: TextArea<'a>,
-    probe_history: Vec<f32>,
     probe_min: f32,
     probe_max: f32,
     probe_len: usize,
@@ -90,6 +95,7 @@ impl<'a> App<'a> {
             patch,
             cursor: GridPos::new(0, 0),
             mode: Mode::Normal,
+            pending_request: None,
             palette_category: 0,
             palette_selections: [0; 7],
             palette_filter: String::new(),
@@ -104,10 +110,9 @@ impl<'a> App<'a> {
             track_textarea: textarea,
             file_path: None,
             file_textarea,
-            probe_history: Vec::with_capacity(512),
             probe_min: -1.0,
             probe_max: 1.0,
-            probe_len: 128,
+            probe_len: 4410,
         }
     }
 
@@ -153,7 +158,6 @@ impl<'a> App<'a> {
             Mode::AdsrEdit { module_id, param_idx } => self.handle_adsr_edit_key(code, module_id, param_idx),
             Mode::EnvEdit { module_id, point_idx, editing } => self.handle_env_edit_key(code, module_id, point_idx, editing),
             Mode::ProbeEdit { module_id, param_idx } => self.handle_probe_edit_key(code, module_id, param_idx),
-            Mode::TrackEdit => self.handle_track_edit_key(code, modifiers),
             Mode::SavePrompt => self.handle_save_prompt_key(code, modifiers),
             Mode::QuitConfirm => self.handle_quit_confirm_key(code),
         }
@@ -240,7 +244,6 @@ impl<'a> App<'a> {
                         } else if m.kind == ModuleKind::Envelope {
                             self.mode = Mode::EnvEdit { module_id: id, point_idx: 0, editing: false };
                         } else if m.kind == ModuleKind::Probe {
-                            self.probe_history.clear();
                             self.mode = Mode::ProbeEdit { module_id: id, param_idx: 0 };
                         } else {
                             let defs = m.kind.param_defs();
@@ -266,7 +269,7 @@ impl<'a> App<'a> {
                 self.message = Some(if self.playing { "Playing".into() } else { "Paused".into() });
             }
             Action::TrackEdit => {
-                self.mode = Mode::TrackEdit;
+                self.pending_request = Some(AppRequest::EditTrack);
             }
             Action::Select => {
                 self.mode = Mode::Select { anchor: self.cursor };
@@ -662,22 +665,6 @@ impl<'a> App<'a> {
         }
     }
 
-    fn handle_track_edit_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
-        if code == KeyCode::Esc {
-            self.message = Some("Track edit cancelled".into());
-            self.mode = Mode::Normal;
-        } else if code == KeyCode::Char('s') && modifiers.contains(KeyModifiers::CONTROL) {
-            self.reparse_track();
-            self.mode = Mode::Normal;
-        }
-    }
-
-    fn handle_track_event(&mut self, event: &Event) {
-        if let Event::Key(_) = event {
-            self.track_textarea.input(event.clone());
-        }
-    }
-
     fn handle_save_prompt_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         match code {
             KeyCode::Esc => {
@@ -984,53 +971,58 @@ impl<'a> App<'a> {
             KeyCode::Esc | KeyCode::Char('u') => {
                 self.mode = Mode::Normal;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
+            KeyCode::Char('l') | KeyCode::Right => {
                 let new_idx = (param_idx + 1) % 3;
                 self.mode = Mode::ProbeEdit { module_id, param_idx: new_idx };
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Char('h') | KeyCode::Left => {
                 let new_idx = if param_idx == 0 { 2 } else { param_idx - 1 };
                 self.mode = Mode::ProbeEdit { module_id, param_idx: new_idx };
             }
-            KeyCode::Char('l') | KeyCode::Right => {
-                match param_idx {
-                    0 => self.probe_min += 0.1,
-                    1 => self.probe_max += 0.1,
-                    2 => self.probe_len = (self.probe_len + 16).min(512),
-                    _ => {}
-                }
-            }
-            KeyCode::Char('h') | KeyCode::Left => {
+            KeyCode::Char('k') | KeyCode::Up => {
                 match param_idx {
                     0 => self.probe_min -= 0.1,
-                    1 => self.probe_max -= 0.1,
-                    2 => self.probe_len = self.probe_len.saturating_sub(16).max(16),
+                    1 => self.probe_max += 0.1,
+                    2 => self.probe_len = (self.probe_len * 2).min(44100 * 2),
                     _ => {}
                 }
             }
-            KeyCode::Char('L') => {
+            KeyCode::Char('j') | KeyCode::Down => {
                 match param_idx {
-                    0 => self.probe_min += 1.0,
-                    1 => self.probe_max += 1.0,
-                    2 => self.probe_len = (self.probe_len + 64).min(512),
+                    0 => self.probe_min += 0.1,
+                    1 => self.probe_max -= 0.1,
+                    2 => self.probe_len = (self.probe_len / 2).max(8),
                     _ => {}
                 }
             }
-            KeyCode::Char('H') => {
+            KeyCode::Char('K') => {
                 match param_idx {
                     0 => self.probe_min -= 1.0,
+                    1 => self.probe_max += 1.0,
+                    2 => self.probe_len = (self.probe_len * 4).min(44100 * 2),
+                    _ => {}
+                }
+            }
+            KeyCode::Char('J') => {
+                match param_idx {
+                    0 => self.probe_min += 1.0,
                     1 => self.probe_max -= 1.0,
-                    2 => self.probe_len = self.probe_len.saturating_sub(64).max(16),
+                    2 => self.probe_len = (self.probe_len / 4).max(8),
                     _ => {}
                 }
             }
             KeyCode::Char('r') => {
                 self.probe_min = -1.0;
                 self.probe_max = 1.0;
-                self.probe_len = 128;
+                self.probe_len = 4410;
             }
             KeyCode::Char('c') => {
-                self.probe_history.clear();
+                let probe_idx = self.patch.all_modules()
+                    .filter(|m| m.kind == ModuleKind::Probe)
+                    .position(|m| m.id == module_id);
+                if let Some(idx) = probe_idx {
+                    self.audio_patch.lock().unwrap().clear_probe_history(idx);
+                }
             }
             _ => {}
         }
@@ -1063,7 +1055,11 @@ impl<'a> App<'a> {
             _ => None,
         };
 
-        let probe_values: Vec<f32> = self.audio_patch.lock().unwrap().probe_values().to_vec();
+        let audio_patch = self.audio_patch.lock().unwrap();
+        let probe_values: Vec<f32> = (0..16)
+            .filter_map(|i| audio_patch.probe_history(i).and_then(|h| h.back().copied()))
+            .collect();
+        drop(audio_patch);
         let grid_widget = GridWidget::new(&self.patch)
             .cursor(self.cursor)
             .moving(moving_id)
@@ -1094,7 +1090,6 @@ impl<'a> App<'a> {
             Mode::AdsrEdit { .. } => "ADSR",
             Mode::EnvEdit { .. } => "ENV",
             Mode::ProbeEdit { .. } => "PROBE",
-            Mode::TrackEdit => "TRACK",
             Mode::SavePrompt => "SAVE",
             Mode::QuitConfirm => "QUIT?",
         };
@@ -1159,31 +1154,6 @@ impl<'a> App<'a> {
             }
         }
 
-        if self.mode == Mode::TrackEdit {
-            let track_width = 50.min(f.area().width.saturating_sub(4));
-            let track_height = 10.min(f.area().height.saturating_sub(4));
-            let track_x = (f.area().width.saturating_sub(track_width)) / 2;
-            let track_y = (f.area().height.saturating_sub(track_height)) / 2;
-            let track_area = Rect::new(track_x, track_y, track_width, track_height);
-
-            f.render_widget(Clear, track_area);
-
-            let track_block = Block::default()
-                .title(" Track (Ctrl-s save, Esc cancel) ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Yellow));
-            f.render_widget(track_block, track_area);
-
-            let inner = Rect::new(
-                track_area.x + 1,
-                track_area.y + 1,
-                track_area.width.saturating_sub(2),
-                track_area.height.saturating_sub(2),
-            );
-
-            f.render_widget(&self.track_textarea, inner);
-        }
-
         if let Mode::AdsrEdit { module_id, param_idx } = self.mode {
             if let Some(module) = self.patch.module(module_id) {
                 let env_width = f.area().width.saturating_sub(4);
@@ -1245,13 +1215,17 @@ impl<'a> App<'a> {
 
         if let Mode::ProbeEdit { module_id, param_idx } = self.mode {
             if let Some(module) = self.patch.module(module_id) {
-                let probe_values: Vec<f32> = self.audio_patch.lock().unwrap().probe_values().to_vec();
-                let current = probe_values.first().copied().unwrap_or(0.0);
+                let probe_idx = self.patch.all_modules()
+                    .filter(|m| m.kind == ModuleKind::Probe)
+                    .position(|m| m.id == module_id);
                 
-                self.probe_history.push(current);
-                while self.probe_history.len() > 512 {
-                    self.probe_history.remove(0);
-                }
+                let audio_patch = self.audio_patch.lock().unwrap();
+                let history: Vec<f32> = probe_idx
+                    .and_then(|i| audio_patch.probe_history(i))
+                    .map(|h| h.iter().copied().collect())
+                    .unwrap_or_default();
+                let current = history.last().copied().unwrap_or(0.0);
+                drop(audio_patch);
 
                 let probe_width = f.area().width.saturating_sub(4);
                 let probe_height = f.area().height.saturating_sub(6);
@@ -1273,7 +1247,7 @@ impl<'a> App<'a> {
                     probe_area.width.saturating_sub(2),
                     probe_area.height.saturating_sub(2),
                 );
-                let probe_widget = ProbeWidget::new(&self.probe_history, self.probe_min, self.probe_max, self.probe_len, current, param_idx);
+                let probe_widget = ProbeWidget::new(&history, self.probe_min, self.probe_max, self.probe_len, current, param_idx);
                 f.render_widget(probe_widget, inner);
             }
         }
@@ -1381,10 +1355,43 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         if event::poll(Duration::from_millis(50))? {
             let event = event::read()?;
             if let Event::Key(key) = &event {
-                if app.mode == Mode::TrackEdit {
-                    app.handle_track_event(&event);
-                }
                 app.handle_key(key.code, key.modifiers);
+            }
+        }
+
+        if let Some(request) = app.pending_request.take() {
+            match request {
+                AppRequest::EditTrack => {
+                    disable_raw_mode()?;
+                    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+                    
+                    let track_text: String = app.track_textarea.lines().join("\n");
+                    let temp_path = std::env::temp_dir().join("brainwash_track.txt");
+                    fs::write(&temp_path, &track_text)?;
+                    
+                    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".into());
+                    let status = Command::new(&editor).arg(&temp_path).status();
+                    
+                    if let Ok(s) = status {
+                        if s.success() {
+                            if let Ok(new_text) = fs::read_to_string(&temp_path) {
+                                app.track_textarea = TextArea::new(new_text.lines().map(|s| s.to_string()).collect());
+                                app.track_textarea.set_cursor_line_style(Style::default());
+                                app.track_textarea.set_block(Block::default());
+                                app.reparse_track();
+                            }
+                        }
+                    }
+                    let _ = fs::remove_file(&temp_path);
+                    
+                    enable_raw_mode()?;
+                    execute!(
+                        terminal.backend_mut(),
+                        EnterAlternateScreen,
+                        EnableMouseCapture
+                    )?;
+                    terminal.clear()?;
+                }
             }
         }
 

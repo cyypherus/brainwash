@@ -1072,15 +1072,16 @@ impl Widget for ProbeWidget<'_> {
         let max_str = format!("Max: {:.2}", self.max);
         let len_str = format!("Len: {}", self.len);
         set_str(buf, header_area.x, header_area.y + 2, &min_str, min_style);
-        set_str(buf, header_area.x + min_str.len() as u16 + 2, header_area.y + 2, &max_str, max_style);
-        set_str(buf, header_area.x + min_str.len() as u16 + max_str.len() as u16 + 4, header_area.y + 2, &len_str, len_style);
-        set_str(buf, header_area.x, header_area.y + 3, "<hl> adjust, r reset, c clear", label_style);
+        let mut x = header_area.x + min_str.len() as u16 + 2;
+        set_str(buf, x, header_area.y + 2, &max_str, max_style);
+        x += max_str.len() as u16 + 2;
+        set_str(buf, x, header_area.y + 2, &len_str, len_style);
+        set_str(buf, header_area.x, header_area.y + 3, "hl select, jk adjust, r reset, c clear", label_style);
 
         if chart_area.width < 5 || chart_area.height < 3 {
             return;
         }
 
-        let w = chart_area.width as usize;
         let h = (chart_area.height - 1) as f32;
         let range = self.max - self.min;
 
@@ -1106,21 +1107,19 @@ impl Widget for ProbeWidget<'_> {
         let curve_style = Style::default().fg(Color::Rgb(100, 220, 220));
         let fill_style = Style::default().fg(Color::Rgb(40, 80, 80));
         let start = self.history.len().saturating_sub(self.len);
-        let samples: Vec<f32> = self.history[start..].to_vec();
+        let samples: &[f32] = &self.history[start..];
+        
+        if samples.is_empty() {
+            return;
+        }
         
         let chart_w = (chart_area.width - 1) as usize;
         for screen_i in 0..chart_w {
             let x = (screen_i + 1) as u16;
             
-            let sample_idx = if samples.len() <= chart_w {
-                if screen_i < samples.len() { Some(screen_i) } else { None }
-            } else {
-                let t = screen_i as f32 / chart_w as f32;
-                Some((t * samples.len() as f32) as usize)
-            };
-            
-            let Some(idx) = sample_idx else { continue };
-            let Some(&val) = samples.get(idx) else { continue };
+            let t = screen_i as f32 / chart_w.max(1) as f32;
+            let sample_idx = ((t * samples.len() as f32) as usize).min(samples.len().saturating_sub(1));
+            let val = samples[sample_idx];
             
             let normalized = if range > 0.0 {
                 ((self.max - val) / range).clamp(0.0, 1.0)

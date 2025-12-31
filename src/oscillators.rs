@@ -1,4 +1,4 @@
-use crate::{Signal, utils};
+use crate::Signal;
 
 #[derive(Clone, Copy)]
 pub enum Wave {
@@ -13,7 +13,6 @@ pub enum Wave {
 pub struct Osc {
     computed_sample: f32,
     wave_type: Wave,
-    pitch: f32,
     frequency: f32,
     attenuation: f32,
     phase_offset: f32,
@@ -57,7 +56,7 @@ impl Osc {
     fn new(wave_type: Wave) -> Self {
         Self {
             wave_type,
-            pitch: 0.0,
+
             frequency: 440.0,
             attenuation: 1.0,
             phase_offset: 0.0,

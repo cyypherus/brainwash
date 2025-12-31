@@ -273,11 +273,13 @@ impl PatchVoices {
 
 const CROSSFADE_SAMPLES: usize = 441;
 
+const PROBE_HISTORY_LEN: usize = 44100 * 2;
+
 pub struct CompiledPatch {
     current: Option<PatchVoices>,
     old: Option<PatchVoices>,
     crossfade_pos: usize,
-    probe_values: Vec<f32>,
+    probe_histories: Vec<VecDeque<f32>>,
 }
 
 impl Default for CompiledPatch {
@@ -286,7 +288,7 @@ impl Default for CompiledPatch {
             current: None,
             old: None,
             crossfade_pos: CROSSFADE_SAMPLES,
-            probe_values: Vec::new(),
+            probe_histories: Vec::new(),
         }
     }
 }
@@ -324,20 +326,35 @@ impl CompiledPatch {
         
         if let Some(ref current) = self.current {
             if !current.voices.is_empty() {
-                self.probe_values.clear();
+                let mut probe_idx = 0;
                 for node in &current.voices[0].nodes {
                     if let NodeKind::Probe { value } = &node.kind {
-                        self.probe_values.push(*value);
+                        if probe_idx >= self.probe_histories.len() {
+                            self.probe_histories.push(VecDeque::with_capacity(PROBE_HISTORY_LEN));
+                        }
+                        let history = &mut self.probe_histories[probe_idx];
+                        history.push_back(*value);
+                        if history.len() > PROBE_HISTORY_LEN {
+                            history.pop_front();
+                        }
+                        probe_idx += 1;
                     }
                 }
+                self.probe_histories.truncate(probe_idx);
             }
         }
         
         sample
     }
     
-    pub fn probe_values(&self) -> &[f32] {
-        &self.probe_values
+    pub fn probe_history(&self, idx: usize) -> Option<&VecDeque<f32>> {
+        self.probe_histories.get(idx)
+    }
+
+    pub fn clear_probe_history(&mut self, idx: usize) {
+        if let Some(h) = self.probe_histories.get_mut(idx) {
+            h.clear();
+        }
     }
 }
 

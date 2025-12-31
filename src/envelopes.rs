@@ -1,5 +1,3 @@
-use crate::Signal;
-
 #[derive(Clone, Debug, Copy)]
 pub enum PointType {
     Linear,

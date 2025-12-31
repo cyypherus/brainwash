@@ -11,7 +11,3 @@ pub fn midi_to_freq(note: f32) -> f32 {
 pub fn semitones_to_hz(semitones: f32) -> f32 {
     440.0 * 2.0_f32.powf(semitones / 12.0)
 }
-
-pub(crate) fn note_to_freq(note: f32) -> f32 {
-    midi_to_freq(note + 60.0)
-}
