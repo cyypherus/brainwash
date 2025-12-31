@@ -236,7 +236,7 @@ impl ModuleKind {
             _ => self
                 .param_defs()
                 .iter()
-                .filter(|d| !matches!(d.kind, ParamKind::Enum))
+                .filter(|d| d.kind.is_port())
                 .count(),
         }
     }
@@ -245,7 +245,7 @@ impl ModuleKind {
         self.param_defs()
             .iter()
             .enumerate()
-            .filter(|(_, d)| !matches!(d.kind, ParamKind::Enum))
+            .filter(|(_, d)| d.kind.is_port())
             .nth(port_idx)
             .map(|(i, _)| i)
     }
@@ -499,7 +499,7 @@ impl Module {
             match def.kind {
                 ParamKind::Input => true,
                 ParamKind::Float { .. } => self.params.is_connected(param_idx),
-                ParamKind::Enum => false,
+                ParamKind::Enum | ParamKind::Toggle => false,
             }
         } else {
             false
@@ -511,6 +511,13 @@ pub enum ParamKind {
     Float { min: f32, max: f32, step: f32 },
     Input,
     Enum,
+    Toggle,
+}
+
+impl ParamKind {
+    pub fn is_port(&self) -> bool {
+        matches!(self, ParamKind::Input | ParamKind::Float { .. })
+    }
 }
 
 pub struct ParamDef {
@@ -550,6 +557,10 @@ impl ModuleKind {
                         max: 1.0,
                         step: 0.05,
                     },
+                },
+                ParamDef {
+                    name: "Uni",
+                    kind: ParamKind::Toggle,
                 },
             ],
             ModuleKind::Rise | ModuleKind::Fall => &[
@@ -896,6 +907,7 @@ pub enum ModuleParams {
         freq: f32,
         shift: f32,
         gain: f32,
+        uni: bool,
         connected: u8,
     },
     Rise {
@@ -991,6 +1003,7 @@ impl ModuleParams {
                 freq: 440.0,
                 shift: 0.0,
                 gain: 1.0,
+                uni: false,
                 connected: 0xFF,
             },
             ModuleKind::Rise => ModuleParams::Rise {
@@ -1367,6 +1380,26 @@ impl ModuleParams {
     pub fn cycle_enum_prev(&mut self) {
         match self {
             ModuleParams::Osc { wave, .. } => *wave = wave.prev(),
+            _ => {}
+        }
+    }
+
+    pub fn get_toggle(&self, idx: usize) -> bool {
+        match self {
+            ModuleParams::Osc { uni, .. } => match idx {
+                4 => *uni,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    pub fn toggle(&mut self, idx: usize) {
+        match self {
+            ModuleParams::Osc { uni, .. } => match idx {
+                4 => *uni = !*uni,
+                _ => {}
+            },
             _ => {}
         }
     }

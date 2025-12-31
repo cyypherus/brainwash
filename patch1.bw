@@ -1,48 +1,72 @@
-bpm 200
+bpm 20
 
-module 28 TurnDR 9 13
-module 8 LSplit 4 11
-module 5 Gate 12 13
-module 15 Gt 8 12
-module 18 LSplit 4 9
-module 2 Gate 0 9
-module 24 Osc 14 11
-module 29 Mul 16 11
-module 6 Env 8 14
-module 27 Probe 7 14
-module 23 TurnRD 6 11
-module 25 Probe 9 15
-module 20 TurnDR 7 12
-module 14 Probe 15 11
-module 12 Probe 3 11
-module 19 TurnDR 6 13
-module 7 TurnDR 5 15
-module 17 Env 8 15
-module 3 TurnRD 5 10
-module 1 TurnDR 4 14
-module 4 Freq 12 11
-module 16 TurnRD 9 12
-module 13 Probe 3 9
-module 0 Fall 2 11
-module 9 Out 18 11
-module 26 TurnDR 4 10
+module 19 Osc 18 9
+module 24 Freq 16 9
+module 22 Out 23 9
+module 0 TurnDR 4 14
+module 25 Env 20 9
+module 30 Probe 15 11
+module 6 TurnRD 7 9
+module 10 TurnRD 6 11
 module 11 Rise 2 9
-module 21 Switch 10 13
-module 22 TurnRD 7 9
-module 10 Probe 13 13
+module 18 LSplit 4 11
+module 21 Env 8 15
+module 28 TurnRD 5 10
+module 23 Switch 10 13
+module 13 LSplit 4 9
+module 5 Fall 2 11
+module 15 Probe 3 11
+module 1 TurnRD 9 12
+module 20 TurnDR 9 13
+module 8 TurnDR 4 10
+module 4 TurnDR 5 15
+module 9 Gate 14 11
+module 17 Mul 21 9
+module 3 TurnDR 7 12
+module 2 Gate 0 9
+module 26 TurnDR 6 13
+module 16 Probe 19 9
+module 14 Probe 9 15
+module 27 Gt 8 12
+module 29 Env 8 14
+module 7 Probe 3 9
+module 12 Probe 7 14
 
-param 24 3 0.2
-param 29 1 0.19999993
+param 19 3 0.2
+param 17 1 0.19999993
 
-port 29 0xFD
+port 17 0xFD
 
-env 17 0 1
-env 17 1 0
-env 6 0 0
-env 6 0.31000018 0.90000015
-env 6 0.75 0
-env 6 1 1
+env 25 0 0
+env 25 0.10000066 1 curve
+env 25 0.34000063 0.25
+env 25 1 1
+env 21 0 1
+env 21 1 0
+env 29 0 0
+env 29 0.31000018 0.90000015
+env 29 0.75 0
+env 29 1 1
 
 track
-(2/_/4/_/5/_/6)
+{
+{0&4&7}/{2&5&9}/{4&7&11}/{5&9&12}
+&
+((9/11/12/14)/(12/11/9/11)/(14/16/14/12)/(11/9/7/9))
+}
+{
+{7&11&14}/{9&12&16}/{11&14&18}/{12&16&19}
+&
+((16/14/12/11)/(14/12/11/9)/(12/14/16/18)/(14/12/11/9))
+}
+{
+{4&7&11}/{5&9&12}/{7&11&14}/{9&12&16}
+&
+((11/9/7/4)/(9/7/4/2)/(7/9/11/12)/(9/7/4/2))
+}
+{
+{0&4&7}/{2&5&9}/{4&7&11}/{5&9&12}
+&
+((9/11/12/14)/(16/14/12/11)/(14/16/18/19)/(16/14/12/11))
+}
 end

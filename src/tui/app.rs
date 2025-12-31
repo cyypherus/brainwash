@@ -268,11 +268,17 @@ impl App {
     fn screen_to_grid(&self, col: u16, row: u16) -> Option<GridPos> {
         const CELL_WIDTH: u16 = 5;
         const CELL_HEIGHT: u16 = 3;
-        if col < self.grid_area.x || row < self.grid_area.y {
+        const GUTTER_LEFT: u16 = 2;
+        const GUTTER_TOP: u16 = 1;
+        let grid_x = self.grid_area.x + GUTTER_LEFT;
+        let grid_y = self.grid_area.y + GUTTER_TOP;
+        if col < grid_x || row < grid_y {
             return None;
         }
-        let visible_cols = self.grid_area.width / CELL_WIDTH;
-        let visible_rows = self.grid_area.height / CELL_HEIGHT;
+        let grid_width = self.grid_area.width.saturating_sub(GUTTER_LEFT);
+        let grid_height = self.grid_area.height.saturating_sub(GUTTER_TOP);
+        let visible_cols = grid_width / CELL_WIDTH;
+        let visible_rows = grid_height / CELL_HEIGHT;
         let half_cols = visible_cols / 2;
         let half_rows = visible_rows / 2;
 
@@ -292,8 +298,8 @@ impl App {
             self.view_center.y - half_rows
         };
 
-        let vx = (col - self.grid_area.x) / CELL_WIDTH;
-        let vy = (row - self.grid_area.y) / CELL_HEIGHT;
+        let vx = (col - grid_x) / CELL_WIDTH;
+        let vy = (row - grid_y) / CELL_HEIGHT;
         let gx = origin_x + vx;
         let gy = origin_y + vy;
 
@@ -989,6 +995,9 @@ impl App {
                             ParamKind::Enum => {
                                 m.params.cycle_enum_prev();
                             }
+                            ParamKind::Toggle => {
+                                m.params.toggle(param_idx);
+                            }
                             ParamKind::Input => {}
                         }
                     }
@@ -1007,6 +1016,9 @@ impl App {
                             }
                             ParamKind::Enum => {
                                 m.params.cycle_enum_next();
+                            }
+                            ParamKind::Toggle => {
+                                m.params.toggle(param_idx);
                             }
                             ParamKind::Input => {}
                         }

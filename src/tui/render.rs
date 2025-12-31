@@ -299,7 +299,7 @@ impl<'a> GridWidget<'a> {
             let port_params: Vec<_> = defs
                 .iter()
                 .enumerate()
-                .filter(|(_, d)| !matches!(d.kind, ParamKind::Enum))
+                .filter(|(_, d)| d.kind.is_port())
                 .collect();
 
             if let Some(&(param_idx, def)) = port_params.get(port_pos) {
@@ -312,7 +312,7 @@ impl<'a> GridWidget<'a> {
                             '✕'
                         }
                     }
-                    ParamKind::Enum => unreachable!(),
+                    _ => unreachable!(),
                 };
 
                 let label = def.name.chars().next().unwrap_or(' ');
@@ -744,7 +744,7 @@ impl Widget for PaletteWidget<'_> {
         for x in 0..area.width {
             set_cell(buf, area.x + x, hint_y, ' ', hint_style);
         }
-        set_str(buf, area.x, hint_y, " hjkl / search", hint_style);
+        set_str(buf, area.x, hint_y, " hjkl nav  i/ret ins  spc close", hint_style);
     }
 }
 
@@ -830,7 +830,7 @@ impl Widget for HelpWidget {
             &[
                 ("hjkl", "move"),
                 (Self::key_for(binds, Action::Place), "add"),
-                (Self::key_for(binds, Action::Inspect), "insert"),
+                (Self::key_for(binds, Action::Inspect), "copy"),
                 (Self::key_for(binds, Action::Delete), "delete"),
                 (Self::key_for(binds, Action::Move), "move"),
                 (Self::key_for(binds, Action::Edit), "edit"),
@@ -922,7 +922,7 @@ impl Widget for EditWidget<'_> {
                         "✕ "
                     }
                 }
-                ParamKind::Enum => "  ",
+                ParamKind::Enum | ParamKind::Toggle => "  ",
             };
             set_str(buf, area.x, y, port_str, style);
             set_str(buf, area.x + 2, y, def.name, style);
@@ -940,6 +940,20 @@ impl Widget for EditWidget<'_> {
                 }
                 ParamKind::Enum => {
                     let val_str = self.module.params.enum_display().unwrap_or("?");
+                    set_str(buf, val_x, y, val_str, v_style);
+                    if is_selected {
+                        set_str(
+                            buf,
+                            val_x + val_str.len() as u16 + 1,
+                            y,
+                            "<hl>",
+                            label_style,
+                        );
+                    }
+                }
+                ParamKind::Toggle => {
+                    let val = self.module.params.get_toggle(i);
+                    let val_str = if val { "on" } else { "off" };
                     set_str(buf, val_x, y, val_str, v_style);
                     if is_selected {
                         set_str(

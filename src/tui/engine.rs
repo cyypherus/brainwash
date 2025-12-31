@@ -579,7 +579,7 @@ fn create_node_kind(module: &Module) -> NodeKind {
     match (&module.kind, &module.params) {
         (ModuleKind::Freq, _) => NodeKind::Freq,
         (ModuleKind::Gate, _) => NodeKind::Gate,
-        (ModuleKind::Osc, ModuleParams::Osc { wave, .. }) => {
+        (ModuleKind::Osc, ModuleParams::Osc { wave, uni, .. }) => {
             let mut osc = Osc::default();
             match wave {
                 WaveType::Sin => osc.sin(),
@@ -589,6 +589,9 @@ fn create_node_kind(module: &Module) -> NodeKind {
                 WaveType::RSaw => osc.rsaw(),
                 WaveType::Noise => osc.noise(),
             };
+            if *uni {
+                osc.unipolar();
+            }
             NodeKind::Oscillator(osc)
         }
         (ModuleKind::Rise, ModuleParams::Rise { time, .. }) => {
