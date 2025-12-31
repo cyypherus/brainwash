@@ -1,8 +1,8 @@
 use crate::{oscillators::Osc, signal::Signal};
 
-const MAX_DELAY_SAMPLES: usize = 500; // 20ms at 44.1kHz
-const MAX_DELAY_SAMPLES_F32: f32 = MAX_DELAY_SAMPLES as f32; // 20ms at 44.1kHz
-const MIN_DELAY_SAMPLES_F32: f32 = 20.; // 20ms at 44.1kHz
+const MIN_DELAY_SAMPLES: usize = 2;
+const MAX_DELAY_SAMPLES: usize = 800;
+const BUFFER_SIZE: usize = MAX_DELAY_SAMPLES + 2;
 const DEFAULT_RATE: f32 = 0.5;
 const DEFAULT_DEPTH: f32 = 0.5;
 const DEFAULT_FEEDBACK: f32 = 0.3;
@@ -25,15 +25,15 @@ impl Default for Flanger {
         lfo.sin().freq(DEFAULT_RATE).unipolar();
 
         let mut flanger = Self {
-            buffer: vec![0.0; MAX_DELAY_SAMPLES],
-            buffer_size: MAX_DELAY_SAMPLES,
+            buffer: vec![0.0; BUFFER_SIZE],
+            buffer_size: BUFFER_SIZE,
             write_index: 0,
             lfo,
             rate: DEFAULT_RATE,
             depth: DEFAULT_DEPTH,
             feedback: DEFAULT_FEEDBACK,
-            min_delay_samples: MIN_DELAY_SAMPLES_F32,
-            max_delay_samples: MAX_DELAY_SAMPLES as f32 * 0.5,
+            min_delay_samples: MIN_DELAY_SAMPLES as f32,
+            max_delay_samples: MAX_DELAY_SAMPLES as f32,
         };
         flanger.update_delay_range();
         flanger
@@ -50,6 +50,16 @@ impl Flanger {
     pub fn depth(&mut self, depth: f32) -> &mut Self {
         self.depth = depth.clamp(0.0, 1.0);
         self.update_delay_range();
+        self
+    }
+
+    pub fn min_delay(&mut self, samples: f32) -> &mut Self {
+        self.min_delay_samples = samples.max(MIN_DELAY_SAMPLES as f32);
+        self
+    }
+
+    pub fn max_delay(&mut self, samples: f32) -> &mut Self {
+        self.max_delay_samples = samples.clamp(self.min_delay_samples, MAX_DELAY_SAMPLES as f32);
         self
     }
 
@@ -72,19 +82,19 @@ impl Flanger {
         let next_sample = self.buffer[next_index];
         let interpolated = delayed_sample + (next_sample - delayed_sample) * delay_frac;
 
-        let output = input + interpolated;
-        self.buffer[self.write_index] = input + interpolated * self.feedback;
+        self.buffer[self.write_index] = input + delayed_sample * self.feedback;
 
         self.write_index += 1;
         if self.write_index >= self.buffer_size {
             self.write_index = 0;
         }
 
-        output
+        input + interpolated
     }
 
     fn update_delay_range(&mut self) {
-        self.min_delay_samples = MIN_DELAY_SAMPLES_F32;
-        self.max_delay_samples = MIN_DELAY_SAMPLES_F32 + MAX_DELAY_SAMPLES_F32 * self.depth;
+        self.min_delay_samples = MIN_DELAY_SAMPLES as f32;
+        self.max_delay_samples =
+            MIN_DELAY_SAMPLES as f32 + (MAX_DELAY_SAMPLES - MIN_DELAY_SAMPLES) as f32 * self.depth;
     }
 }
