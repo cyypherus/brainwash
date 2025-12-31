@@ -97,7 +97,9 @@ impl Envelope {
                             0.0
                         };
 
-                        let m1 = if matches!(p2.point_type, PointType::Curve) && i + 2 < self.points.len() {
+                        let m1 = if matches!(p2.point_type, PointType::Curve)
+                            && i + 2 < self.points.len()
+                        {
                             (self.points[i + 2].value - p1.value) * 0.5
                         } else {
                             0.0
@@ -115,12 +117,12 @@ impl Envelope {
     fn hermite(p0: f32, p1: f32, m0: f32, m1: f32, t: f32) -> f32 {
         let t2 = t * t;
         let t3 = t2 * t;
-        
+
         let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
         let h10 = t3 - 2.0 * t2 + t;
         let h01 = -2.0 * t3 + 3.0 * t2;
         let h11 = t3 - t2;
-        
+
         h00 * p0 + h10 * m0 + h01 * p1 + h11 * m1
     }
 }

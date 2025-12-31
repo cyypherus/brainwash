@@ -1,17 +1,17 @@
-use crate::envelopes::{ADSR, Envelope, EnvelopePoint, PointType};
-use crate::filters::{HighpassFilter, LowpassFilter};
-use crate::delay::Delay;
-use crate::reverb::Reverb;
-use crate::distortion::Distortion;
-use crate::flanger::Flanger;
-use crate::gate_ramp::GateRamp;
-use crate::ramp::Ramp;
-use crate::oscillators::Osc;
-use crate::clock::Clock;
-use crate::track::{Track, NoteEvent};
 use super::grid::{Cell, GridPos};
 use super::module::{Module, ModuleId, ModuleKind};
 use super::patch::Patch;
+use crate::clock::Clock;
+use crate::delay::Delay;
+use crate::distortion::Distortion;
+use crate::envelopes::{ADSR, Envelope, EnvelopePoint, PointType};
+use crate::filters::{HighpassFilter, LowpassFilter};
+use crate::flanger::Flanger;
+use crate::gate_ramp::GateRamp;
+use crate::oscillators::Osc;
+use crate::ramp::Ramp;
+use crate::reverb::Reverb;
+use crate::track::{NoteEvent, Track};
 use std::collections::{HashMap, VecDeque};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -57,26 +57,35 @@ impl TrackState {
 impl TrackState {
     pub fn update(&mut self, signal: &mut crate::Signal) {
         let Some(track) = &mut self.track else { return };
-        
+
         let phase = self.clock.output(signal);
         let events = track.play(phase);
-        
+
         for event in events {
             match event {
                 NoteEvent::Press { pitch } => {
                     if self.voices.iter().any(|v| v.pitch == pitch && v.gate > 0.5) {
                         continue;
                     }
-                    
+
                     let freq = 440.0 * 2.0f32.powf((pitch as f32 - 69.0) / 12.0);
                     self.age_counter += 1;
-                    
-                    let idx = self.voices.iter().enumerate()
+
+                    let idx = self
+                        .voices
+                        .iter()
+                        .enumerate()
                         .filter(|(_, v)| v.gate < 0.5)
                         .min_by_key(|(_, v)| v.age)
                         .map(|(i, _)| i)
-                        .or_else(|| self.voices.iter().enumerate().min_by_key(|(_, v)| v.age).map(|(i, _)| i));
-                    
+                        .or_else(|| {
+                            self.voices
+                                .iter()
+                                .enumerate()
+                                .min_by_key(|(_, v)| v.age)
+                                .map(|(i, _)| i)
+                        });
+
                     if let Some(i) = idx {
                         let v = &mut self.voices[i];
                         v.pitch = pitch;
@@ -86,7 +95,11 @@ impl TrackState {
                     }
                 }
                 NoteEvent::Release { pitch } => {
-                    if let Some(v) = self.voices.iter_mut().find(|v| v.pitch == pitch && v.gate > 0.5) {
+                    if let Some(v) = self
+                        .voices
+                        .iter_mut()
+                        .find(|v| v.pitch == pitch && v.gate > 0.5)
+                    {
                         v.gate = 0.0;
                     }
                 }
@@ -163,8 +176,13 @@ impl CompiledVoice {
                 .iter()
                 .enumerate()
                 .map(|(i, src)| {
-                    src.map(|s| self.nodes[s].output)
-                        .unwrap_or(self.nodes[idx].input_defaults.get(i).copied().unwrap_or(0.0))
+                    src.map(|s| self.nodes[s].output).unwrap_or(
+                        self.nodes[idx]
+                            .input_defaults
+                            .get(i)
+                            .copied()
+                            .unwrap_or(0.0),
+                    )
                 })
                 .collect();
 
@@ -202,15 +220,9 @@ impl CompiledVoice {
                 NodeKind::Hpf(filter) => {
                     filter.output(inputs.first().copied().unwrap_or(0.0), signal)
                 }
-                NodeKind::Delay(delay) => {
-                    delay.output(inputs.first().copied().unwrap_or(0.0))
-                }
-                NodeKind::Reverb(reverb) => {
-                    reverb.output(inputs.first().copied().unwrap_or(0.0))
-                }
-                NodeKind::Distortion(dist) => {
-                    dist.output(inputs.first().copied().unwrap_or(0.0))
-                }
+                NodeKind::Delay(delay) => delay.output(inputs.first().copied().unwrap_or(0.0)),
+                NodeKind::Reverb(reverb) => reverb.output(inputs.first().copied().unwrap_or(0.0)),
+                NodeKind::Distortion(dist) => dist.output(inputs.first().copied().unwrap_or(0.0)),
                 NodeKind::Flanger(flanger) => {
                     flanger.output(inputs.first().copied().unwrap_or(0.0), signal)
                 }
@@ -220,9 +232,7 @@ impl CompiledVoice {
                 NodeKind::Add => {
                     inputs.first().copied().unwrap_or(0.0) + inputs.get(1).copied().unwrap_or(0.0)
                 }
-                NodeKind::Gain(g) => {
-                    inputs.first().copied().unwrap_or(0.0) * *g
-                }
+                NodeKind::Gain(g) => inputs.first().copied().unwrap_or(0.0) * *g,
                 NodeKind::Gt => {
                     let a = inputs.first().copied().unwrap_or(0.0);
                     let b = inputs.get(1).copied().unwrap_or(0.0);
@@ -303,29 +313,33 @@ impl CompiledPatch {
     }
 
     pub fn process(&mut self, signal: &mut crate::Signal, track: &TrackState) -> f32 {
-        let new_sample = self.current.as_mut()
+        let new_sample = self
+            .current
+            .as_mut()
             .map(|p| p.process(signal, track))
             .unwrap_or(0.0);
 
         let sample = if self.crossfade_pos < CROSSFADE_SAMPLES {
-            let old_sample = self.old.as_mut()
+            let old_sample = self
+                .old
+                .as_mut()
                 .map(|p| p.process(signal, track))
                 .unwrap_or(0.0);
-            
+
             let t = self.crossfade_pos as f32 / CROSSFADE_SAMPLES as f32;
             self.crossfade_pos += 1;
-            
+
             if self.crossfade_pos >= CROSSFADE_SAMPLES {
                 self.old = None;
             }
-            
+
             old_sample * (1.0 - t) + new_sample * t
         } else {
             new_sample
         };
 
         let sample = sample.clamp(-1.0, 1.0);
-        
+
         if let Some(ref current) = self.current {
             let voice_idx = self.probe_voice.min(current.voices.len().saturating_sub(1));
             if let Some(voice) = current.voices.get(voice_idx) {
@@ -333,7 +347,8 @@ impl CompiledPatch {
                 for node in &voice.nodes {
                     if let NodeKind::Probe { value } = &node.kind {
                         if probe_idx >= self.probe_histories.len() {
-                            self.probe_histories.push(VecDeque::with_capacity(PROBE_HISTORY_LEN));
+                            self.probe_histories
+                                .push(VecDeque::with_capacity(PROBE_HISTORY_LEN));
                         }
                         let history = &mut self.probe_histories[probe_idx];
                         history.push_back(*value);
@@ -346,10 +361,10 @@ impl CompiledPatch {
                 self.probe_histories.truncate(probe_idx);
             }
         }
-        
+
         sample
     }
-    
+
     pub fn probe_history(&self, idx: usize) -> Option<&VecDeque<f32>> {
         self.probe_histories.get(idx)
     }
@@ -372,15 +387,18 @@ impl CompiledPatch {
 pub fn compile_patch(patch: &mut CompiledPatch, ui_patch: &Patch, num_voices: usize) {
     let modules: Vec<_> = ui_patch.all_modules().collect();
     let connections = trace_connections(ui_patch);
-    
+
     let voices = (0..num_voices)
         .map(|_| compile_voice(&modules, &connections))
         .collect();
-    
+
     patch.set_voices(voices);
 }
 
-fn compile_voice(modules: &[&Module], connections: &[(ModuleId, ModuleId, usize)]) -> CompiledVoice {
+fn compile_voice(
+    modules: &[&Module],
+    connections: &[(ModuleId, ModuleId, usize)],
+) -> CompiledVoice {
     let mut voice = CompiledVoice {
         nodes: Vec::new(),
         execution_order: Vec::new(),
@@ -410,7 +428,9 @@ fn compile_voice(modules: &[&Module], connections: &[(ModuleId, ModuleId, usize)
     }
 
     for (src_id, dst_id, port_idx) in connections {
-        if let (Some(&src_node), Some(&dst_node)) = (module_to_node.get(src_id), module_to_node.get(dst_id)) {
+        if let (Some(&src_node), Some(&dst_node)) =
+            (module_to_node.get(src_id), module_to_node.get(dst_id))
+        {
             if *port_idx < voice.nodes[dst_node].input_sources.len() {
                 voice.nodes[dst_node].input_sources[*port_idx] = Some(src_node);
             }
@@ -426,7 +446,9 @@ fn trace_connections(patch: &Patch) -> Vec<(ModuleId, ModuleId, usize)> {
     let grid = patch.grid();
 
     for module in patch.all_modules() {
-        let Some(pos) = patch.module_position(module.id) else { continue };
+        let Some(pos) = patch.module_position(module.id) else {
+            continue;
+        };
         let width = module.width();
         let height = module.height();
 
@@ -450,12 +472,21 @@ fn trace_connections(patch: &Patch) -> Vec<(ModuleId, ModuleId, usize)> {
     connections
 }
 
-fn trace_down(grid: &super::grid::Grid, patch: &Patch, x: u16, start_y: u16) -> Option<(ModuleId, usize)> {
+fn trace_down(
+    grid: &super::grid::Grid,
+    patch: &Patch,
+    x: u16,
+    start_y: u16,
+) -> Option<(ModuleId, usize)> {
     for y in start_y..grid.height() {
         let pos = GridPos::new(x, y);
         match grid.get(pos) {
             Cell::ChannelV { .. } | Cell::ChannelCross { .. } => continue,
-            Cell::Module { id, local_x, local_y } => {
+            Cell::Module {
+                id,
+                local_x,
+                local_y,
+            } => {
                 let module = patch.module(id)?;
                 if local_y == 0 && module.has_input_top() {
                     let port_idx = local_x as usize;
@@ -471,12 +502,21 @@ fn trace_down(grid: &super::grid::Grid, patch: &Patch, x: u16, start_y: u16) -> 
     None
 }
 
-fn trace_right(grid: &super::grid::Grid, patch: &Patch, start_x: u16, y: u16) -> Option<(ModuleId, usize)> {
+fn trace_right(
+    grid: &super::grid::Grid,
+    patch: &Patch,
+    start_x: u16,
+    y: u16,
+) -> Option<(ModuleId, usize)> {
     for x in start_x..grid.width() {
         let pos = GridPos::new(x, y);
         match grid.get(pos) {
             Cell::ChannelH { .. } | Cell::ChannelCross { .. } => continue,
-            Cell::Module { id, local_x, local_y } => {
+            Cell::Module {
+                id,
+                local_x,
+                local_y,
+            } => {
                 let module = patch.module(id)?;
                 if local_x == 0 && module.has_input_left() {
                     let port_idx = local_y as usize;
@@ -535,7 +575,7 @@ fn topological_sort(nodes: &[AudioNode]) -> Vec<usize> {
 
 fn create_node_kind(module: &Module) -> NodeKind {
     use super::module::{ModuleParams, WaveType};
-    
+
     match (&module.kind, &module.params) {
         (ModuleKind::Freq, _) => NodeKind::Freq,
         (ModuleKind::Gate, _) => NodeKind::Gate,
@@ -568,7 +608,14 @@ fn create_node_kind(module: &Module) -> NodeKind {
             ramp.time(*time);
             NodeKind::Ramp(ramp)
         }
-        (ModuleKind::Adsr, ModuleParams::Adsr { attack_ratio, sustain, .. }) => {
+        (
+            ModuleKind::Adsr,
+            ModuleParams::Adsr {
+                attack_ratio,
+                sustain,
+                ..
+            },
+        ) => {
             let mut adsr = ADSR::default();
             adsr.att(*attack_ratio).sus(*sustain);
             NodeKind::Adsr(adsr)
@@ -579,7 +626,11 @@ fn create_node_kind(module: &Module) -> NodeKind {
                 .map(|p| EnvelopePoint {
                     time: p.time,
                     value: p.value,
-                    point_type: if p.curve { PointType::Curve } else { PointType::Linear },
+                    point_type: if p.curve {
+                        PointType::Curve
+                    } else {
+                        PointType::Linear
+                    },
                 })
                 .collect();
             NodeKind::Envelope(Envelope::new(env_points))
@@ -609,7 +660,15 @@ fn create_node_kind(module: &Module) -> NodeKind {
             dist.drive(*drive).gain(*gain);
             NodeKind::Distortion(dist)
         }
-        (ModuleKind::Flanger, ModuleParams::Flanger { rate, depth, feedback, .. }) => {
+        (
+            ModuleKind::Flanger,
+            ModuleParams::Flanger {
+                rate,
+                depth,
+                feedback,
+                ..
+            },
+        ) => {
             let mut flanger = Flanger::default();
             flanger.freq(*rate).depth(*depth).feedback(*feedback);
             NodeKind::Flanger(flanger)
@@ -622,8 +681,12 @@ fn create_node_kind(module: &Module) -> NodeKind {
         (ModuleKind::Switch, _) => NodeKind::Switch,
         (ModuleKind::Probe, _) => NodeKind::Probe { value: 0.0 },
         (ModuleKind::Output, _) => NodeKind::Output,
-        (ModuleKind::LSplit, _) | (ModuleKind::TSplit, _) | (ModuleKind::RJoin, _) 
-            | (ModuleKind::DJoin, _) | (ModuleKind::TurnRD, _) | (ModuleKind::TurnDR, _) => NodeKind::Pass,
+        (ModuleKind::LSplit, _)
+        | (ModuleKind::TSplit, _)
+        | (ModuleKind::RJoin, _)
+        | (ModuleKind::DJoin, _)
+        | (ModuleKind::TurnRD, _)
+        | (ModuleKind::TurnDR, _) => NodeKind::Pass,
         _ => NodeKind::Pass,
     }
 }
@@ -632,14 +695,12 @@ fn get_input_defaults(module: &Module) -> Vec<f32> {
     if module.kind.is_routing() {
         return vec![0.0; module.kind.port_count()];
     }
-    
+
     let defs = module.kind.param_defs();
-    
+
     defs.iter()
         .enumerate()
         .filter(|(_, d)| !matches!(d.kind, super::module::ParamKind::Enum))
         .map(|(i, _)| module.params.get_float(i).unwrap_or(0.0))
         .collect()
 }
-
-

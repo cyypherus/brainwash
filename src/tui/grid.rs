@@ -30,11 +30,25 @@ pub enum Direction {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Cell {
     Empty,
-    Module { id: ModuleId, local_x: u8, local_y: u8 },
-    ChannelV { color: Color },
-    ChannelH { color: Color },
-    ChannelCross { color_v: Color, color_h: Color },
-    ChannelCorner { color: Color, down_right: bool },
+    Module {
+        id: ModuleId,
+        local_x: u8,
+        local_y: u8,
+    },
+    ChannelV {
+        color: Color,
+    },
+    ChannelH {
+        color: Color,
+    },
+    ChannelCross {
+        color_v: Color,
+        color_h: Color,
+    },
+    ChannelCorner {
+        color: Color,
+        down_right: bool,
+    },
 }
 
 impl Cell {
@@ -45,7 +59,10 @@ impl Cell {
     pub fn is_channel(&self) -> bool {
         matches!(
             self,
-            Cell::ChannelV { .. } | Cell::ChannelH { .. } | Cell::ChannelCross { .. } | Cell::ChannelCorner { .. }
+            Cell::ChannelV { .. }
+                | Cell::ChannelH { .. }
+                | Cell::ChannelCross { .. }
+                | Cell::ChannelCorner { .. }
         )
     }
 }
@@ -82,7 +99,9 @@ impl Grid {
     }
 
     pub fn get(&self, pos: GridPos) -> Cell {
-        self.index(pos).map(|i| self.cells[i]).unwrap_or(Cell::Empty)
+        self.index(pos)
+            .map(|i| self.cells[i])
+            .unwrap_or(Cell::Empty)
     }
 
     pub fn set(&mut self, pos: GridPos, cell: Cell) {
@@ -108,7 +127,14 @@ impl Grid {
         for dy in 0..height {
             for dx in 0..width {
                 let p = GridPos::new(pos.x + dx as u16, pos.y + dy as u16);
-                self.set(p, Cell::Module { id, local_x: dx, local_y: dy });
+                self.set(
+                    p,
+                    Cell::Module {
+                        id,
+                        local_x: dx,
+                        local_y: dy,
+                    },
+                );
             }
         }
         true
@@ -150,7 +176,21 @@ mod tests {
         let mut grid = Grid::new(10, 8);
         let id = ModuleId(0);
         assert!(grid.place_module(id, GridPos::new(2, 2), 1, 2));
-        assert_eq!(grid.get(GridPos::new(2, 2)), Cell::Module { id, local_x: 0, local_y: 0 });
-        assert_eq!(grid.get(GridPos::new(2, 3)), Cell::Module { id, local_x: 0, local_y: 1 });
+        assert_eq!(
+            grid.get(GridPos::new(2, 2)),
+            Cell::Module {
+                id,
+                local_x: 0,
+                local_y: 0
+            }
+        );
+        assert_eq!(
+            grid.get(GridPos::new(2, 3)),
+            Cell::Module {
+                id,
+                local_x: 0,
+                local_y: 1
+            }
+        );
     }
 }

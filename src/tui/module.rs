@@ -65,8 +65,6 @@ impl WaveType {
     }
 }
 
-
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModuleKind {
     Freq,
@@ -203,7 +201,11 @@ impl ModuleKind {
         match self {
             ModuleKind::Freq | ModuleKind::Gate => Color::Rgb(100, 200, 100),
             ModuleKind::Osc => Color::Rgb(100, 150, 255),
-            ModuleKind::Rise | ModuleKind::Fall | ModuleKind::Ramp | ModuleKind::Adsr | ModuleKind::Envelope => Color::Rgb(255, 200, 100),
+            ModuleKind::Rise
+            | ModuleKind::Fall
+            | ModuleKind::Ramp
+            | ModuleKind::Adsr
+            | ModuleKind::Envelope => Color::Rgb(255, 200, 100),
             ModuleKind::Lpf
             | ModuleKind::Hpf
             | ModuleKind::Delay
@@ -231,12 +233,17 @@ impl ModuleKind {
         match self {
             ModuleKind::LSplit | ModuleKind::TSplit | ModuleKind::TurnRD | ModuleKind::TurnDR => 1,
             ModuleKind::RJoin | ModuleKind::DJoin => 2,
-            _ => self.param_defs().iter().filter(|d| !matches!(d.kind, ParamKind::Enum)).count(),
+            _ => self
+                .param_defs()
+                .iter()
+                .filter(|d| !matches!(d.kind, ParamKind::Enum))
+                .count(),
         }
     }
 
     pub fn port_to_param_idx(&self, port_idx: usize) -> Option<usize> {
-        self.param_defs().iter()
+        self.param_defs()
+            .iter()
             .enumerate()
             .filter(|(_, d)| !matches!(d.kind, ParamKind::Enum))
             .nth(port_idx)
@@ -252,14 +259,26 @@ impl ModuleKind {
     }
 
     pub fn is_routing(&self) -> bool {
-        matches!(self, ModuleKind::LSplit | ModuleKind::TSplit | ModuleKind::RJoin | ModuleKind::DJoin | ModuleKind::TurnRD | ModuleKind::TurnDR)
+        matches!(
+            self,
+            ModuleKind::LSplit
+                | ModuleKind::TSplit
+                | ModuleKind::RJoin
+                | ModuleKind::DJoin
+                | ModuleKind::TurnRD
+                | ModuleKind::TurnDR
+        )
     }
 
     pub fn category(&self) -> ModuleCategory {
         match self {
             ModuleKind::Freq | ModuleKind::Gate => ModuleCategory::Track,
             ModuleKind::Osc => ModuleCategory::Generator,
-            ModuleKind::Rise | ModuleKind::Fall | ModuleKind::Ramp | ModuleKind::Adsr | ModuleKind::Envelope => ModuleCategory::Envelope,
+            ModuleKind::Rise
+            | ModuleKind::Fall
+            | ModuleKind::Ramp
+            | ModuleKind::Adsr
+            | ModuleKind::Envelope => ModuleCategory::Envelope,
             ModuleKind::Lpf
             | ModuleKind::Hpf
             | ModuleKind::Delay
@@ -470,11 +489,11 @@ impl Module {
         if self.kind.is_routing() {
             return port_idx < self.kind.port_count();
         }
-        
+
         let Some(param_idx) = self.kind.port_to_param_idx(port_idx) else {
             return false;
         };
-        
+
         let defs = self.kind.param_defs();
         if let Some(def) = defs.get(param_idx) {
             match def.kind {
@@ -499,95 +518,367 @@ pub struct ParamDef {
     pub kind: ParamKind,
 }
 
-
-
 impl ModuleKind {
     pub fn param_defs(&self) -> &'static [ParamDef] {
         match self {
             ModuleKind::Freq | ModuleKind::Gate => &[],
             ModuleKind::Osc => &[
-                ParamDef { name: "Wave", kind: ParamKind::Enum },
-                ParamDef { name: "Freq", kind: ParamKind::Float { min: 20.0, max: 20000.0, step: 1.0 } },
-                ParamDef { name: "Shift", kind: ParamKind::Float { min: -24.0, max: 24.0, step: 1.0 } },
-                ParamDef { name: "Gain", kind: ParamKind::Float { min: 0.0, max: 1.0, step: 0.05 } },
+                ParamDef {
+                    name: "Wave",
+                    kind: ParamKind::Enum,
+                },
+                ParamDef {
+                    name: "Freq",
+                    kind: ParamKind::Float {
+                        min: 20.0,
+                        max: 20000.0,
+                        step: 1.0,
+                    },
+                },
+                ParamDef {
+                    name: "Shift",
+                    kind: ParamKind::Float {
+                        min: -24.0,
+                        max: 24.0,
+                        step: 1.0,
+                    },
+                },
+                ParamDef {
+                    name: "Gain",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 1.0,
+                        step: 0.05,
+                    },
+                },
             ],
             ModuleKind::Rise | ModuleKind::Fall => &[
-                ParamDef { name: "Gate", kind: ParamKind::Input },
-                ParamDef { name: "Time", kind: ParamKind::Float { min: 0.001, max: 10.0, step: 0.01 } },
+                ParamDef {
+                    name: "Gate",
+                    kind: ParamKind::Input,
+                },
+                ParamDef {
+                    name: "Time",
+                    kind: ParamKind::Float {
+                        min: 0.001,
+                        max: 10.0,
+                        step: 0.01,
+                    },
+                },
             ],
             ModuleKind::Ramp => &[
-                ParamDef { name: "Val", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 0.1 } },
-                ParamDef { name: "Time", kind: ParamKind::Float { min: 0.001, max: 10.0, step: 0.01 } },
+                ParamDef {
+                    name: "Val",
+                    kind: ParamKind::Float {
+                        min: -1000.0,
+                        max: 1000.0,
+                        step: 0.1,
+                    },
+                },
+                ParamDef {
+                    name: "Time",
+                    kind: ParamKind::Float {
+                        min: 0.001,
+                        max: 10.0,
+                        step: 0.01,
+                    },
+                },
             ],
             ModuleKind::Adsr => &[
-                ParamDef { name: "Rise", kind: ParamKind::Input },
-                ParamDef { name: "Fall", kind: ParamKind::Input },
-                ParamDef { name: "Atk", kind: ParamKind::Float { min: 0.0, max: 1.0, step: 0.05 } },
-                ParamDef { name: "Sus", kind: ParamKind::Float { min: 0.0, max: 1.0, step: 0.05 } },
+                ParamDef {
+                    name: "Rise",
+                    kind: ParamKind::Input,
+                },
+                ParamDef {
+                    name: "Fall",
+                    kind: ParamKind::Input,
+                },
+                ParamDef {
+                    name: "Atk",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 1.0,
+                        step: 0.05,
+                    },
+                },
+                ParamDef {
+                    name: "Sus",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 1.0,
+                        step: 0.05,
+                    },
+                },
             ],
-            ModuleKind::Envelope => &[
-                ParamDef { name: "Phase", kind: ParamKind::Float { min: 0.0, max: 1.0, step: 0.01 } },
-            ],
+            ModuleKind::Envelope => &[ParamDef {
+                name: "Phase",
+                kind: ParamKind::Float {
+                    min: 0.0,
+                    max: 1.0,
+                    step: 0.01,
+                },
+            }],
             ModuleKind::Lpf | ModuleKind::Hpf => &[
-                ParamDef { name: "In", kind: ParamKind::Float { min: -1.0, max: 1.0, step: 0.01 } },
-                ParamDef { name: "Freq", kind: ParamKind::Float { min: 0.001, max: 0.99, step: 0.01 } },
-                ParamDef { name: "Q", kind: ParamKind::Float { min: 0.1, max: 10.0, step: 0.1 } },
+                ParamDef {
+                    name: "In",
+                    kind: ParamKind::Float {
+                        min: -1.0,
+                        max: 1.0,
+                        step: 0.01,
+                    },
+                },
+                ParamDef {
+                    name: "Freq",
+                    kind: ParamKind::Float {
+                        min: 0.001,
+                        max: 0.99,
+                        step: 0.01,
+                    },
+                },
+                ParamDef {
+                    name: "Q",
+                    kind: ParamKind::Float {
+                        min: 0.1,
+                        max: 10.0,
+                        step: 0.1,
+                    },
+                },
             ],
             ModuleKind::Delay => &[
-                ParamDef { name: "In", kind: ParamKind::Float { min: -1.0, max: 1.0, step: 0.01 } },
-                ParamDef { name: "Samp", kind: ParamKind::Float { min: 0.0, max: 44100.0, step: 100.0 } },
+                ParamDef {
+                    name: "In",
+                    kind: ParamKind::Float {
+                        min: -1.0,
+                        max: 1.0,
+                        step: 0.01,
+                    },
+                },
+                ParamDef {
+                    name: "Samp",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 44100.0,
+                        step: 100.0,
+                    },
+                },
             ],
             ModuleKind::Reverb => &[
-                ParamDef { name: "In", kind: ParamKind::Float { min: -1.0, max: 1.0, step: 0.01 } },
-                ParamDef { name: "Room", kind: ParamKind::Float { min: 0.0, max: 1.0, step: 0.05 } },
-                ParamDef { name: "Damp", kind: ParamKind::Float { min: 0.0, max: 1.0, step: 0.05 } },
+                ParamDef {
+                    name: "In",
+                    kind: ParamKind::Float {
+                        min: -1.0,
+                        max: 1.0,
+                        step: 0.01,
+                    },
+                },
+                ParamDef {
+                    name: "Room",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 1.0,
+                        step: 0.05,
+                    },
+                },
+                ParamDef {
+                    name: "Damp",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 1.0,
+                        step: 0.05,
+                    },
+                },
             ],
             ModuleKind::Distortion => &[
-                ParamDef { name: "In", kind: ParamKind::Float { min: -1.0, max: 1.0, step: 0.01 } },
-                ParamDef { name: "Drive", kind: ParamKind::Float { min: 0.1, max: 0.5, step: 0.05 } },
-                ParamDef { name: "Gain", kind: ParamKind::Float { min: 0.0, max: 1.0, step: 0.05 } },
+                ParamDef {
+                    name: "In",
+                    kind: ParamKind::Float {
+                        min: -1.0,
+                        max: 1.0,
+                        step: 0.01,
+                    },
+                },
+                ParamDef {
+                    name: "Drive",
+                    kind: ParamKind::Float {
+                        min: 0.1,
+                        max: 0.5,
+                        step: 0.05,
+                    },
+                },
+                ParamDef {
+                    name: "Gain",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 1.0,
+                        step: 0.05,
+                    },
+                },
             ],
             ModuleKind::Flanger => &[
-                ParamDef { name: "In", kind: ParamKind::Float { min: -1.0, max: 1.0, step: 0.01 } },
-                ParamDef { name: "Rate", kind: ParamKind::Float { min: 0.1, max: 10.0, step: 0.1 } },
-                ParamDef { name: "Depth", kind: ParamKind::Float { min: 0.0, max: 1.0, step: 0.05 } },
-                ParamDef { name: "Fdbk", kind: ParamKind::Float { min: 0.0, max: 0.95, step: 0.05 } },
+                ParamDef {
+                    name: "In",
+                    kind: ParamKind::Float {
+                        min: -1.0,
+                        max: 1.0,
+                        step: 0.01,
+                    },
+                },
+                ParamDef {
+                    name: "Rate",
+                    kind: ParamKind::Float {
+                        min: 0.1,
+                        max: 10.0,
+                        step: 0.1,
+                    },
+                },
+                ParamDef {
+                    name: "Depth",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 1.0,
+                        step: 0.05,
+                    },
+                },
+                ParamDef {
+                    name: "Fdbk",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 0.95,
+                        step: 0.05,
+                    },
+                },
             ],
             ModuleKind::Mul => &[
-                ParamDef { name: "A", kind: ParamKind::Float { min: 0.0, max: 100.0, step: 0.1 } },
-                ParamDef { name: "B", kind: ParamKind::Float { min: 0.0, max: 100.0, step: 0.1 } },
+                ParamDef {
+                    name: "A",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 100.0,
+                        step: 0.1,
+                    },
+                },
+                ParamDef {
+                    name: "B",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 100.0,
+                        step: 0.1,
+                    },
+                },
             ],
             ModuleKind::Add => &[
-                ParamDef { name: "A", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 1.0 } },
-                ParamDef { name: "B", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 1.0 } },
+                ParamDef {
+                    name: "A",
+                    kind: ParamKind::Float {
+                        min: -1000.0,
+                        max: 1000.0,
+                        step: 1.0,
+                    },
+                },
+                ParamDef {
+                    name: "B",
+                    kind: ParamKind::Float {
+                        min: -1000.0,
+                        max: 1000.0,
+                        step: 1.0,
+                    },
+                },
             ],
             ModuleKind::Gain => &[
-                ParamDef { name: "In", kind: ParamKind::Float { min: -1.0, max: 1.0, step: 0.01 } },
-                ParamDef { name: "Gain", kind: ParamKind::Float { min: 0.0, max: 2.0, step: 0.05 } },
+                ParamDef {
+                    name: "In",
+                    kind: ParamKind::Float {
+                        min: -1.0,
+                        max: 1.0,
+                        step: 0.01,
+                    },
+                },
+                ParamDef {
+                    name: "Gain",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 2.0,
+                        step: 0.05,
+                    },
+                },
             ],
             ModuleKind::Gt => &[
-                ParamDef { name: "A", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 0.1 } },
-                ParamDef { name: "B", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 0.1 } },
+                ParamDef {
+                    name: "A",
+                    kind: ParamKind::Float {
+                        min: -1000.0,
+                        max: 1000.0,
+                        step: 0.1,
+                    },
+                },
+                ParamDef {
+                    name: "B",
+                    kind: ParamKind::Float {
+                        min: -1000.0,
+                        max: 1000.0,
+                        step: 0.1,
+                    },
+                },
             ],
             ModuleKind::Lt => &[
-                ParamDef { name: "A", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 0.1 } },
-                ParamDef { name: "B", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 0.1 } },
+                ParamDef {
+                    name: "A",
+                    kind: ParamKind::Float {
+                        min: -1000.0,
+                        max: 1000.0,
+                        step: 0.1,
+                    },
+                },
+                ParamDef {
+                    name: "B",
+                    kind: ParamKind::Float {
+                        min: -1000.0,
+                        max: 1000.0,
+                        step: 0.1,
+                    },
+                },
             ],
             ModuleKind::Switch => &[
-                ParamDef { name: "Sel", kind: ParamKind::Input },
-                ParamDef { name: "A", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 0.1 } },
-                ParamDef { name: "B", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 0.1 } },
+                ParamDef {
+                    name: "Sel",
+                    kind: ParamKind::Input,
+                },
+                ParamDef {
+                    name: "A",
+                    kind: ParamKind::Float {
+                        min: -1000.0,
+                        max: 1000.0,
+                        step: 0.1,
+                    },
+                },
+                ParamDef {
+                    name: "B",
+                    kind: ParamKind::Float {
+                        min: -1000.0,
+                        max: 1000.0,
+                        step: 0.1,
+                    },
+                },
             ],
-            ModuleKind::Probe => &[
-                ParamDef { name: "In", kind: ParamKind::Float { min: -1.0, max: 1.0, step: 0.01 } },
-            ],
-            ModuleKind::Output => &[
-                ParamDef { name: "In", kind: ParamKind::Float { min: -1.0, max: 1.0, step: 0.01 } },
-            ],
+            ModuleKind::Probe => &[ParamDef {
+                name: "In",
+                kind: ParamKind::Float {
+                    min: -1.0,
+                    max: 1.0,
+                    step: 0.01,
+                },
+            }],
+            ModuleKind::Output => &[ParamDef {
+                name: "In",
+                kind: ParamKind::Float {
+                    min: -1.0,
+                    max: 1.0,
+                    step: 0.01,
+                },
+            }],
             _ => &[],
         }
     }
-
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -600,121 +891,203 @@ pub struct EnvPoint {
 #[derive(Clone, Debug)]
 pub enum ModuleParams {
     None,
-    Osc { wave: WaveType, freq: f32, shift: f32, gain: f32, connected: u8 },
-    Rise { time: f32, connected: u8 },
-    Fall { time: f32, connected: u8 },
-    Ramp { value: f32, time: f32, connected: u8 },
-    Adsr { attack_ratio: f32, sustain: f32, connected: u8 },
-    Envelope { points: Vec<EnvPoint>, connected: u8 },
-    Filter { freq: f32, q: f32, connected: u8 },
-    Delay { samples: f32, connected: u8 },
-    Reverb { room: f32, damp: f32, connected: u8 },
-    Distortion { drive: f32, gain: f32, connected: u8 },
-    Flanger { rate: f32, depth: f32, feedback: f32, connected: u8 },
-    Mul { a: f32, b: f32, connected: u8 },
-    Add { a: f32, b: f32, connected: u8 },
-    Gain { gain: f32, connected: u8 },
-    Gt { a: f32, b: f32, connected: u8 },
-    Lt { a: f32, b: f32, connected: u8 },
-    Switch { a: f32, b: f32, connected: u8 },
-    Probe { connected: u8 },
-    Output { connected: u8 },
+    Osc {
+        wave: WaveType,
+        freq: f32,
+        shift: f32,
+        gain: f32,
+        connected: u8,
+    },
+    Rise {
+        time: f32,
+        connected: u8,
+    },
+    Fall {
+        time: f32,
+        connected: u8,
+    },
+    Ramp {
+        value: f32,
+        time: f32,
+        connected: u8,
+    },
+    Adsr {
+        attack_ratio: f32,
+        sustain: f32,
+        connected: u8,
+    },
+    Envelope {
+        points: Vec<EnvPoint>,
+        connected: u8,
+    },
+    Filter {
+        freq: f32,
+        q: f32,
+        connected: u8,
+    },
+    Delay {
+        samples: f32,
+        connected: u8,
+    },
+    Reverb {
+        room: f32,
+        damp: f32,
+        connected: u8,
+    },
+    Distortion {
+        drive: f32,
+        gain: f32,
+        connected: u8,
+    },
+    Flanger {
+        rate: f32,
+        depth: f32,
+        feedback: f32,
+        connected: u8,
+    },
+    Mul {
+        a: f32,
+        b: f32,
+        connected: u8,
+    },
+    Add {
+        a: f32,
+        b: f32,
+        connected: u8,
+    },
+    Gain {
+        gain: f32,
+        connected: u8,
+    },
+    Gt {
+        a: f32,
+        b: f32,
+        connected: u8,
+    },
+    Lt {
+        a: f32,
+        b: f32,
+        connected: u8,
+    },
+    Switch {
+        a: f32,
+        b: f32,
+        connected: u8,
+    },
+    Probe {
+        connected: u8,
+    },
+    Output {
+        connected: u8,
+    },
 }
 
 impl ModuleParams {
     pub fn default_for(kind: ModuleKind) -> Self {
         match kind {
             ModuleKind::Freq | ModuleKind::Gate => ModuleParams::None,
-            ModuleKind::Osc => ModuleParams::Osc { 
-                wave: WaveType::Sin, 
-                freq: 440.0, 
-                shift: 0.0, 
-                gain: 1.0, 
+            ModuleKind::Osc => ModuleParams::Osc {
+                wave: WaveType::Sin,
+                freq: 440.0,
+                shift: 0.0,
+                gain: 1.0,
                 connected: 0xFF,
             },
-            ModuleKind::Rise => ModuleParams::Rise { 
-                time: 0.1, 
+            ModuleKind::Rise => ModuleParams::Rise {
+                time: 0.1,
                 connected: 0xFF,
             },
-            ModuleKind::Fall => ModuleParams::Fall { 
-                time: 0.1, 
+            ModuleKind::Fall => ModuleParams::Fall {
+                time: 0.1,
                 connected: 0xFF,
             },
-            ModuleKind::Ramp => ModuleParams::Ramp { 
+            ModuleKind::Ramp => ModuleParams::Ramp {
                 value: 0.0,
-                time: 0.1, 
+                time: 0.1,
                 connected: 0xFF,
             },
-            ModuleKind::Adsr => ModuleParams::Adsr { 
-                attack_ratio: 0.5, 
-                sustain: 0.7, 
+            ModuleKind::Adsr => ModuleParams::Adsr {
+                attack_ratio: 0.5,
+                sustain: 0.7,
                 connected: 0xFF,
             },
-            ModuleKind::Envelope => ModuleParams::Envelope { 
+            ModuleKind::Envelope => ModuleParams::Envelope {
                 points: vec![
-                    EnvPoint { time: 0.0, value: 0.0, curve: false },
-                    EnvPoint { time: 1.0, value: 1.0, curve: false },
+                    EnvPoint {
+                        time: 0.0,
+                        value: 0.0,
+                        curve: false,
+                    },
+                    EnvPoint {
+                        time: 1.0,
+                        value: 1.0,
+                        curve: false,
+                    },
                 ],
                 connected: 0xFF,
             },
-            ModuleKind::Lpf | ModuleKind::Hpf => ModuleParams::Filter { 
-                freq: 0.5, 
-                q: 0.707, 
+            ModuleKind::Lpf | ModuleKind::Hpf => ModuleParams::Filter {
+                freq: 0.5,
+                q: 0.707,
                 connected: 0xFF,
             },
-            ModuleKind::Delay => ModuleParams::Delay { 
-                samples: 0.0, 
+            ModuleKind::Delay => ModuleParams::Delay {
+                samples: 0.0,
                 connected: 0xFF,
             },
-            ModuleKind::Reverb => ModuleParams::Reverb { 
-                room: 0.5, 
-                damp: 0.5, 
+            ModuleKind::Reverb => ModuleParams::Reverb {
+                room: 0.5,
+                damp: 0.5,
                 connected: 0xFF,
             },
-            ModuleKind::Distortion => ModuleParams::Distortion { 
-                drive: 0.3, 
-                gain: 1.0, 
+            ModuleKind::Distortion => ModuleParams::Distortion {
+                drive: 0.3,
+                gain: 1.0,
                 connected: 0xFF,
             },
-            ModuleKind::Flanger => ModuleParams::Flanger { 
-                rate: 0.5, 
-                depth: 0.5, 
-                feedback: 0.3, 
+            ModuleKind::Flanger => ModuleParams::Flanger {
+                rate: 0.5,
+                depth: 0.5,
+                feedback: 0.3,
                 connected: 0xFF,
             },
-            ModuleKind::Mul => ModuleParams::Mul { 
-                a: 1.0, 
-                b: 1.0, 
+            ModuleKind::Mul => ModuleParams::Mul {
+                a: 1.0,
+                b: 1.0,
                 connected: 0xFF,
             },
-            ModuleKind::Add => ModuleParams::Add { 
-                a: 0.0, 
-                b: 0.0, 
+            ModuleKind::Add => ModuleParams::Add {
+                a: 0.0,
+                b: 0.0,
                 connected: 0xFF,
             },
-            ModuleKind::Gain => ModuleParams::Gain { 
-                gain: 1.0, 
+            ModuleKind::Gain => ModuleParams::Gain {
+                gain: 1.0,
                 connected: 0xFF,
             },
-            ModuleKind::Gt => ModuleParams::Gt { 
-                a: 0.0, 
-                b: 0.0, 
+            ModuleKind::Gt => ModuleParams::Gt {
+                a: 0.0,
+                b: 0.0,
                 connected: 0xFF,
             },
-            ModuleKind::Lt => ModuleParams::Lt { 
-                a: 0.0, 
-                b: 0.0, 
+            ModuleKind::Lt => ModuleParams::Lt {
+                a: 0.0,
+                b: 0.0,
                 connected: 0xFF,
             },
-            ModuleKind::Switch => ModuleParams::Switch { 
-                a: 0.0, 
-                b: 0.0, 
+            ModuleKind::Switch => ModuleParams::Switch {
+                a: 0.0,
+                b: 0.0,
                 connected: 0xFF,
             },
             ModuleKind::Probe => ModuleParams::Probe { connected: 0xFF },
             ModuleKind::Output => ModuleParams::Output { connected: 0xFF },
-            ModuleKind::LSplit | ModuleKind::TSplit | ModuleKind::RJoin 
-            | ModuleKind::DJoin | ModuleKind::TurnRD | ModuleKind::TurnDR => ModuleParams::None,
+            ModuleKind::LSplit
+            | ModuleKind::TSplit
+            | ModuleKind::RJoin
+            | ModuleKind::DJoin
+            | ModuleKind::TurnRD
+            | ModuleKind::TurnDR => ModuleParams::None,
         }
     }
 
@@ -790,7 +1163,9 @@ impl ModuleParams {
 
     pub fn get_float(&self, idx: usize) -> Option<f32> {
         match self {
-            ModuleParams::Osc { freq, shift, gain, .. } => match idx {
+            ModuleParams::Osc {
+                freq, shift, gain, ..
+            } => match idx {
                 1 => Some(*freq),
                 2 => Some(*shift),
                 3 => Some(*gain),
@@ -805,7 +1180,11 @@ impl ModuleParams {
                 1 => Some(*time),
                 _ => None,
             },
-            ModuleParams::Adsr { attack_ratio, sustain, .. } => match idx {
+            ModuleParams::Adsr {
+                attack_ratio,
+                sustain,
+                ..
+            } => match idx {
                 2 => Some(*attack_ratio),
                 3 => Some(*sustain),
                 _ => None,
@@ -829,7 +1208,12 @@ impl ModuleParams {
                 2 => Some(*gain),
                 _ => None,
             },
-            ModuleParams::Flanger { rate, depth, feedback, .. } => match idx {
+            ModuleParams::Flanger {
+                rate,
+                depth,
+                feedback,
+                ..
+            } => match idx {
                 1 => Some(*rate),
                 2 => Some(*depth),
                 3 => Some(*feedback),
@@ -870,7 +1254,9 @@ impl ModuleParams {
 
     pub fn set_float(&mut self, idx: usize, val: f32) {
         match self {
-            ModuleParams::Osc { freq, shift, gain, .. } => match idx {
+            ModuleParams::Osc {
+                freq, shift, gain, ..
+            } => match idx {
                 1 => *freq = val,
                 2 => *shift = val,
                 3 => *gain = val,
@@ -885,7 +1271,11 @@ impl ModuleParams {
                 1 => *time = val,
                 _ => {}
             },
-            ModuleParams::Adsr { attack_ratio, sustain, .. } => match idx {
+            ModuleParams::Adsr {
+                attack_ratio,
+                sustain,
+                ..
+            } => match idx {
                 2 => *attack_ratio = val,
                 3 => *sustain = val,
                 _ => {}
@@ -909,7 +1299,12 @@ impl ModuleParams {
                 2 => *gain = val,
                 _ => {}
             },
-            ModuleParams::Flanger { rate, depth, feedback, .. } => match idx {
+            ModuleParams::Flanger {
+                rate,
+                depth,
+                feedback,
+                ..
+            } => match idx {
                 1 => *rate = val,
                 2 => *depth = val,
                 3 => *feedback = val,

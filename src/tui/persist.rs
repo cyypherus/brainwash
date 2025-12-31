@@ -73,7 +73,7 @@ impl PatchFile {
 
         for line in content.lines() {
             let line = line.trim();
-            
+
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
@@ -126,7 +126,13 @@ impl PatchFile {
                         let x = parts[3].parse().map_err(|_| "invalid x")?;
                         let y = parts[4].parse().map_err(|_| "invalid y")?;
                         let orientation = parts.get(5).and_then(|s| s.chars().next());
-                        pf.modules.push(ModuleDef { id, kind, x, y, orientation });
+                        pf.modules.push(ModuleDef {
+                            id,
+                            kind,
+                            x,
+                            y,
+                            orientation,
+                        });
                     }
                 }
                 "param" => {
@@ -154,7 +160,12 @@ impl PatchFile {
                         let time = parts[2].parse().map_err(|_| "invalid env time")?;
                         let value = parts[3].parse().map_err(|_| "invalid env value")?;
                         let curve = parts.get(4).map(|s| *s == "curve").unwrap_or(false);
-                        pf.envs.push(EnvDef { id, time, value, curve });
+                        pf.envs.push(EnvDef {
+                            id,
+                            time,
+                            value,
+                            curve,
+                        });
                     }
                 }
                 "track" => {
@@ -193,7 +204,10 @@ impl PatchFile {
 
         for m in &self.modules {
             if let Some(o) = m.orientation {
-                out.push_str(&format!("module {} {} {} {} {}\n", m.id, m.kind, m.x, m.y, o));
+                out.push_str(&format!(
+                    "module {} {} {} {} {}\n",
+                    m.id, m.kind, m.x, m.y, o
+                ));
             } else {
                 out.push_str(&format!("module {} {} {} {}\n", m.id, m.kind, m.x, m.y));
             }
@@ -228,7 +242,11 @@ impl PatchFile {
         }
 
         if let Some(ref track) = self.track {
-            if !self.envs.is_empty() || !self.ports.is_empty() || !self.params.is_empty() || !self.modules.is_empty() {
+            if !self.envs.is_empty()
+                || !self.ports.is_empty()
+                || !self.params.is_empty()
+                || !self.modules.is_empty()
+            {
                 out.push('\n');
             }
             out.push_str("track\n");
@@ -319,12 +337,14 @@ pub fn patch_to_file(patch: &Patch, bpm: f32, bars: f32, track: Option<&str>) ->
     let mut env_points: HashMap<u32, Vec<&EnvPoint>> = HashMap::new();
 
     for module in patch.all_modules() {
-        let pos = patch.module_position(module.id).unwrap_or(GridPos::new(0, 0));
+        let pos = patch
+            .module_position(module.id)
+            .unwrap_or(GridPos::new(0, 0));
         let orientation = match module.orientation {
             Orientation::Horizontal => None,
             Orientation::Vertical => Some('v'),
         };
-        
+
         pf.modules.push(ModuleDef {
             id: module.id.0,
             kind: kind_to_str(module.kind).to_string(),
@@ -336,7 +356,8 @@ pub fn patch_to_file(patch: &Patch, bpm: f32, bars: f32, track: Option<&str>) ->
         let defaults = ModuleParams::default_for(module.kind);
         let param_count = module.kind.param_defs().len();
         for i in 0..param_count {
-            if let (Some(val), Some(def_val)) = (module.params.get_float(i), defaults.get_float(i)) {
+            if let (Some(val), Some(def_val)) = (module.params.get_float(i), defaults.get_float(i))
+            {
                 if (val - def_val).abs() > 0.0001 {
                     pf.params.push(ParamDef {
                         id: module.id.0,
@@ -380,12 +401,14 @@ pub fn file_to_patch(pf: &PatchFile) -> (Patch, f32, f32, Option<String>) {
     let mut id_map: HashMap<u32, ModuleId> = HashMap::new();
 
     for mdef in &pf.modules {
-        let Some(kind) = str_to_kind(&mdef.kind) else { continue };
+        let Some(kind) = str_to_kind(&mdef.kind) else {
+            continue;
+        };
         let pos = GridPos::new(mdef.x, mdef.y);
-        
+
         if let Some(id) = patch.add_module(kind, pos) {
             id_map.insert(mdef.id, id);
-            
+
             if let Some(module) = patch.module_mut(id) {
                 if mdef.orientation == Some('v') {
                     module.orientation = Orientation::Vertical;
@@ -437,14 +460,21 @@ pub fn file_to_patch(pf: &PatchFile) -> (Patch, f32, f32, Option<String>) {
     (patch, pf.bpm, pf.bars, pf.track.clone())
 }
 
-pub fn save_patch(path: &Path, patch: &Patch, bpm: f32, bars: f32, track: Option<&str>) -> io::Result<()> {
+pub fn save_patch(
+    path: &Path,
+    patch: &Patch,
+    bpm: f32,
+    bars: f32,
+    track: Option<&str>,
+) -> io::Result<()> {
     let pf = patch_to_file(patch, bpm, bars, track);
     fs::write(path, pf.to_string())
 }
 
 pub fn load_patch(path: &Path) -> io::Result<(Patch, f32, f32, Option<String>)> {
     let content = fs::read_to_string(path)?;
-    let pf = PatchFile::parse(&content).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let pf =
+        PatchFile::parse(&content).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     Ok(file_to_patch(&pf))
 }
 
@@ -519,7 +549,7 @@ end
         assert!((pf.master - 0.8).abs() < 0.01);
 
         assert_eq!(pf.modules.len(), 22);
-        
+
         let osc = pf.modules.iter().find(|m| m.kind == "Osc").unwrap();
         assert_eq!(osc.x, 0);
         assert_eq!(osc.y, 2);
@@ -536,8 +566,16 @@ end
         assert!(pf.modules.iter().any(|m| m.kind == "TurnDR"));
 
         let osc_params: Vec<_> = pf.params.iter().filter(|p| p.id == 3).collect();
-        assert!(osc_params.iter().any(|p| p.index == 0 && (p.value - 1.0).abs() < 0.01));
-        assert!(osc_params.iter().any(|p| p.index == 1 && (p.value - 880.0).abs() < 0.01));
+        assert!(
+            osc_params
+                .iter()
+                .any(|p| p.index == 0 && (p.value - 1.0).abs() < 0.01)
+        );
+        assert!(
+            osc_params
+                .iter()
+                .any(|p| p.index == 1 && (p.value - 880.0).abs() < 0.01)
+        );
 
         let adsr_params: Vec<_> = pf.params.iter().filter(|p| p.id == 4).collect();
         assert_eq!(adsr_params.len(), 4);
@@ -589,7 +627,7 @@ end
     fn test_defaults_omitted() {
         let pf = PatchFile::new();
         let output = pf.to_string();
-        
+
         assert!(!output.contains("bpm"));
         assert!(!output.contains("bars"));
         assert!(!output.contains("scale"));
@@ -615,11 +653,19 @@ module 2 Out 5 5
     #[test]
     fn test_patch_to_file_and_back() {
         let mut patch = Patch::new(20, 20);
-        
-        let _freq_id = patch.add_module(ModuleKind::Freq, GridPos::new(0, 0)).unwrap();
-        let osc_id = patch.add_module(ModuleKind::Osc, GridPos::new(0, 2)).unwrap();
-        let env_id = patch.add_module(ModuleKind::Envelope, GridPos::new(2, 0)).unwrap();
-        let _out_id = patch.add_module(ModuleKind::Output, GridPos::new(0, 7)).unwrap();
+
+        let _freq_id = patch
+            .add_module(ModuleKind::Freq, GridPos::new(0, 0))
+            .unwrap();
+        let osc_id = patch
+            .add_module(ModuleKind::Osc, GridPos::new(0, 2))
+            .unwrap();
+        let env_id = patch
+            .add_module(ModuleKind::Envelope, GridPos::new(2, 0))
+            .unwrap();
+        let _out_id = patch
+            .add_module(ModuleKind::Output, GridPos::new(0, 7))
+            .unwrap();
 
         if let Some(osc) = patch.module_mut(osc_id) {
             osc.orientation = Orientation::Vertical;
@@ -633,9 +679,21 @@ module 2 Out 5 5
         if let Some(env) = patch.module_mut(env_id) {
             if let Some(pts) = env.params.env_points_mut() {
                 *pts = vec![
-                    EnvPoint { time: 0.0, value: 0.0, curve: false },
-                    EnvPoint { time: 0.5, value: 1.0, curve: true },
-                    EnvPoint { time: 1.0, value: 0.0, curve: false },
+                    EnvPoint {
+                        time: 0.0,
+                        value: 0.0,
+                        curve: false,
+                    },
+                    EnvPoint {
+                        time: 0.5,
+                        value: 1.0,
+                        curve: true,
+                    },
+                    EnvPoint {
+                        time: 1.0,
+                        value: 0.0,
+                        curve: false,
+                    },
                 ];
             }
         }
@@ -651,8 +709,16 @@ module 2 Out 5 5
         assert_eq!(osc_def.orientation, Some('v'));
 
         let osc_params: Vec<_> = pf.params.iter().filter(|p| p.id == osc_id.0).collect();
-        assert!(osc_params.iter().any(|p| p.index == 1 && (p.value - 660.0).abs() < 0.01));
-        assert!(osc_params.iter().any(|p| p.index == 2 && (p.value - 12.0).abs() < 0.01));
+        assert!(
+            osc_params
+                .iter()
+                .any(|p| p.index == 1 && (p.value - 660.0).abs() < 0.01)
+        );
+        assert!(
+            osc_params
+                .iter()
+                .any(|p| p.index == 2 && (p.value - 12.0).abs() < 0.01)
+        );
 
         let osc_port = pf.ports.iter().find(|p| p.id == osc_id.0);
         assert!(osc_port.is_some());
@@ -678,7 +744,10 @@ module 2 Out 5 5
         assert!((osc2.params.get_float(2).unwrap() - 12.0).abs() < 0.01);
         assert_eq!(osc2.params.connected(), 0x05);
 
-        let env2 = modules.iter().find(|m| m.kind == ModuleKind::Envelope).unwrap();
+        let env2 = modules
+            .iter()
+            .find(|m| m.kind == ModuleKind::Envelope)
+            .unwrap();
         assert_eq!(env2.params.env_points().unwrap().len(), 3);
         assert!(env2.params.env_points().unwrap()[1].curve);
     }

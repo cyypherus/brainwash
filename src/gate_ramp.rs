@@ -117,7 +117,7 @@ mod tests {
         ramp.rise().time(0.1);
 
         let sr = 1000;
-        
+
         let v = ramp.output(0.0, &make_signal(sr, 0));
         assert!((v - 0.0).abs() < 0.01);
 
@@ -193,10 +193,10 @@ mod tests {
 
         ramp.output(1.0, &make_signal(sr, 0));
         ramp.output(1.0, &make_signal(sr, 200));
-        
+
         let v = ramp.output(1.0, &make_signal(sr, 500));
         assert!((v - 1.0).abs() < 0.01);
-        
+
         let v = ramp.output(0.0, &make_signal(sr, 501));
         assert!((v - 0.0).abs() < 0.01);
     }

@@ -121,7 +121,9 @@ impl Patch {
                 let cell = self.grid.get(p);
                 match cell {
                     Cell::Empty => {}
-                    Cell::Module { id: existing_id, .. } if existing_id == id => {}
+                    Cell::Module {
+                        id: existing_id, ..
+                    } if existing_id == id => {}
                     _ => {
                         self.rebuild_channels();
                         return false;
@@ -140,7 +142,8 @@ impl Patch {
     pub fn move_modules(&mut self, moves: &[(ModuleId, GridPos)]) -> usize {
         self.grid.clear_channels();
 
-        let module_data: Vec<(ModuleId, GridPos, u8, u8)> = moves.iter()
+        let module_data: Vec<(ModuleId, GridPos, u8, u8)> = moves
+            .iter()
             .filter_map(|(id, new_pos)| {
                 let module = self.modules.get(id)?;
                 Some((*id, *new_pos, module.width(), module.height()))
@@ -181,7 +184,7 @@ impl Patch {
         let Some(module) = self.modules.get(&id) else {
             return false;
         };
-        
+
         if module.kind.is_routing() {
             return false;
         }
@@ -202,7 +205,8 @@ impl Patch {
                 let p = GridPos::new(pos.x + dx as u16, pos.y + dy as u16);
                 if !self.grid.in_bounds(p) || !self.grid.get(p).is_empty() {
                     let module = self.modules.get(&id).unwrap();
-                    self.grid.place_module(id, pos, module.width(), module.height());
+                    self.grid
+                        .place_module(id, pos, module.width(), module.height());
                     self.rebuild_channels();
                     return false;
                 }
@@ -211,7 +215,8 @@ impl Patch {
 
         self.modules.get_mut(&id).unwrap().rotate();
         let module = self.modules.get(&id).unwrap();
-        self.grid.place_module(id, pos, module.width(), module.height());
+        self.grid
+            .place_module(id, pos, module.width(), module.height());
         self.rebuild_channels();
         true
     }
@@ -219,10 +224,10 @@ impl Patch {
     pub fn rebuild_channels(&mut self) {
         self.grid.clear_channels();
 
-        let module_data: Vec<_> = self.modules.iter()
-            .filter_map(|(id, m)| {
-                self.positions.get(id).map(|pos| (*id, *pos, m.clone()))
-            })
+        let module_data: Vec<_> = self
+            .modules
+            .iter()
+            .filter_map(|(id, m)| self.positions.get(id).map(|pos| (*id, *pos, m.clone())))
             .collect();
 
         for (id, pos, module) in &module_data {
@@ -235,16 +240,32 @@ impl Patch {
             if module.has_output_bottom() {
                 for target_y in bottom_y..self.grid.height() {
                     let target_pos = GridPos::new(pos.x, target_y);
-                    if let Cell::Module { id: target_id, local_x, local_y } = self.grid.get(target_pos) {
+                    if let Cell::Module {
+                        id: target_id,
+                        local_x,
+                        local_y,
+                    } = self.grid.get(target_pos)
+                    {
                         if target_id != *id {
                             if let Some(target_mod) = self.modules.get(&target_id) {
-                                if local_y == 0 && target_mod.has_input_top() && target_mod.is_port_open(local_x as usize) {
+                                if local_y == 0
+                                    && target_mod.has_input_top()
+                                    && target_mod.is_port_open(local_x as usize)
+                                {
                                     for y in bottom_y..target_y {
                                         let p = GridPos::new(pos.x, y);
                                         match self.grid.get(p) {
-                                            Cell::Empty => self.grid.set(p, Cell::ChannelV { color }),
+                                            Cell::Empty => {
+                                                self.grid.set(p, Cell::ChannelV { color })
+                                            }
                                             Cell::ChannelH { color: color_h } => {
-                                                self.grid.set(p, Cell::ChannelCross { color_v: color, color_h });
+                                                self.grid.set(
+                                                    p,
+                                                    Cell::ChannelCross {
+                                                        color_v: color,
+                                                        color_h,
+                                                    },
+                                                );
                                             }
                                             _ => {}
                                         }
@@ -261,16 +282,32 @@ impl Patch {
                 let out_y = pos.y;
                 for target_x in right_x..self.grid.width() {
                     let target_pos = GridPos::new(target_x, out_y);
-                    if let Cell::Module { id: target_id, local_x, local_y } = self.grid.get(target_pos) {
+                    if let Cell::Module {
+                        id: target_id,
+                        local_x,
+                        local_y,
+                    } = self.grid.get(target_pos)
+                    {
                         if target_id != *id {
                             if let Some(target_mod) = self.modules.get(&target_id) {
-                                if local_x == 0 && target_mod.has_input_left() && target_mod.is_port_open(local_y as usize) {
+                                if local_x == 0
+                                    && target_mod.has_input_left()
+                                    && target_mod.is_port_open(local_y as usize)
+                                {
                                     for x in right_x..target_x {
                                         let p = GridPos::new(x, out_y);
                                         match self.grid.get(p) {
-                                            Cell::Empty => self.grid.set(p, Cell::ChannelH { color }),
+                                            Cell::Empty => {
+                                                self.grid.set(p, Cell::ChannelH { color })
+                                            }
                                             Cell::ChannelV { color: color_v } => {
-                                                self.grid.set(p, Cell::ChannelCross { color_v, color_h: color });
+                                                self.grid.set(
+                                                    p,
+                                                    Cell::ChannelCross {
+                                                        color_v,
+                                                        color_h: color,
+                                                    },
+                                                );
                                             }
                                             _ => {}
                                         }
@@ -307,7 +344,9 @@ mod tests {
     #[test]
     fn test_move_module() {
         let mut patch = Patch::new(10, 10);
-        let id = patch.add_module(ModuleKind::Freq, GridPos::new(0, 0)).unwrap();
+        let id = patch
+            .add_module(ModuleKind::Freq, GridPos::new(0, 0))
+            .unwrap();
         assert!(patch.move_module(id, GridPos::new(2, 2)));
         assert_eq!(patch.module_position(id), Some(GridPos::new(2, 2)));
     }
