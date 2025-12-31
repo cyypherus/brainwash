@@ -11,6 +11,7 @@ fn main() {
     let mut reverb = Reverb::default();
     let mut lpf1 = LowpassFilter::default();
     let mut flng = Flanger::default();
+    let mut del = Delay::default();
 
     let new_track_notation = "
     {
@@ -51,20 +52,22 @@ fn main() {
             let mut output = 0.;
             keyboard.update(new_track.play(clock.output(s)), s);
             keyboard.per_key(|(adsr, vibrato_env, osc1, osc2, osc3), key| {
-                let env = adsr.pad().output(key.state, s);
+                let env = adsr.stab().output(key.state, s);
 
                 let vibrato_depth = vibrato_env.pad().output(key.state, s);
                 let vibrato = osc2.sin().freq(5.).gain(env).output(s) * 2. * vibrato_depth;
                 output += osc1.sin().freq(key.freq + vibrato).gain(env).output(s)
                     + osc3.squ().freq(key.freq).shift(-12.).gain(env).output(s);
             });
-            output = flng.freq(0.05).depth(1.).feedback(0.8).output(output, s) * 0.3;
+            // output = flng.freq(0.05).depth(1.).feedback(0.8).output(output, s) * 0.3;
 
             let filtered = lpf1.freq(0.1).output(output, s);
             output += filtered * 0.5;
 
-            let reverbed = reverb.damp(0.).roomsize(1.).output(output);
-            output += reverbed * 0.3;
+            let tap = del.delay(6000.).tap();
+            let reverbed = reverb.damp(0.).roomsize(1.).output(tap);
+            // output += reverbed * 0.3;
+            output = del.output(output + (tap * 0.5));
 
             output * 0.1
         })
