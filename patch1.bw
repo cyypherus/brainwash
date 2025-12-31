@@ -1,46 +1,48 @@
-module 2 Fall 2 11
-module 29 TurnDR 4 14
-module 16 Gate 0 9
-module 18 TurnRD 5 10
-module 26 Freq 13 11
-module 24 Gate 0 11
-module 12 Env 8 14
-module 3 TurnDR 5 15
-module 19 LSplit 4 11
-module 0 Out 19 11
-module 21 Probe 14 11
-module 23 Rise 2 9
-module 4 Probe 3 11
-module 1 Probe 3 9
-module 11 Probe 16 11
-module 6 Gt 8 12
-module 13 TurnRD 9 12
-module 9 Env 8 15
-module 28 LSplit 4 9
-module 25 TurnDR 6 13
-module 15 TurnDR 7 12
-module 10 Switch 10 13
-module 17 TurnRD 7 9
-module 5 TurnRD 6 11
-module 7 Osc 15 11
-module 14 Probe 9 15
-module 20 TurnDR 4 10
+bpm 200
+
+module 28 TurnDR 9 13
+module 8 LSplit 4 11
+module 5 Gate 12 13
+module 15 Gt 8 12
+module 18 LSplit 4 9
+module 2 Gate 0 9
+module 24 Osc 14 11
+module 29 Mul 16 11
+module 6 Env 8 14
 module 27 Probe 7 14
-module 8 TurnDR 9 13
-module 22 Mul 17 11
+module 23 TurnRD 6 11
+module 25 Probe 9 15
+module 20 TurnDR 7 12
+module 14 Probe 15 11
+module 12 Probe 3 11
+module 19 TurnDR 6 13
+module 7 TurnDR 5 15
+module 17 Env 8 15
+module 3 TurnRD 5 10
+module 1 TurnDR 4 14
+module 4 Freq 12 11
+module 16 TurnRD 9 12
+module 13 Probe 3 9
+module 0 Fall 2 11
+module 9 Out 18 11
+module 26 TurnDR 4 10
+module 11 Rise 2 9
+module 21 Switch 10 13
+module 22 TurnRD 7 9
+module 10 Probe 13 13
 
-param 7 3 0.2
-param 22 1 0.19999993
+param 24 3 0.2
+param 29 1 0.19999993
 
-port 22 0xFD
+port 29 0xFD
 
-env 9 0 1
-env 9 1 0
-env 12 0 0
-env 12 0.31000018 0.90000015
-env 12 0.75 0
-env 12 1 1
+env 17 0 1
+env 17 1 0
+env 6 0 0
+env 6 0.31000018 0.90000015
+env 6 0.75 0
+env 6 1 1
 
 track
-({0&2&4}/_/_/3/4/5/_)
+(2/_/4/_/5/_/6)
 end

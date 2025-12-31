@@ -159,7 +159,21 @@ fn parse_track(input: &str) -> nom::IResult<&str, ParsedTrackAST> {
     Ok((input, ParsedTrackAST { layers }))
 }
 
+fn strip_comments(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut in_comment = false;
+    for c in s.chars() {
+        if c == '#' {
+            in_comment = !in_comment;
+        } else if !in_comment {
+            result.push(c);
+        }
+    }
+    result
+}
+
 fn parse_notation(input: &str) -> Result<ParsedTrackAST, String> {
+    let input = strip_comments(input);
     let input: String = input.chars().filter(|c| !c.is_whitespace()).collect();
     match parse_track(&input) {
         Ok((_, track)) => Ok(track),

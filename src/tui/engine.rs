@@ -280,6 +280,7 @@ pub struct CompiledPatch {
     old: Option<PatchVoices>,
     crossfade_pos: usize,
     probe_histories: Vec<VecDeque<f32>>,
+    probe_voice: usize,
 }
 
 impl Default for CompiledPatch {
@@ -289,6 +290,7 @@ impl Default for CompiledPatch {
             old: None,
             crossfade_pos: CROSSFADE_SAMPLES,
             probe_histories: Vec::new(),
+            probe_voice: 0,
         }
     }
 }
@@ -325,9 +327,10 @@ impl CompiledPatch {
         let sample = sample.clamp(-1.0, 1.0);
         
         if let Some(ref current) = self.current {
-            if !current.voices.is_empty() {
+            let voice_idx = self.probe_voice.min(current.voices.len().saturating_sub(1));
+            if let Some(voice) = current.voices.get(voice_idx) {
                 let mut probe_idx = 0;
-                for node in &current.voices[0].nodes {
+                for node in &voice.nodes {
                     if let NodeKind::Probe { value } = &node.kind {
                         if probe_idx >= self.probe_histories.len() {
                             self.probe_histories.push(VecDeque::with_capacity(PROBE_HISTORY_LEN));
@@ -355,6 +358,14 @@ impl CompiledPatch {
         if let Some(h) = self.probe_histories.get_mut(idx) {
             h.clear();
         }
+    }
+
+    pub fn probe_voice(&self) -> usize {
+        self.probe_voice
+    }
+
+    pub fn set_probe_voice(&mut self, voice: usize) {
+        self.probe_voice = voice;
     }
 }
 

@@ -6,7 +6,16 @@ use super::render::{AdsrWidget, EditWidget, EnvelopeWidget, GridWidget, HelpWidg
 use super::persist;
 use super::bindings::{self, Action, lookup};
 use crate::live::AudioPlayer;
-use crate::scale::cmin;
+use crate::scale::{
+    Scale, chromatic,
+    cmaj, cmin, csharpmaj, csharpmin,
+    dmaj, dmin, dsharpmaj, dsharpmin,
+    emaj, emin,
+    fmaj, fmin, fsharpmaj, fsharpmin,
+    gmaj, gmin, gsharpmaj, gsharpmin,
+    amaj, amin, asharpmaj, asharpmin,
+    bmaj, bmin,
+};
 use crate::track::Track;
 use crate::Signal;
 use ratatui::crossterm::{
@@ -36,12 +45,15 @@ enum Mode {
     Move { module_id: ModuleId, origin: GridPos },
     Select { anchor: GridPos },
     SelectMove { anchor: GridPos, extent: GridPos, move_origin: GridPos },
+    MouseSelect { anchor: GridPos },
+    MouseSelectMove { anchor: GridPos, extent: GridPos, move_origin: GridPos },
     QuitConfirm,
     Edit { module_id: ModuleId, param_idx: usize },
     AdsrEdit { module_id: ModuleId, param_idx: usize },
     EnvEdit { module_id: ModuleId, point_idx: usize, editing: bool },
     ProbeEdit { module_id: ModuleId, param_idx: usize },
     SavePrompt,
+    TrackSettings { param_idx: usize },
 }
 
 enum AppRequest {
@@ -73,6 +85,50 @@ struct App {
     grid_area: Rect,
     dragging: Option<ModuleId>,
     view_center: GridPos,
+    bpm: f32,
+    scale_idx: usize,
+}
+
+const SCALE_NAMES: &[&str] = &[
+    "Chromatic",
+    "C maj", "C min", "C# maj", "C# min",
+    "D maj", "D min", "D# maj", "D# min",
+    "E maj", "E min",
+    "F maj", "F min", "F# maj", "F# min",
+    "G maj", "G min", "G# maj", "G# min",
+    "A maj", "A min", "A# maj", "A# min",
+    "B maj", "B min",
+];
+
+fn scale_from_idx(idx: usize) -> Scale {
+    match idx {
+        0 => chromatic(),
+        1 => cmaj(),
+        2 => cmin(),
+        3 => csharpmaj(),
+        4 => csharpmin(),
+        5 => dmaj(),
+        6 => dmin(),
+        7 => dsharpmaj(),
+        8 => dsharpmin(),
+        9 => emaj(),
+        10 => emin(),
+        11 => fmaj(),
+        12 => fmin(),
+        13 => fsharpmaj(),
+        14 => fsharpmin(),
+        15 => gmaj(),
+        16 => gmin(),
+        17 => gsharpmaj(),
+        18 => gsharpmin(),
+        19 => amaj(),
+        20 => amin(),
+        21 => asharpmaj(),
+        22 => asharpmin(),
+        23 => bmaj(),
+        24 => bmin(),
+        _ => cmin(),
+    }
 }
 
 impl App {
@@ -80,11 +136,19 @@ impl App {
         let mut patch = Patch::new(20, 20);
         patch.add_module(ModuleKind::Output, GridPos::new(19, 19));
 
-        let track_text = "(0/2/4/7)".to_string();
+        let track_text = r#"# Track notation:
+  (0/1/2) = bar with divisions, _ = rest
+  0+ = sharp, 0- = flat, -1 = negative degree
+  0* = 2x weight, 0** = 3x weight
+  ((0/1)/(2/3)) = nested, {(0)&(2)} = poly
+#
+(0/2/4/7)"#.to_string();
         let scale = cmin();
+        let bpm = 120.0;
         if let Ok(track) = Track::parse(&track_text, &scale) {
             track_state.lock().unwrap().set_track(Some(track));
         }
+        track_state.lock().unwrap().clock.bpm(bpm);
 
         Self {
             patch,
@@ -111,11 +175,13 @@ impl App {
             grid_area: Rect::default(),
             dragging: None,
             view_center: GridPos::new(0, 0),
+            bpm,
+            scale_idx: 2,
         }
     }
 
     fn reparse_track(&mut self) {
-        let scale = cmin();
+        let scale = scale_from_idx(self.scale_idx);
         match Track::parse(&self.track_text, &scale) {
             Ok(track) => {
                 let mut state = self.track_state.lock().unwrap();
@@ -183,15 +249,29 @@ impl App {
     }
 
     fn handle_mouse(&mut self, kind: MouseEventKind, col: u16, row: u16) {
-        if self.mode != Mode::Normal {
-            return;
+        match &self.mode {
+            Mode::Normal => self.handle_mouse_normal(kind, col, row),
+            Mode::MouseSelect { anchor } => {
+                let anchor = *anchor;
+                self.handle_mouse_select(kind, col, row, anchor);
+            }
+            Mode::MouseSelectMove { anchor, extent, move_origin } => {
+                let (anchor, extent, move_origin) = (*anchor, *extent, *move_origin);
+                self.handle_mouse_select_move(kind, col, row, anchor, extent, move_origin);
+            }
+            _ => {}
         }
+    }
+
+    fn handle_mouse_normal(&mut self, kind: MouseEventKind, col: u16, row: u16) {
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(pos) = self.screen_to_grid(col, row) {
                     self.cursor = pos;
                     if let Some(m) = self.patch.module_at(pos) {
                         self.dragging = Some(m.id);
+                    } else {
+                        self.mode = Mode::MouseSelect { anchor: pos };
                     }
                 }
             }
@@ -212,6 +292,104 @@ impl App {
         }
     }
 
+    fn handle_mouse_select(&mut self, kind: MouseEventKind, col: u16, row: u16, anchor: GridPos) {
+        match kind {
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(pos) = self.screen_to_grid(col, row) {
+                    self.cursor = pos;
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.view_center = self.cursor;
+                let (min_x, max_x) = (anchor.x.min(self.cursor.x), anchor.x.max(self.cursor.x));
+                let (min_y, max_y) = (anchor.y.min(self.cursor.y), anchor.y.max(self.cursor.y));
+                let has_modules = (min_x..=max_x).any(|x| {
+                    (min_y..=max_y).any(|y| self.patch.module_at(GridPos::new(x, y)).is_some())
+                });
+                if has_modules {
+                    self.mode = Mode::MouseSelectMove {
+                        anchor: GridPos::new(min_x, min_y),
+                        extent: GridPos::new(max_x, max_y),
+                        move_origin: self.cursor,
+                    };
+                } else {
+                    self.mode = Mode::Normal;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_mouse_select_move(&mut self, kind: MouseEventKind, col: u16, row: u16, anchor: GridPos, extent: GridPos, move_origin: GridPos) {
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(pos) = self.screen_to_grid(col, row) {
+                    let in_selection = pos.x >= anchor.x && pos.x <= extent.x
+                        && pos.y >= anchor.y && pos.y <= extent.y;
+                    if in_selection {
+                        self.mode = Mode::MouseSelectMove {
+                            anchor,
+                            extent,
+                            move_origin: pos,
+                        };
+                        self.cursor = pos;
+                    } else {
+                        self.mode = Mode::Normal;
+                        self.cursor = pos;
+                    }
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(pos) = self.screen_to_grid(col, row) {
+                    let dx = pos.x as i16 - move_origin.x as i16;
+                    let dy = pos.y as i16 - move_origin.y as i16;
+                    if dx != 0 || dy != 0 {
+                        let mut unique_ids = std::collections::HashSet::new();
+                        for x in anchor.x..=extent.x {
+                            for y in anchor.y..=extent.y {
+                                if let Some(m) = self.patch.module_at(GridPos::new(x, y)) {
+                                    unique_ids.insert(m.id);
+                                }
+                            }
+                        }
+                        let mut moves = Vec::new();
+                        for &id in &unique_ids {
+                            if let Some(old_pos) = self.patch.module_position(id) {
+                                let new_pos = GridPos::new(
+                                    (old_pos.x as i16 + dx).max(0) as u16,
+                                    (old_pos.y as i16 + dy).max(0) as u16,
+                                );
+                                moves.push((id, new_pos));
+                            }
+                        }
+                        let moved = self.patch.move_modules(&moves);
+                        if moved > 0 {
+                            self.commit_patch();
+                            let new_anchor = GridPos::new(
+                                (anchor.x as i16 + dx).max(0) as u16,
+                                (anchor.y as i16 + dy).max(0) as u16,
+                            );
+                            let new_extent = GridPos::new(
+                                (extent.x as i16 + dx).max(0) as u16,
+                                (extent.y as i16 + dy).max(0) as u16,
+                            );
+                            self.mode = Mode::MouseSelectMove {
+                                anchor: new_anchor,
+                                extent: new_extent,
+                                move_origin: pos,
+                            };
+                        }
+                        self.cursor = pos;
+                    }
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.view_center = self.cursor;
+            }
+            _ => {}
+        }
+    }
+
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         self.message = None;
 
@@ -221,12 +399,18 @@ impl App {
             Mode::Move { module_id, origin } => self.handle_move_key(code, module_id, origin),
             Mode::Select { anchor } => self.handle_select_key(code, anchor),
             Mode::SelectMove { anchor, extent, move_origin } => self.handle_select_move_key(code, anchor, extent, move_origin),
+            Mode::MouseSelect { .. } | Mode::MouseSelectMove { .. } => {
+                if code == KeyCode::Esc {
+                    self.mode = Mode::Normal;
+                }
+            }
             Mode::Edit { module_id, param_idx } => self.handle_edit_key(code, module_id, param_idx),
             Mode::AdsrEdit { module_id, param_idx } => self.handle_adsr_edit_key(code, module_id, param_idx),
             Mode::EnvEdit { module_id, point_idx, editing } => self.handle_env_edit_key(code, module_id, point_idx, editing),
             Mode::ProbeEdit { module_id, param_idx } => self.handle_probe_edit_key(code, module_id, param_idx),
             Mode::SavePrompt => self.handle_save_prompt_key(code, modifiers),
             Mode::QuitConfirm => self.handle_quit_confirm_key(code),
+            Mode::TrackSettings { param_idx } => self.handle_track_settings_key(code, param_idx),
         }
     }
 
@@ -354,6 +538,9 @@ impl App {
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| "patch.bw".into());
                 self.mode = Mode::SavePrompt;
+            }
+            Action::TrackSettings => {
+                self.mode = Mode::TrackSettings { param_idx: 0 };
             }
             _ => {}
         }
@@ -1093,6 +1280,72 @@ impl App {
         }
     }
 
+    fn handle_track_settings_key(&mut self, code: KeyCode, param_idx: usize) {
+        let num_voices = self.track_state.lock().unwrap().num_voices();
+        match code {
+            KeyCode::Esc | KeyCode::Char('T') | KeyCode::Enter => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                let new_idx = (param_idx + 1) % 3;
+                self.mode = Mode::TrackSettings { param_idx: new_idx };
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let new_idx = if param_idx == 0 { 2 } else { param_idx - 1 };
+                self.mode = Mode::TrackSettings { param_idx: new_idx };
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                match param_idx {
+                    0 => {
+                        self.bpm = (self.bpm + 5.0).min(300.0);
+                        self.track_state.lock().unwrap().clock.bpm(self.bpm);
+                    }
+                    1 => {
+                        self.scale_idx = (self.scale_idx + 1) % SCALE_NAMES.len();
+                        self.reparse_track();
+                    }
+                    2 => {
+                        let mut patch = self.audio_patch.lock().unwrap();
+                        let v = (patch.probe_voice() + 1) % num_voices;
+                        patch.set_probe_voice(v);
+                    }
+                    _ => {}
+                }
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                match param_idx {
+                    0 => {
+                        self.bpm = (self.bpm - 5.0).max(20.0);
+                        self.track_state.lock().unwrap().clock.bpm(self.bpm);
+                    }
+                    1 => {
+                        self.scale_idx = if self.scale_idx == 0 { SCALE_NAMES.len() - 1 } else { self.scale_idx - 1 };
+                        self.reparse_track();
+                    }
+                    2 => {
+                        let mut patch = self.audio_patch.lock().unwrap();
+                        let v = patch.probe_voice();
+                        patch.set_probe_voice(if v == 0 { num_voices - 1 } else { v - 1 });
+                    }
+                    _ => {}
+                }
+            }
+            KeyCode::Char('L') => {
+                if param_idx == 0 {
+                    self.bpm = (self.bpm + 20.0).min(300.0);
+                    self.track_state.lock().unwrap().clock.bpm(self.bpm);
+                }
+            }
+            KeyCode::Char('H') => {
+                if param_idx == 0 {
+                    self.bpm = (self.bpm - 20.0).max(20.0);
+                    self.track_state.lock().unwrap().clock.bpm(self.bpm);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn ui(&mut self, f: &mut Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -1117,6 +1370,8 @@ impl App {
         let selection = match self.mode {
             Mode::Select { anchor } => Some((anchor, self.cursor)),
             Mode::SelectMove { anchor, extent, .. } => Some((anchor, extent)),
+            Mode::MouseSelect { anchor } => Some((anchor, self.cursor)),
+            Mode::MouseSelectMove { anchor, extent, .. } => Some((anchor, extent)),
             _ => None,
         };
 
@@ -1151,14 +1406,15 @@ impl App {
             Mode::Normal => "NORMAL",
             Mode::Palette => "PALETTE",
             Mode::Move { .. } => "MOVE",
-            Mode::Select { .. } => "SELECT",
-            Mode::SelectMove { .. } => "SEL-MOVE",
+            Mode::Select { .. } | Mode::MouseSelect { .. } => "SELECT",
+            Mode::SelectMove { .. } | Mode::MouseSelectMove { .. } => "SEL-MOVE",
             Mode::Edit { .. } => "EDIT",
             Mode::AdsrEdit { .. } => "ADSR",
             Mode::EnvEdit { .. } => "ENV",
             Mode::ProbeEdit { .. } => "PROBE",
             Mode::SavePrompt => "SAVE",
             Mode::QuitConfirm => "QUIT?",
+            Mode::TrackSettings { .. } => "TRACK",
         };
         let mut status = StatusWidget::new(self.cursor, mode_str).playing(self.playing);
         if let Some(ref msg) = self.message {
@@ -1342,6 +1598,86 @@ impl App {
             );
             let text = ratatui::widgets::Paragraph::new(self.save_filename.as_str());
             f.render_widget(text, inner);
+        }
+
+        if let Mode::TrackSettings { param_idx } = self.mode {
+            let width = 30u16;
+            let height = 7u16;
+            let x = (f.area().width.saturating_sub(width)) / 2;
+            let y = (f.area().height.saturating_sub(height)) / 2;
+            let area = Rect::new(x, y, width, height);
+
+            f.render_widget(Clear, area);
+
+            let block = Block::default()
+                .title(" Settings ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow));
+            f.render_widget(block, area);
+
+            let label_style = Style::default().fg(Color::DarkGray);
+            let value_style = Style::default().fg(Color::White);
+            let selected_style = Style::default().fg(Color::Black).bg(Color::Yellow);
+
+            let bpm_label = "BPM: ";
+            let bpm_value = format!("{:.0}", self.bpm);
+            let scale_label = "Scale: ";
+            let scale_value = SCALE_NAMES[self.scale_idx];
+            let voice_label = "Probe Voice: ";
+            let probe_voice = self.audio_patch.lock().unwrap().probe_voice();
+            let voice_value = format!("{}", probe_voice + 1);
+
+            let bpm_style = if param_idx == 0 { selected_style } else { value_style };
+            let scale_style = if param_idx == 1 { selected_style } else { value_style };
+            let voice_style = if param_idx == 2 { selected_style } else { value_style };
+
+            let inner_x = area.x + 2;
+            let inner_y = area.y + 2;
+
+            let buf = f.buffer_mut();
+            for (i, c) in bpm_label.chars().enumerate() {
+                let ix = i as u16;
+                if inner_x + ix < area.x + area.width - 1 {
+                    buf[(inner_x + ix, inner_y)].set_char(c).set_style(label_style);
+                }
+            }
+            let bpm_x = inner_x + bpm_label.len() as u16;
+            for (i, c) in bpm_value.chars().enumerate() {
+                let ix = i as u16;
+                if bpm_x + ix < area.x + area.width - 1 {
+                    buf[(bpm_x + ix, inner_y)].set_char(c).set_style(bpm_style);
+                }
+            }
+
+            let row2 = inner_y + 1;
+            for (i, c) in scale_label.chars().enumerate() {
+                let ix = i as u16;
+                if inner_x + ix < area.x + area.width - 1 {
+                    buf[(inner_x + ix, row2)].set_char(c).set_style(label_style);
+                }
+            }
+            let scale_x = inner_x + scale_label.len() as u16;
+            for (i, c) in scale_value.chars().enumerate() {
+                let ix = i as u16;
+                if scale_x + ix < area.x + area.width - 1 {
+                    buf[(scale_x + ix, row2)].set_char(c).set_style(scale_style);
+                }
+            }
+
+            let row3 = inner_y + 2;
+            for (i, c) in voice_label.chars().enumerate() {
+                let ix = i as u16;
+                if inner_x + ix < area.x + area.width - 1 {
+                    buf[(inner_x + ix, row3)].set_char(c).set_style(label_style);
+                }
+            }
+            let voice_x = inner_x + voice_label.len() as u16;
+            for (i, c) in voice_value.chars().enumerate() {
+                let ix = i as u16;
+                if voice_x + ix < area.x + area.width - 1 {
+                    buf[(voice_x + ix, row3)].set_char(c).set_style(voice_style);
+                }
+            }
         }
     }
 }

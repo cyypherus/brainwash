@@ -25,29 +25,40 @@ impl Scale {
     }
 }
 
-pub fn chromatic() -> Scale {
-    let mut scale = Scale {
-        notes: [0, 1, 2, 3, 4, 5, 6],
-        shift: 0,
-    };
-    scale.shift(52);
-    scale
-}
+const BASE_SHIFT: i32 = 48;
+const MAJ: [i32; 7] = [0, 2, 4, 5, 7, 9, 11];
+const MIN: [i32; 7] = [0, 2, 3, 5, 7, 8, 10];
+const CHROM: [i32; 7] = [0, 1, 2, 3, 4, 5, 6];
 
-pub fn cmaj() -> Scale {
-    let mut scale = Scale {
-        notes: [0, 2, 4, 5, 7, 9, 11],
-        shift: 0,
-    };
-    scale.shift(52);
-    scale
-}
+pub fn chromatic() -> Scale { Scale { notes: CHROM, shift: BASE_SHIFT } }
 
-pub fn cmin() -> Scale {
-    let mut scale = Scale {
-        notes: [0, 2, 3, 5, 7, 8, 10],
-        shift: 0,
-    };
-    scale.shift(52);
-    scale
-}
+pub fn cmaj() -> Scale { Scale { notes: MAJ, shift: BASE_SHIFT } }
+pub fn cmin() -> Scale { Scale { notes: MIN, shift: BASE_SHIFT } }
+pub fn csharpmaj() -> Scale { Scale { notes: MAJ, shift: BASE_SHIFT + 1 } }
+pub fn csharpmin() -> Scale { Scale { notes: MIN, shift: BASE_SHIFT + 1 } }
+
+pub fn dmaj() -> Scale { Scale { notes: MAJ, shift: BASE_SHIFT + 2 } }
+pub fn dmin() -> Scale { Scale { notes: MIN, shift: BASE_SHIFT + 2 } }
+pub fn dsharpmaj() -> Scale { Scale { notes: MAJ, shift: BASE_SHIFT + 3 } }
+pub fn dsharpmin() -> Scale { Scale { notes: MIN, shift: BASE_SHIFT + 3 } }
+
+pub fn emaj() -> Scale { Scale { notes: MAJ, shift: BASE_SHIFT + 4 } }
+pub fn emin() -> Scale { Scale { notes: MIN, shift: BASE_SHIFT + 4 } }
+
+pub fn fmaj() -> Scale { Scale { notes: MAJ, shift: BASE_SHIFT + 5 } }
+pub fn fmin() -> Scale { Scale { notes: MIN, shift: BASE_SHIFT + 5 } }
+pub fn fsharpmaj() -> Scale { Scale { notes: MAJ, shift: BASE_SHIFT + 6 } }
+pub fn fsharpmin() -> Scale { Scale { notes: MIN, shift: BASE_SHIFT + 6 } }
+
+pub fn gmaj() -> Scale { Scale { notes: MAJ, shift: BASE_SHIFT + 7 } }
+pub fn gmin() -> Scale { Scale { notes: MIN, shift: BASE_SHIFT + 7 } }
+pub fn gsharpmaj() -> Scale { Scale { notes: MAJ, shift: BASE_SHIFT + 8 } }
+pub fn gsharpmin() -> Scale { Scale { notes: MIN, shift: BASE_SHIFT + 8 } }
+
+pub fn amaj() -> Scale { Scale { notes: MAJ, shift: BASE_SHIFT + 9 } }
+pub fn amin() -> Scale { Scale { notes: MIN, shift: BASE_SHIFT + 9 } }
+pub fn asharpmaj() -> Scale { Scale { notes: MAJ, shift: BASE_SHIFT + 10 } }
+pub fn asharpmin() -> Scale { Scale { notes: MIN, shift: BASE_SHIFT + 10 } }
+
+pub fn bmaj() -> Scale { Scale { notes: MAJ, shift: BASE_SHIFT + 11 } }
+pub fn bmin() -> Scale { Scale { notes: MIN, shift: BASE_SHIFT + 11 } }

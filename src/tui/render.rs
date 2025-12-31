@@ -716,7 +716,7 @@ impl Widget for HelpWidget {
                 (Self::key_for(binds, Action::Select), "select"),
             ],
             &[
-                (Self::key_for(binds, Action::TrackEdit), "track"),
+                ("t/T", "track"),
                 (Self::key_for(binds, Action::TogglePlay), "play"),
             ],
             &[

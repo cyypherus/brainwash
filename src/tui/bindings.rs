@@ -35,6 +35,7 @@ pub enum Action {
     AddPoint,
     DeletePoint,
     ToggleCurve,
+    TrackSettings,
 }
 
 pub struct Binding {
@@ -68,7 +69,7 @@ pub fn normal_bindings() -> &'static [Binding] {
         Binding { key: KeyCode::Char('u'), action: Action::Edit, hint: "edit" },
         Binding { key: KeyCode::Char('i'), action: Action::Inspect, hint: "inspect" },
         Binding { key: KeyCode::Char('p'), action: Action::TogglePlay, hint: "play" },
-        Binding { key: KeyCode::Char('t'), action: Action::TrackEdit, hint: "track" },
+        Binding { key: KeyCode::Char('t'), action: Action::TrackEdit, hint: "edit trk" },
         Binding { key: KeyCode::Char('v'), action: Action::Select, hint: "select" },
         Binding { key: KeyCode::Char('w'), action: Action::Save, hint: "save" },
         Binding { key: KeyCode::Char('W'), action: Action::SaveAs, hint: "save as" },
@@ -78,6 +79,7 @@ pub fn normal_bindings() -> &'static [Binding] {
         Binding { key: KeyCode::Char('0'), action: Action::Palette(3), hint: "fx" },
         Binding { key: KeyCode::Char('-'), action: Action::Palette(4), hint: "math" },
         Binding { key: KeyCode::Char('='), action: Action::Palette(5), hint: "route" },
+        Binding { key: KeyCode::Char('T'), action: Action::TrackSettings, hint: "settings" },
     ]
 }
 
@@ -202,6 +204,7 @@ pub fn key_str(key: KeyCode) -> &'static str {
         KeyCode::Char('o') => "o",
         KeyCode::Char('p') => "p",
         KeyCode::Char('t') => "t",
+        KeyCode::Char('T') => "T",
         KeyCode::Char('v') => "v",
         KeyCode::Char('w') => "w",
         KeyCode::Char('W') => "W",
