@@ -19,11 +19,85 @@ impl Orientation {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum WaveType {
+    #[default]
+    Sin,
+    Squ,
+    Tri,
+    Saw,
+    RSaw,
+    Noise,
+}
+
+impl WaveType {
+    pub fn name(&self) -> &'static str {
+        match self {
+            WaveType::Sin => "sin",
+            WaveType::Squ => "square",
+            WaveType::Tri => "tri",
+            WaveType::Saw => "saw",
+            WaveType::RSaw => "rsaw",
+            WaveType::Noise => "noise",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            WaveType::Sin => WaveType::Squ,
+            WaveType::Squ => WaveType::Tri,
+            WaveType::Tri => WaveType::Saw,
+            WaveType::Saw => WaveType::RSaw,
+            WaveType::RSaw => WaveType::Noise,
+            WaveType::Noise => WaveType::Sin,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            WaveType::Sin => WaveType::Noise,
+            WaveType::Squ => WaveType::Sin,
+            WaveType::Tri => WaveType::Squ,
+            WaveType::Saw => WaveType::Tri,
+            WaveType::RSaw => WaveType::Saw,
+            WaveType::Noise => WaveType::RSaw,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RampMode {
+    #[default]
+    Rise,
+    Fall,
+}
+
+impl RampMode {
+    pub fn name(&self) -> &'static str {
+        match self {
+            RampMode::Rise => "rise",
+            RampMode::Fall => "fall",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            RampMode::Rise => RampMode::Fall,
+            RampMode::Fall => RampMode::Rise,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        self.next()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModuleKind {
     Freq,
     Gate,
     Osc,
+    GateRamp,
     Adsr,
     Envelope,
     Lpf,
@@ -51,6 +125,7 @@ impl ModuleKind {
             ModuleKind::Freq => "Freq",
             ModuleKind::Gate => "Gate",
             ModuleKind::Osc => "Osc",
+            ModuleKind::GateRamp => "Ramp",
             ModuleKind::Adsr => "ADSR",
             ModuleKind::Envelope => "Env",
             ModuleKind::Lpf => "LPF",
@@ -78,6 +153,7 @@ impl ModuleKind {
             ModuleKind::Freq => "FRQ",
             ModuleKind::Gate => "GAT",
             ModuleKind::Osc => "OSC",
+            ModuleKind::GateRamp => "RMP",
             ModuleKind::Adsr => "ADS",
             ModuleKind::Envelope => "ENV",
             ModuleKind::Lpf => "LPF",
@@ -104,7 +180,7 @@ impl ModuleKind {
         match self {
             ModuleKind::Freq | ModuleKind::Gate => Color::Rgb(100, 200, 100),
             ModuleKind::Osc => Color::Rgb(100, 150, 255),
-            ModuleKind::Adsr | ModuleKind::Envelope => Color::Rgb(255, 200, 100),
+            ModuleKind::GateRamp | ModuleKind::Adsr | ModuleKind::Envelope => Color::Rgb(255, 200, 100),
             ModuleKind::Lpf
             | ModuleKind::Hpf
             | ModuleKind::Delay
@@ -129,8 +205,16 @@ impl ModuleKind {
         match self {
             ModuleKind::LSplit | ModuleKind::TSplit | ModuleKind::TurnRD | ModuleKind::TurnDR => 1,
             ModuleKind::RJoin | ModuleKind::DJoin => 2,
-            _ => self.param_defs().iter().filter(|p| !matches!(p.kind, ParamKind::Enum { .. })).count(),
+            _ => self.param_defs().iter().filter(|d| !matches!(d.kind, ParamKind::Enum)).count(),
         }
+    }
+
+    pub fn port_to_param_idx(&self, port_idx: usize) -> Option<usize> {
+        self.param_defs().iter()
+            .enumerate()
+            .filter(|(_, d)| !matches!(d.kind, ParamKind::Enum))
+            .nth(port_idx)
+            .map(|(i, _)| i)
     }
 
     pub fn output_count(&self) -> usize {
@@ -149,7 +233,7 @@ impl ModuleKind {
         match self {
             ModuleKind::Freq | ModuleKind::Gate => ModuleCategory::Track,
             ModuleKind::Osc => ModuleCategory::Generator,
-            ModuleKind::Adsr | ModuleKind::Envelope => ModuleCategory::Envelope,
+            ModuleKind::GateRamp | ModuleKind::Adsr | ModuleKind::Envelope => ModuleCategory::Envelope,
             ModuleKind::Lpf
             | ModuleKind::Hpf
             | ModuleKind::Delay
@@ -175,6 +259,7 @@ impl ModuleKind {
             ModuleKind::Freq,
             ModuleKind::Gate,
             ModuleKind::Osc,
+            ModuleKind::GateRamp,
             ModuleKind::Adsr,
             ModuleKind::Envelope,
             ModuleKind::Lpf,
@@ -334,17 +419,19 @@ impl Module {
     }
 
     pub fn display_name(&self) -> &'static str {
-        match self.kind {
-            ModuleKind::Osc => {
-                match self.params.floats[0] as usize {
-                    0 => "SIN",
-                    1 => "SQU",
-                    2 => "TRI",
-                    3 => "SAW",
-                    4 => "RSW",
-                    _ => "NSE",
-                }
-            }
+        match &self.params {
+            ModuleParams::Osc { wave, .. } => match wave {
+                WaveType::Sin => "SIN",
+                WaveType::Squ => "SQU",
+                WaveType::Tri => "TRI",
+                WaveType::Saw => "SAW",
+                WaveType::RSaw => "RSW",
+                WaveType::Noise => "NSE",
+            },
+            ModuleParams::GateRamp { mode, .. } => match mode {
+                RampMode::Rise => "RIS",
+                RampMode::Fall => "FAL",
+            },
             _ => self.kind.short_name(),
         }
     }
@@ -354,16 +441,16 @@ impl Module {
             return port_idx < self.kind.port_count();
         }
         
-        let defs = self.kind.param_defs();
-        let port_defs: Vec<_> = defs.iter().enumerate()
-            .filter(|(_, d)| !matches!(d.kind, ParamKind::Enum { .. }))
-            .collect();
+        let Some(param_idx) = self.kind.port_to_param_idx(port_idx) else {
+            return false;
+        };
         
-        if let Some((param_idx, def)) = port_defs.get(port_idx) {
+        let defs = self.kind.param_defs();
+        if let Some(def) = defs.get(param_idx) {
             match def.kind {
                 ParamKind::Input => true,
-                ParamKind::Float { .. } => self.params.is_connected(*param_idx),
-                ParamKind::Enum { .. } => false,
+                ParamKind::Float { .. } => self.params.is_connected(param_idx),
+                ParamKind::Enum => false,
             }
         } else {
             false
@@ -373,8 +460,8 @@ impl Module {
 
 pub enum ParamKind {
     Float { min: f32, max: f32, step: f32 },
-    Enum { options: &'static [&'static str] },
     Input,
+    Enum,
 }
 
 pub struct ParamDef {
@@ -382,24 +469,28 @@ pub struct ParamDef {
     pub kind: ParamKind,
 }
 
-const WAVE_OPTIONS: &[&str] = &["sin", "square", "tri", "saw", "rsaw", "noise"];
+
 
 impl ModuleKind {
     pub fn param_defs(&self) -> &'static [ParamDef] {
         match self {
             ModuleKind::Freq | ModuleKind::Gate => &[],
             ModuleKind::Osc => &[
-                ParamDef { name: "Wave", kind: ParamKind::Enum { options: WAVE_OPTIONS } },
+                ParamDef { name: "Wave", kind: ParamKind::Enum },
                 ParamDef { name: "Freq", kind: ParamKind::Float { min: 20.0, max: 20000.0, step: 1.0 } },
                 ParamDef { name: "Shift", kind: ParamKind::Float { min: -24.0, max: 24.0, step: 1.0 } },
                 ParamDef { name: "Gain", kind: ParamKind::Float { min: 0.0, max: 1.0, step: 0.05 } },
             ],
+            ModuleKind::GateRamp => &[
+                ParamDef { name: "Mode", kind: ParamKind::Enum },
+                ParamDef { name: "Gate", kind: ParamKind::Input },
+                ParamDef { name: "Time", kind: ParamKind::Float { min: 0.001, max: 10.0, step: 0.01 } },
+            ],
             ModuleKind::Adsr => &[
-                ParamDef { name: "Gate", kind: ParamKind::Float { min: 0.0, max: 1.0, step: 1.0 } },
-                ParamDef { name: "Atk", kind: ParamKind::Float { min: 0.001, max: 2.0, step: 0.01 } },
-                ParamDef { name: "Dec", kind: ParamKind::Float { min: 0.001, max: 2.0, step: 0.01 } },
+                ParamDef { name: "Rise", kind: ParamKind::Input },
+                ParamDef { name: "Fall", kind: ParamKind::Input },
+                ParamDef { name: "Atk", kind: ParamKind::Float { min: 0.0, max: 1.0, step: 0.05 } },
                 ParamDef { name: "Sus", kind: ParamKind::Float { min: 0.0, max: 1.0, step: 0.05 } },
-                ParamDef { name: "Rel", kind: ParamKind::Float { min: 0.001, max: 4.0, step: 0.01 } },
             ],
             ModuleKind::Envelope => &[
                 ParamDef { name: "Phase", kind: ParamKind::Float { min: 0.0, max: 1.0, step: 0.01 } },
@@ -461,87 +552,317 @@ pub struct EnvPoint {
 }
 
 #[derive(Clone, Debug)]
-pub struct ModuleParams {
-    pub floats: [f32; 8],
-    pub connected: u8,
-    pub env_points: Vec<EnvPoint>,
-}
-
-impl Default for ModuleParams {
-    fn default() -> Self {
-        Self {
-            floats: [0.0; 8],
-            connected: 0,
-            env_points: Vec::new(),
-        }
-    }
-}
-
-impl ModuleParams {
-    pub fn is_connected(&self, idx: usize) -> bool {
-        (self.connected & (1 << idx)) != 0
-    }
-
-    pub fn set_connected(&mut self, idx: usize, val: bool) {
-        if val {
-            self.connected |= 1 << idx;
-        } else {
-            self.connected &= !(1 << idx);
-        }
-    }
-
-    pub fn toggle_connected(&mut self, idx: usize) {
-        self.connected ^= 1 << idx;
-    }
+pub enum ModuleParams {
+    None,
+    Osc { wave: WaveType, freq: f32, shift: f32, gain: f32, connected: u8 },
+    GateRamp { mode: RampMode, time: f32, connected: u8 },
+    Adsr { attack_ratio: f32, sustain: f32, connected: u8 },
+    Envelope { points: Vec<EnvPoint>, connected: u8 },
+    Filter { freq: f32, q: f32, connected: u8 },
+    Delay { samples: f32, connected: u8 },
+    Reverb { room: f32, damp: f32, connected: u8 },
+    Distortion { drive: f32, gain: f32, connected: u8 },
+    Flanger { rate: f32, depth: f32, feedback: f32, connected: u8 },
+    Mul { a: f32, b: f32, connected: u8 },
+    Add { a: f32, b: f32, connected: u8 },
+    Gain { gain: f32, connected: u8 },
+    Probe { connected: u8 },
+    Output { connected: u8 },
 }
 
 impl ModuleParams {
     pub fn default_for(kind: ModuleKind) -> Self {
-        let mut params = Self { connected: 0xFF, ..Default::default() };
-        
         match kind {
-            ModuleKind::Osc => {
-                params.floats[1] = 440.0;
-                params.floats[3] = 1.0;
-            }
-            ModuleKind::Adsr => {
-                params.floats[1] = 0.01;
-                params.floats[2] = 0.1;
-                params.floats[3] = 0.7;
-                params.floats[4] = 0.3;
-            }
-            ModuleKind::Lpf | ModuleKind::Hpf => {
-                params.floats[1] = 0.5;
-                params.floats[2] = 0.707;
-            }
-            ModuleKind::Reverb => {
-                params.floats[1] = 0.5;
-                params.floats[2] = 0.5;
-            }
-            ModuleKind::Distortion => {
-                params.floats[1] = 0.3;
-                params.floats[2] = 1.0;
-            }
-            ModuleKind::Flanger => {
-                params.floats[1] = 0.5;
-                params.floats[2] = 0.5;
-                params.floats[3] = 0.3;
-            }
-            ModuleKind::Mul => {
-                params.floats[0] = 1.0;
-                params.floats[1] = 1.0;
-            }
-            ModuleKind::Gain => {
-                params.floats[1] = 1.0;
-            }
-            ModuleKind::Envelope => {
-                params.env_points = vec![
+            ModuleKind::Freq | ModuleKind::Gate => ModuleParams::None,
+            ModuleKind::Osc => ModuleParams::Osc { 
+                wave: WaveType::Sin, 
+                freq: 440.0, 
+                shift: 0.0, 
+                gain: 1.0, 
+                connected: 0xFF,
+            },
+            ModuleKind::GateRamp => ModuleParams::GateRamp { 
+                mode: RampMode::Rise, 
+                time: 0.1, 
+                connected: 0xFF,
+            },
+            ModuleKind::Adsr => ModuleParams::Adsr { 
+                attack_ratio: 0.5, 
+                sustain: 0.7, 
+                connected: 0xFF,
+            },
+            ModuleKind::Envelope => ModuleParams::Envelope { 
+                points: vec![
                     EnvPoint { time: 0.0, value: 0.0, curve: false },
                     EnvPoint { time: 1.0, value: 1.0, curve: false },
-                ];
+                ],
+                connected: 0xFF,
+            },
+            ModuleKind::Lpf | ModuleKind::Hpf => ModuleParams::Filter { 
+                freq: 0.5, 
+                q: 0.707, 
+                connected: 0xFF,
+            },
+            ModuleKind::Delay => ModuleParams::Delay { 
+                samples: 0.0, 
+                connected: 0xFF,
+            },
+            ModuleKind::Reverb => ModuleParams::Reverb { 
+                room: 0.5, 
+                damp: 0.5, 
+                connected: 0xFF,
+            },
+            ModuleKind::Distortion => ModuleParams::Distortion { 
+                drive: 0.3, 
+                gain: 1.0, 
+                connected: 0xFF,
+            },
+            ModuleKind::Flanger => ModuleParams::Flanger { 
+                rate: 0.5, 
+                depth: 0.5, 
+                feedback: 0.3, 
+                connected: 0xFF,
+            },
+            ModuleKind::Mul => ModuleParams::Mul { 
+                a: 1.0, 
+                b: 1.0, 
+                connected: 0xFF,
+            },
+            ModuleKind::Add => ModuleParams::Add { 
+                a: 0.0, 
+                b: 0.0, 
+                connected: 0xFF,
+            },
+            ModuleKind::Gain => ModuleParams::Gain { 
+                gain: 1.0, 
+                connected: 0xFF,
+            },
+            ModuleKind::Probe => ModuleParams::Probe { connected: 0xFF },
+            ModuleKind::Output => ModuleParams::Output { connected: 0xFF },
+            ModuleKind::LSplit | ModuleKind::TSplit | ModuleKind::RJoin 
+            | ModuleKind::DJoin | ModuleKind::TurnRD | ModuleKind::TurnDR => ModuleParams::None,
+        }
+    }
+
+    pub fn connected(&self) -> u8 {
+        match self {
+            ModuleParams::None => 0xFF,
+            ModuleParams::Osc { connected, .. } => *connected,
+            ModuleParams::GateRamp { connected, .. } => *connected,
+            ModuleParams::Adsr { connected, .. } => *connected,
+            ModuleParams::Envelope { connected, .. } => *connected,
+            ModuleParams::Filter { connected, .. } => *connected,
+            ModuleParams::Delay { connected, .. } => *connected,
+            ModuleParams::Reverb { connected, .. } => *connected,
+            ModuleParams::Distortion { connected, .. } => *connected,
+            ModuleParams::Flanger { connected, .. } => *connected,
+            ModuleParams::Mul { connected, .. } => *connected,
+            ModuleParams::Add { connected, .. } => *connected,
+            ModuleParams::Gain { connected, .. } => *connected,
+            ModuleParams::Probe { connected, .. } => *connected,
+            ModuleParams::Output { connected, .. } => *connected,
+        }
+    }
+
+    pub fn connected_mut(&mut self) -> Option<&mut u8> {
+        match self {
+            ModuleParams::None => None,
+            ModuleParams::Osc { connected, .. } => Some(connected),
+            ModuleParams::GateRamp { connected, .. } => Some(connected),
+            ModuleParams::Adsr { connected, .. } => Some(connected),
+            ModuleParams::Envelope { connected, .. } => Some(connected),
+            ModuleParams::Filter { connected, .. } => Some(connected),
+            ModuleParams::Delay { connected, .. } => Some(connected),
+            ModuleParams::Reverb { connected, .. } => Some(connected),
+            ModuleParams::Distortion { connected, .. } => Some(connected),
+            ModuleParams::Flanger { connected, .. } => Some(connected),
+            ModuleParams::Mul { connected, .. } => Some(connected),
+            ModuleParams::Add { connected, .. } => Some(connected),
+            ModuleParams::Gain { connected, .. } => Some(connected),
+            ModuleParams::Probe { connected, .. } => Some(connected),
+            ModuleParams::Output { connected, .. } => Some(connected),
+        }
+    }
+
+    pub fn is_connected(&self, idx: usize) -> bool {
+        (self.connected() & (1 << idx)) != 0
+    }
+
+    pub fn set_connected(&mut self, idx: usize, val: bool) {
+        if let Some(c) = self.connected_mut() {
+            if val {
+                *c |= 1 << idx;
+            } else {
+                *c &= !(1 << idx);
             }
+        }
+    }
+
+    pub fn toggle_connected(&mut self, idx: usize) {
+        if let Some(c) = self.connected_mut() {
+            *c ^= 1 << idx;
+        }
+    }
+
+    pub fn get_float(&self, idx: usize) -> Option<f32> {
+        match self {
+            ModuleParams::Osc { freq, shift, gain, .. } => match idx {
+                1 => Some(*freq),
+                2 => Some(*shift),
+                3 => Some(*gain),
+                _ => None,
+            },
+            ModuleParams::GateRamp { time, .. } => match idx {
+                2 => Some(*time),
+                _ => None,
+            },
+            ModuleParams::Adsr { attack_ratio, sustain, .. } => match idx {
+                2 => Some(*attack_ratio),
+                3 => Some(*sustain),
+                _ => None,
+            },
+            ModuleParams::Filter { freq, q, .. } => match idx {
+                1 => Some(*freq),
+                2 => Some(*q),
+                _ => None,
+            },
+            ModuleParams::Delay { samples, .. } => match idx {
+                1 => Some(*samples),
+                _ => None,
+            },
+            ModuleParams::Reverb { room, damp, .. } => match idx {
+                1 => Some(*room),
+                2 => Some(*damp),
+                _ => None,
+            },
+            ModuleParams::Distortion { drive, gain, .. } => match idx {
+                1 => Some(*drive),
+                2 => Some(*gain),
+                _ => None,
+            },
+            ModuleParams::Flanger { rate, depth, feedback, .. } => match idx {
+                1 => Some(*rate),
+                2 => Some(*depth),
+                3 => Some(*feedback),
+                _ => None,
+            },
+            ModuleParams::Mul { a, b, .. } => match idx {
+                0 => Some(*a),
+                1 => Some(*b),
+                _ => None,
+            },
+            ModuleParams::Add { a, b, .. } => match idx {
+                0 => Some(*a),
+                1 => Some(*b),
+                _ => None,
+            },
+            ModuleParams::Gain { gain, .. } => match idx {
+                1 => Some(*gain),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn set_float(&mut self, idx: usize, val: f32) {
+        match self {
+            ModuleParams::Osc { freq, shift, gain, .. } => match idx {
+                1 => *freq = val,
+                2 => *shift = val,
+                3 => *gain = val,
+                _ => {}
+            },
+            ModuleParams::GateRamp { time, .. } => match idx {
+                2 => *time = val,
+                _ => {}
+            },
+            ModuleParams::Adsr { attack_ratio, sustain, .. } => match idx {
+                2 => *attack_ratio = val,
+                3 => *sustain = val,
+                _ => {}
+            },
+            ModuleParams::Filter { freq, q, .. } => match idx {
+                1 => *freq = val,
+                2 => *q = val,
+                _ => {}
+            },
+            ModuleParams::Delay { samples, .. } => match idx {
+                1 => *samples = val,
+                _ => {}
+            },
+            ModuleParams::Reverb { room, damp, .. } => match idx {
+                1 => *room = val,
+                2 => *damp = val,
+                _ => {}
+            },
+            ModuleParams::Distortion { drive, gain, .. } => match idx {
+                1 => *drive = val,
+                2 => *gain = val,
+                _ => {}
+            },
+            ModuleParams::Flanger { rate, depth, feedback, .. } => match idx {
+                1 => *rate = val,
+                2 => *depth = val,
+                3 => *feedback = val,
+                _ => {}
+            },
+            ModuleParams::Mul { a, b, .. } => match idx {
+                0 => *a = val,
+                1 => *b = val,
+                _ => {}
+            },
+            ModuleParams::Add { a, b, .. } => match idx {
+                0 => *a = val,
+                1 => *b = val,
+                _ => {}
+            },
+            ModuleParams::Gain { gain, .. } => match idx {
+                1 => *gain = val,
+                _ => {}
+            },
             _ => {}
         }
-        params
+    }
+
+    pub fn env_points(&self) -> Option<&Vec<EnvPoint>> {
+        match self {
+            ModuleParams::Envelope { points, .. } => Some(points),
+            _ => None,
+        }
+    }
+
+    pub fn env_points_mut(&mut self) -> Option<&mut Vec<EnvPoint>> {
+        match self {
+            ModuleParams::Envelope { points, .. } => Some(points),
+            _ => None,
+        }
+    }
+
+    pub fn cycle_enum_next(&mut self) {
+        match self {
+            ModuleParams::Osc { wave, .. } => *wave = wave.next(),
+            ModuleParams::GateRamp { mode, .. } => *mode = mode.next(),
+            _ => {}
+        }
+    }
+
+    pub fn cycle_enum_prev(&mut self) {
+        match self {
+            ModuleParams::Osc { wave, .. } => *wave = wave.prev(),
+            ModuleParams::GateRamp { mode, .. } => *mode = mode.prev(),
+            _ => {}
+        }
+    }
+
+    pub fn has_enum(&self) -> bool {
+        matches!(self, ModuleParams::Osc { .. } | ModuleParams::GateRamp { .. })
+    }
+
+    pub fn enum_display(&self) -> Option<&'static str> {
+        match self {
+            ModuleParams::Osc { wave, .. } => Some(wave.name()),
+            ModuleParams::GateRamp { mode, .. } => Some(mode.name()),
+            _ => None,
+        }
     }
 }

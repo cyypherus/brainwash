@@ -1,0 +1,23 @@
+module 13 Gate 1 9
+module 7 Env 5 9
+module 5 Out 12 7
+module 4 Ramp 3 9
+module 12 Probe 7 7
+module 2 Probe 4 9
+module 8 Freq 6 7
+module 3 Osc 8 7
+module 11 Probe 2 9
+
+param 4 2 0.18100001
+param 3 3 0.2
+
+port 4 0xFB
+
+env 7 0 0
+env 7 0.31000018 0.90000015
+env 7 0.75 0
+env 7 1 1
+
+track
+(0/1/2/3/4/5/_)
+end

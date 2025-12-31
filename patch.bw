@@ -1,0 +1,33 @@
+module 7 TurnRD 12 12
+module 8 Freq 10 12
+module 10 Mul 11 15
+module 14 Gate 0 12
+module 4 LPF 14 14
+module 5 TurnRD 5 14
+module 12 ADSR 7 14
+module 6 Ramp 3 14
+module 17 Out 15 14
+module 2 Probe 4 14
+module 3 TurnDR 6 14
+module 11 Ramp 3 12
+module 13 TurnDR 5 15
+module 15 TurnRD 6 12
+module 16 Gate 0 14
+module 18 Probe 1 14
+module 0 Probe 4 12
+module 19 Probe 1 12
+module 9 RJoin 12 14
+module 1 Osc 11 12
+
+param 10 1 1.9000002
+param 4 1 0.1700002
+param 4 2 0.1
+param 12 2 0.070999995
+param 12 3 0.54999995
+
+port 10 0xFD
+port 4 0xFB
+
+track
+(0/1)
+end

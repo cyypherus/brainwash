@@ -75,7 +75,7 @@ fn parse_nested_bar(input: &str) -> nom::IResult<&str, Item> {
 fn parse_polyphonic_item(input: &str) -> nom::IResult<&str, Item> {
     let (input, layers) = delimited(
         char('{'),
-        separated_list1(char('%'), parse_divisions),
+        separated_list1(char('&'), parse_divisions),
         char('}'),
     )
     .parse(input)?;
@@ -118,7 +118,7 @@ fn parse_one_polyphony_layer(input: &str) -> nom::IResult<&str, Vec<Division>> {
 
 fn parse_polyphonic_divisions(input: &str) -> nom::IResult<&str, Vec<Division>> {
     let (input, poly_layers) =
-        separated_list1(char('%'), parse_one_polyphony_layer).parse(input)?;
+        separated_list1(char('&'), parse_one_polyphony_layer).parse(input)?;
 
     if poly_layers.len() == 1 {
         return Ok((input, poly_layers.into_iter().next().unwrap()));
@@ -539,7 +539,7 @@ mod tests {
 
     #[test]
     fn test_parse_simple_polyphony() {
-        let result = parse_notation("{(0/1)%(2/3)}");
+        let result = parse_notation("{(0/1)&(2/3)}");
         assert!(result.is_ok());
         let ast = result.unwrap();
         assert_eq!(ast.layers[0].bars.len(), 1);
@@ -557,7 +557,7 @@ mod tests {
 
     #[test]
     fn test_parse_polyphony_mismatched_divisions() {
-        let result = parse_notation("{(0/2/4)%(1/3)}");
+        let result = parse_notation("{(0/2/4)&(1/3)}");
         assert!(result.is_ok());
         let ast = result.unwrap();
         let divs = &ast.layers[0].bars[0].divisions;
@@ -578,7 +578,7 @@ mod tests {
 
     #[test]
     fn test_parse_nested_polyphony() {
-        let result = parse_notation("(({0%2}/{1%3})/4)");
+        let result = parse_notation("(({0&2}/{1&3})/4)");
         assert!(result.is_ok());
         let ast = result.unwrap();
         assert_eq!(ast.layers[0].bars[0].divisions.len(), 2);
@@ -607,7 +607,7 @@ mod tests {
 
     #[test]
     fn test_parse_sequential_bars_with_polyphony() {
-        let result = parse_notation("(0/2/0/4){0/2%2/4}");
+        let result = parse_notation("(0/2/0/4){0/2&2/4}");
         assert!(result.is_ok());
         let ast = result.unwrap();
         assert_eq!(ast.layers[0].bars.len(), 2);
@@ -652,8 +652,8 @@ mod tests {
 
     #[test]
     fn test_parse_curly_polyphony_explicit() {
-        // Test that {0%1} creates a bar with polyphonic notes
-        let result = parse_notation("{0%1}");
+        // Test that {0&1} creates a bar with polyphonic notes
+        let result = parse_notation("{0&1}");
         assert!(result.is_ok());
         let ast = result.unwrap();
         assert_eq!(ast.layers[0].bars.len(), 1);
@@ -661,7 +661,7 @@ mod tests {
         assert_eq!(
             divs.len(),
             1,
-            "Expected 1 division for {{0%1}}, got {}",
+            "Expected 1 division for {{0&1}}, got {}",
             divs.len()
         );
         match &divs[0].item {
@@ -674,8 +674,8 @@ mod tests {
 
     #[test]
     fn test_parse_curly_polyphony_with_sequences() {
-        // Test that {(0/1)%(2/3)} creates a bar with 1 polyphonic division containing 2 layers
-        let result = parse_notation("{(0/1)%(2/3)}");
+        // Test that {(0/1)&(2/3)} creates a bar with 1 polyphonic division containing 2 layers
+        let result = parse_notation("{(0/1)&(2/3)}");
         assert!(result.is_ok());
         let ast = result.unwrap();
         assert_eq!(ast.layers[0].bars.len(), 1);
@@ -756,7 +756,7 @@ mod tests {
     #[test]
     fn test_track_polyphony_multiple_presses() {
         let scale = crate::scale::cmaj();
-        let mut track = Track::parse("{0%1%2}", &scale).unwrap();
+        let mut track = Track::parse("{0&1&2}", &scale).unwrap();
 
         let events = track.play(0.5);
         assert_eq!(events.len(), 3);
@@ -766,7 +766,7 @@ mod tests {
     #[test]
     fn test_track_polyphony_mixed_durations() {
         let scale = crate::scale::cmaj();
-        let mut track = Track::parse("{(0/1)%(1/2)}", &scale).unwrap();
+        let mut track = Track::parse("{(0/1)&(1/2)}", &scale).unwrap();
 
         let events1 = track.play(0.25);
         assert_eq!(events1.len(), 2);
@@ -873,8 +873,8 @@ mod tests {
     #[test]
     fn test_polyrhythm_different_divisions() {
         let notation = r#"{
-            {0%3%5}/{1%3%5%7}/{2%4%6}/{1%3%6}
-            %
+            {0&3&5}/{1&3&5&7}/{2&4&6}/{1&3&6}
+            &
             (12/13/14/(15/16/15/14)/12)
         }"#;
 
@@ -894,7 +894,7 @@ mod tests {
             Item::Polyphony(layers) => {
                 assert_eq!(layers.len(), 2, "Should have 2 layers");
 
-                // First layer: {0%3%5}/{1%3%5%7}/{2%4%6}/{1%3%6} = 4 divisions
+                // First layer: {0&3&5}/{1&3&5&7}/{2&4&6}/{1&3&6} = 4 divisions
                 assert_eq!(layers[0].len(), 4, "First layer should have 4 divisions");
 
                 // Second layer: (12/13/14/(15/16/15/14)/12) = 5 divisions

@@ -15,31 +15,34 @@ fn main() {
 
     let new_track_notation = "
     {
-        {0%4%7}/{2%5%9}/{4%7%11}/{5%9%12}
-        %
+        {0&4&7}/{2&5&9}/{4&7&11}/{5&9&12}
+        &
         ((9/11/12/14)/(12/11/9/11)/(14/16/14/12)/(11/9/7/9))
     }
     {
-        {7%11%14}/{9%12%16}/{11%14%18}/{12%16%19}
-        %
+        {7&11&14}/{9&12&16}/{11&14&18}/{12&16&19}
+        &
         ((16/14/12/11)/(14/12/11/9)/(12/14/16/18)/(14/12/11/9))
     }
     {
-        {4%7%11}/{5%9%12}/{7%11%14}/{9%12%16}
-        %
+        {4&7&11}/{5&9&12}/{7&11&14}/{9&12&16}
+        &
         ((11/9/7/4)/(9/7/4/2)/(7/9/11/12)/(9/7/4/2))
     }
     {
-        {0%4%7}/{2%5%9}/{4%7%11}/{5%9%12}
-        %
+        {0&4&7}/{2&5&9}/{4&7&11}/{5&9&12}
+        &
         ((9/11/12/14)/(16/14/12/11)/(14/16/18/19)/(16/14/12/11))
     }
     ";
     let mut new_track =
         Track::parse(new_track_notation, &scale).expect("Failed to parse new track");
-    let mut keyboard: Keyboard<(ADSR, ADSR, Osc, Osc, Osc)> = Keyboard::with_builder(|| {
+    let mut keyboard: Keyboard<(GateRamp, GateRamp, ADSR, GateRamp, ADSR, Osc, Osc, Osc)> = Keyboard::with_builder(|| {
         (
+            GateRamp::default(),
+            GateRamp::default(),
             ADSR::default(),
+            GateRamp::default(),
             ADSR::default(),
             Osc::default(),
             Osc::default(),
@@ -51,10 +54,14 @@ fn main() {
         subsecond::call(|| {
             let mut output = 0.;
             keyboard.update(new_track.play(clock.output(s)), s);
-            keyboard.per_key(|(adsr, vibrato_env, osc1, osc2, osc3), key| {
-                let env = adsr.stab().output(key.state, s);
+            keyboard.per_key(|(rise_ramp, fall_ramp, adsr, vib_rise, vibrato_env, osc1, osc2, osc3), key| {
+                let gate = if key.pressed() { 1.0 } else { 0.0 };
+                let rise = rise_ramp.rise().time(0.01).output(gate, s);
+                let fall = fall_ramp.fall().time(0.3).output(gate, s);
+                let env = adsr.stab().output(rise, fall);
 
-                let vibrato_depth = vibrato_env.pad().output(key.state, s);
+                let vib_r = vib_rise.rise().time(0.5).output(gate, s);
+                let vibrato_depth = vibrato_env.pad().output(vib_r, 0.0);
                 let vibrato = osc2.sin().freq(5.).gain(env).output(s) * 2. * vibrato_depth;
                 output += osc1.sin().freq(key.freq + vibrato).gain(env).output(s)
                     + osc3.squ().freq(key.freq).shift(-12.).gain(env).output(s);

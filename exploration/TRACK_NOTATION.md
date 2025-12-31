@@ -22,7 +22,7 @@
 
 ## Polyphony
 
-- `{(...) % (...)}`: Simultaneous layers (layers separated by `%`)
+- `{(...) & (...)}`: Simultaneous layers (layers separated by `&`)
 - Each layer is a complete bar/section
 - All active layers output together
 
@@ -38,7 +38,7 @@
 | `(_***/0)` | Rest for 4/5 of bar, degree 0 for 1/5 |
 | `((0/_/1/2)/(0/_/1))` | First half: 0,rest,1,2. Second half: 0,rest,1 |
 | `(0)(1)` | Two bars: degree 0, then degree 1 |
-| `{(0/1)%(2/3)}` | Two simultaneous layers |
+| `{(0/1)&(2/3)}` | Two simultaneous layers |
 | `(-1/1/_/2)` | Degree -1, degree 1, rest, degree 2 |
 | `(0+/2-/4)` | Degree 0 sharp, degree 2 flat, degree 4 natural |
 | `(0+**/1)` | Degree 0 sharp takes 3/4, degree 1 takes 1/4 |

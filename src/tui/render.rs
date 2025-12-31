@@ -1,5 +1,5 @@
 use super::grid::{Cell, GridPos};
-use super::module::{Module, ModuleCategory, ModuleId, ModuleKind, ParamKind};
+use super::module::{Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind};
 use super::patch::Patch;
 use crate::envelopes::{Envelope, EnvelopePoint, PointType};
 use ratatui::{
@@ -216,25 +216,26 @@ impl<'a> GridWidget<'a> {
         let cx = sx + CELL_WIDTH / 2;
         let cy = sy + CELL_HEIGHT / 2;
 
-        let local_pos = match module.orientation {
+        let port_pos = match module.orientation {
             super::module::Orientation::Horizontal => local_y as usize,
             super::module::Orientation::Vertical => local_x as usize,
         };
 
         if !kind.is_routing() {
             let defs = kind.param_defs();
-            let port_defs: Vec<_> = defs.iter().enumerate()
-                .filter(|(_, d)| !matches!(d.kind, ParamKind::Enum { .. }))
+            let port_params: Vec<_> = defs.iter().enumerate()
+                .filter(|(_, d)| !matches!(d.kind, ParamKind::Enum))
                 .collect();
             
-            if let Some((param_idx, def)) = port_defs.get(local_pos) {
+            if let Some(&(param_idx, def)) = port_params.get(port_pos) {
                 let port_char = match def.kind {
                     ParamKind::Input => '●',
                     ParamKind::Float { .. } => {
-                        if module.params.is_connected(*param_idx) { '●' } else { '✕' }
+                        if module.params.is_connected(param_idx) { '●' } else { '✕' }
                     }
-                    ParamKind::Enum { .. } => unreachable!(),
+                    ParamKind::Enum => unreachable!(),
                 };
+                
                 let label = def.name.chars().next().unwrap_or(' ');
 
                 if module.has_input_top() {
@@ -635,29 +636,42 @@ pub struct HelpWidget;
 
 impl Widget for HelpWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let keys = [
-            ("hjkl", "move"),
-            ("Space", "add"),
-            ("m", "grab"),
-            ("o", "rotate"),
-            ("u", "edit"),
-            (".", "delete"),
-            ("v", "select"),
-            ("t", "track"),
-            ("p", "play"),
-            ("q", "quit"),
+        let groups: &[&[(&str, &str)]] = &[
+            &[
+                ("hjkl", "move"),
+                ("Space", "add"),
+                (".", "delete"),
+                ("m", "move"),
+                ("u", "edit"),
+                ("o", "rotate"),
+                ("v", "select"),
+            ],
+            &[
+                ("t", "track"),
+                ("p", "play"),
+            ],
+            &[
+                ("s/S", "save"),
+                ("q", "quit"),
+            ],
         ];
 
         let key_style = Style::default().fg(Color::Cyan);
         let desc_style = Style::default().fg(Color::DarkGray);
 
-        for (i, (key, desc)) in keys.iter().enumerate() {
-            let y = area.y + i as u16;
-            if y >= area.y + area.height {
-                break;
+        let mut y = area.y;
+        for (group_idx, group) in groups.iter().enumerate() {
+            if group_idx > 0 {
+                y += 1;
             }
-            set_str(buf, area.x, y, key, key_style);
-            set_str(buf, area.x + key.len() as u16 + 1, y, desc, desc_style);
+            for (key, desc) in *group {
+                if y >= area.y + area.height {
+                    return;
+                }
+                set_str(buf, area.x, y, key, key_style);
+                set_str(buf, area.x + key.len() as u16 + 1, y, desc, desc_style);
+                y += 1;
+            }
         }
     }
 }
@@ -692,7 +706,6 @@ impl Widget for EditWidget<'_> {
             if y >= area.y + area.height {
                 break;
             }
-            let val = self.module.params.floats[i];
             let is_selected = i == self.selected_param;
             let is_connected = self.module.params.is_connected(i);
 
@@ -701,7 +714,7 @@ impl Widget for EditWidget<'_> {
             let port_str = match def.kind {
                 ParamKind::Input => "● ",
                 ParamKind::Float { .. } => if is_connected { "● " } else { "✕ " },
-                ParamKind::Enum { .. } => "  ",
+                ParamKind::Enum => "  ",
             };
             set_str(buf, area.x, y, port_str, style);
             set_str(buf, area.x + 2, y, def.name, style);
@@ -713,7 +726,15 @@ impl Widget for EditWidget<'_> {
                 ParamKind::Input => {
                     set_str(buf, val_x, y, "(input)", label_style);
                 }
+                ParamKind::Enum => {
+                    let val_str = self.module.params.enum_display().unwrap_or("?");
+                    set_str(buf, val_x, y, val_str, v_style);
+                    if is_selected {
+                        set_str(buf, val_x + val_str.len() as u16 + 1, y, "<hl>", label_style);
+                    }
+                }
                 ParamKind::Float { step, .. } => {
+                    let val = self.module.params.get_float(i).unwrap_or(0.0);
                     let val_str = if *step >= 1.0 {
                         format!("{:.0}", val)
                     } else if *step >= 0.1 {
@@ -724,14 +745,6 @@ impl Widget for EditWidget<'_> {
                     set_str(buf, val_x, y, &val_str, v_style);
                     if is_selected {
                         set_str(buf, val_x + val_str.len() as u16 + 1, y, "<hl> ;", label_style);
-                    }
-                }
-                ParamKind::Enum { options } => {
-                    let idx = (val as usize).min(options.len().saturating_sub(1));
-                    let val_str = options[idx];
-                    set_str(buf, val_x, y, val_str, v_style);
-                    if is_selected {
-                        set_str(buf, val_x + val_str.len() as u16 + 1, y, "<hl>", label_style);
                     }
                 }
             }
@@ -751,37 +764,27 @@ impl<'a> AdsrWidget<'a> {
         Self { module, selected_param }
     }
 
-    fn draw_curve(&self, buf: &mut Buffer, area: Rect, attack: f32, decay: f32, sustain: f32, release: f32) {
+    fn draw_curve(&self, buf: &mut Buffer, area: Rect, attack_ratio: f32, sustain: f32) {
         if area.width < 10 || area.height < 5 {
             return;
         }
 
-        let total_time = attack + decay + 0.5 + release;
         let w = area.width as f32;
         let h = (area.height - 1) as f32;
 
-        let attack_x = (attack / total_time * w) as u16;
-        let decay_x = ((attack + decay) / total_time * w) as u16;
-        let sustain_x = ((attack + decay + 0.5) / total_time * w) as u16;
-        let release_x = area.width;
-
-        let _sustain_y = ((1.0 - sustain) * h) as u16;
+        let attack_x = (attack_ratio * w) as u16;
 
         let curve_style = Style::default().fg(Color::Rgb(255, 200, 100));
         let selected_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
         let label_style = Style::default().fg(Color::DarkGray);
 
         for x in 0..area.width {
-            let y_val = if x <= attack_x {
-                if attack_x == 0 { 0.0 } else { x as f32 / attack_x as f32 }
-            } else if x <= decay_x {
-                let progress = if decay_x == attack_x { 1.0 } else { (x - attack_x) as f32 / (decay_x - attack_x) as f32 };
-                1.0 - progress * (1.0 - sustain)
-            } else if x <= sustain_x {
-                sustain
+            let t = x as f32 / w;
+            let y_val = if t < attack_ratio {
+                if attack_ratio == 0.0 { sustain } else { t / attack_ratio }
             } else {
-                let progress = if release_x == sustain_x { 1.0 } else { (x - sustain_x) as f32 / (release_x - sustain_x) as f32 };
-                sustain * (1.0 - progress)
+                let decay_progress = if attack_ratio >= 1.0 { 0.0 } else { (t - attack_ratio) / (1.0 - attack_ratio) };
+                1.0 - decay_progress * (1.0 - sustain)
             };
 
             let y = ((1.0 - y_val) * h) as u16;
@@ -793,12 +796,10 @@ impl<'a> AdsrWidget<'a> {
             }
         }
 
-        let labels = ["A", "D", "S", "R"];
+        let labels = ["A", "S"];
         let positions = [
             attack_x / 2,
-            attack_x + (decay_x - attack_x) / 2,
-            decay_x + (sustain_x - decay_x) / 2,
-            sustain_x + (release_x - sustain_x) / 2,
+            attack_x + (area.width - attack_x) / 2,
         ];
 
         for (i, (label, pos)) in labels.iter().zip(positions.iter()).enumerate() {
@@ -811,24 +812,21 @@ impl<'a> AdsrWidget<'a> {
 
 impl<'a> Widget for AdsrWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let p = &self.module.params.floats;
-        let attack = p[1];
-        let decay = p[2];
-        let sustain = p[3];
-        let release = p[4];
+        let (attack_ratio, sustain) = match &self.module.params {
+            ModuleParams::Adsr { attack_ratio, sustain, .. } => (*attack_ratio, *sustain),
+            _ => (0.5, 0.7),
+        };
 
-        let param_area = Rect::new(area.x, area.y, area.width, 5);
-        let curve_area = Rect::new(area.x, area.y + 5, area.width, area.height.saturating_sub(5));
+        let param_area = Rect::new(area.x, area.y, area.width, 3);
+        let curve_area = Rect::new(area.x, area.y + 3, area.width, area.height.saturating_sub(3));
 
         let label_style = Style::default().fg(Color::DarkGray);
         let value_style = Style::default().fg(Color::White);
         let selected_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
 
         let params = [
-            ("Attack", attack, "s"),
-            ("Decay", decay, "s"),
+            ("Atk Ratio", attack_ratio, ""),
             ("Sustain", sustain, ""),
-            ("Release", release, "s"),
         ];
 
         for (i, (name, val, suffix)) in params.iter().enumerate() {
@@ -846,7 +844,7 @@ impl<'a> Widget for AdsrWidget<'a> {
             }
         }
 
-        self.draw_curve(buf, curve_area, attack, decay, sustain, release);
+        self.draw_curve(buf, curve_area, attack_ratio, sustain);
     }
 }
 
@@ -864,7 +862,7 @@ impl<'a> EnvelopeWidget<'a> {
 
 impl Widget for EnvelopeWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let points = &self.module.params.env_points;
+        let Some(points) = self.module.params.env_points() else { return };
         if points.is_empty() || area.width < 10 || area.height < 5 {
             return;
         }

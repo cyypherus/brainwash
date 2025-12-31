@@ -3,6 +3,7 @@ use super::module::{ModuleCategory, ModuleId, ModuleKind, ParamKind};
 use super::patch::Patch;
 use super::engine::{CompiledPatch, compile_patch, TrackState};
 use super::render::{AdsrWidget, EditWidget, EnvelopeWidget, GridWidget, HelpWidget, PaletteWidget, StatusWidget};
+use super::persist;
 use crate::live::AudioPlayer;
 use crate::scale::cmin;
 use crate::track::Track;
@@ -22,6 +23,7 @@ use ratatui::{
 };
 use tui_textarea::TextArea;
 use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
 use std::{io, time::Duration};
 
 #[derive(Clone, PartialEq)]
@@ -31,10 +33,12 @@ enum Mode {
     Move { module_id: ModuleId, origin: GridPos },
     Select { anchor: GridPos },
     SelectMove { anchor: GridPos, extent: GridPos, move_origin: GridPos },
+    QuitConfirm,
     Edit { module_id: ModuleId, param_idx: usize },
     AdsrEdit { module_id: ModuleId, param_idx: usize },
     EnvEdit { module_id: ModuleId, point_idx: usize, editing: bool },
     TrackEdit,
+    SavePrompt,
 }
 
 struct App<'a> {
@@ -48,10 +52,13 @@ struct App<'a> {
     palette_searching: bool,
     message: Option<String>,
     should_quit: bool,
+    dirty: bool,
     audio_patch: Arc<Mutex<CompiledPatch>>,
     track_state: Arc<Mutex<TrackState>>,
     playing: bool,
     track_textarea: TextArea<'a>,
+    file_path: Option<PathBuf>,
+    file_textarea: TextArea<'a>,
 }
 
 impl<'a> App<'a> {
@@ -66,8 +73,12 @@ impl<'a> App<'a> {
         let notation = "(0/2/4/7)";
         let scale = cmin();
         if let Ok(track) = Track::parse(notation, &scale) {
-            track_state.lock().unwrap().track = Some(track);
+            track_state.lock().unwrap().set_track(Some(track));
         }
+
+        let mut file_textarea = TextArea::new(vec!["patch.bw".into()]);
+        file_textarea.set_cursor_line_style(Style::default());
+        file_textarea.set_block(Block::default());
 
         Self {
             patch,
@@ -80,10 +91,13 @@ impl<'a> App<'a> {
             palette_searching: false,
             message: None,
             should_quit: false,
+            dirty: false,
             audio_patch,
             track_state,
             playing: false,
             track_textarea: textarea,
+            file_path: None,
+            file_textarea,
         }
     }
 
@@ -93,7 +107,7 @@ impl<'a> App<'a> {
         match Track::parse(&notation, &scale) {
             Ok(track) => {
                 let mut state = self.track_state.lock().unwrap();
-                state.track = Some(track);
+                state.set_track(Some(track));
                 self.message = Some("Track updated".into());
             }
             Err(e) => {
@@ -106,6 +120,7 @@ impl<'a> App<'a> {
         let num_voices = self.track_state.lock().unwrap().num_voices();
         let mut audio = self.audio_patch.lock().unwrap();
         compile_patch(&mut audio, &self.patch, num_voices);
+        self.dirty = true;
     }
 
     fn move_cursor(&mut self, dx: i16, dy: i16) {
@@ -128,12 +143,34 @@ impl<'a> App<'a> {
             Mode::AdsrEdit { module_id, param_idx } => self.handle_adsr_edit_key(code, module_id, param_idx),
             Mode::EnvEdit { module_id, point_idx, editing } => self.handle_env_edit_key(code, module_id, point_idx, editing),
             Mode::TrackEdit => self.handle_track_edit_key(code, modifiers),
+            Mode::SavePrompt => self.handle_save_prompt_key(code, modifiers),
+            Mode::QuitConfirm => self.handle_quit_confirm_key(code),
+        }
+    }
+
+    fn handle_quit_confirm_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.should_quit = true;
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.message = Some("Quit cancelled".into());
+            }
+            _ => {}
         }
     }
 
     fn handle_normal_key(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
+            KeyCode::Char('q') | KeyCode::Esc => {
+                if self.dirty {
+                    self.mode = Mode::QuitConfirm;
+                    self.message = Some("Unsaved changes. Quit? (y/n)".into());
+                } else {
+                    self.should_quit = true;
+                }
+            }
             KeyCode::Char('h') | KeyCode::Left => self.move_cursor(-1, 0),
             KeyCode::Char('j') | KeyCode::Down => self.move_cursor(0, 1),
             KeyCode::Char('k') | KeyCode::Up => self.move_cursor(0, -1),
@@ -203,6 +240,13 @@ impl<'a> App<'a> {
                     }
                 }
             }
+            KeyCode::Char('i') => {
+                if let Some(id) = self.patch.module_id_at(self.cursor) {
+                    if let Some(m) = self.patch.module(id) {
+                        self.open_palette_for_module(m.kind);
+                    }
+                }
+            }
             KeyCode::Char('7') => self.open_palette_category(0),
             KeyCode::Char('8') => self.open_palette_category(1),
             KeyCode::Char('9') => self.open_palette_category(2),
@@ -219,6 +263,23 @@ impl<'a> App<'a> {
             KeyCode::Char('v') => {
                 self.mode = Mode::Select { anchor: self.cursor };
             }
+            KeyCode::Char('s') => {
+                if let Some(ref path) = self.file_path {
+                    self.save_to_file(path.clone());
+                } else {
+                    self.file_textarea = TextArea::new(vec!["patch.bw".into()]);
+                    self.file_textarea.set_cursor_line_style(Style::default());
+                    self.mode = Mode::SavePrompt;
+                }
+            }
+            KeyCode::Char('S') => {
+                let default = self.file_path.as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "patch.bw".into());
+                self.file_textarea = TextArea::new(vec![default]);
+                self.file_textarea.set_cursor_line_style(Style::default());
+                self.mode = Mode::SavePrompt;
+            }
             _ => {}
         }
     }
@@ -226,6 +287,19 @@ impl<'a> App<'a> {
     fn open_palette_category(&mut self, cat: usize) {
         self.palette_category = cat;
         self.mode = Mode::Palette;
+    }
+
+    fn open_palette_for_module(&mut self, kind: ModuleKind) {
+        let cat = kind.category();
+        let cats = ModuleCategory::all();
+        if let Some(cat_idx) = cats.iter().position(|&c| c == cat) {
+            let modules_in_cat = ModuleKind::by_category(cat);
+            if let Some(sel_idx) = modules_in_cat.iter().position(|&k| k == kind) {
+                self.palette_category = cat_idx;
+                self.palette_selections[cat_idx] = sel_idx;
+                self.mode = Mode::Palette;
+            }
+        }
     }
 
     fn filtered_modules(&self) -> Vec<ModuleKind> {
@@ -443,15 +517,23 @@ impl<'a> App<'a> {
     }
 
     fn modules_in_rect(&self, a: GridPos, b: GridPos) -> Vec<ModuleId> {
-        let min_x = a.x.min(b.x);
-        let max_x = a.x.max(b.x);
-        let min_y = a.y.min(b.y);
-        let max_y = a.y.max(b.y);
+        let sel_min_x = a.x.min(b.x);
+        let sel_max_x = a.x.max(b.x);
+        let sel_min_y = a.y.min(b.y);
+        let sel_max_y = a.y.max(b.y);
         
         self.patch.all_modules()
             .filter_map(|m| {
                 let pos = self.patch.module_position(m.id)?;
-                if pos.x >= min_x && pos.x <= max_x && pos.y >= min_y && pos.y <= max_y {
+                let mod_min_x = pos.x;
+                let mod_min_y = pos.y;
+                let mod_max_x = pos.x + m.width() as u16 - 1;
+                let mod_max_y = pos.y + m.height() as u16 - 1;
+                
+                let overlaps = mod_min_x <= sel_max_x && mod_max_x >= sel_min_x
+                    && mod_min_y <= sel_max_y && mod_max_y >= sel_min_y;
+                
+                if overlaps {
                     Some(m.id)
                 } else {
                     None
@@ -487,12 +569,12 @@ impl<'a> App<'a> {
                     if let Some(m) = self.patch.module_mut(module_id) {
                         match &def.kind {
                             ParamKind::Float { min, step, .. } => {
-                                m.params.floats[param_idx] = (m.params.floats[param_idx] - step).max(*min);
+                                let cur = m.params.get_float(param_idx).unwrap_or(0.0);
+                                m.params.set_float(param_idx, (cur - step).max(*min));
                                 m.params.set_connected(param_idx, false);
                             }
-                            ParamKind::Enum { options } => {
-                                let cur = m.params.floats[param_idx] as usize;
-                                m.params.floats[param_idx] = if cur == 0 { (options.len() - 1) as f32 } else { (cur - 1) as f32 };
+                            ParamKind::Enum => {
+                                m.params.cycle_enum_prev();
                             }
                             ParamKind::Input => {}
                         }
@@ -506,12 +588,12 @@ impl<'a> App<'a> {
                     if let Some(m) = self.patch.module_mut(module_id) {
                         match &def.kind {
                             ParamKind::Float { max, step, .. } => {
-                                m.params.floats[param_idx] = (m.params.floats[param_idx] + step).min(*max);
+                                let cur = m.params.get_float(param_idx).unwrap_or(0.0);
+                                m.params.set_float(param_idx, (cur + step).min(*max));
                                 m.params.set_connected(param_idx, false);
                             }
-                            ParamKind::Enum { options } => {
-                                let cur = m.params.floats[param_idx] as usize;
-                                m.params.floats[param_idx] = ((cur + 1) % options.len()) as f32;
+                            ParamKind::Enum => {
+                                m.params.cycle_enum_next();
                             }
                             ParamKind::Input => {}
                         }
@@ -524,7 +606,8 @@ impl<'a> App<'a> {
                     let def = &defs[param_idx];
                     if let Some(m) = self.patch.module_mut(module_id) {
                         if let ParamKind::Float { min, step, .. } = &def.kind {
-                            m.params.floats[param_idx] = (m.params.floats[param_idx] - step * 10.0).max(*min);
+                            let cur = m.params.get_float(param_idx).unwrap_or(0.0);
+                            m.params.set_float(param_idx, (cur - step * 10.0).max(*min));
                             m.params.set_connected(param_idx, false);
                         }
                     }
@@ -536,7 +619,8 @@ impl<'a> App<'a> {
                     let def = &defs[param_idx];
                     if let Some(m) = self.patch.module_mut(module_id) {
                         if let ParamKind::Float { max, step, .. } = &def.kind {
-                            m.params.floats[param_idx] = (m.params.floats[param_idx] + step * 10.0).min(*max);
+                            let cur = m.params.get_float(param_idx).unwrap_or(0.0);
+                            m.params.set_float(param_idx, (cur + step * 10.0).min(*max));
                             m.params.set_connected(param_idx, false);
                         }
                     }
@@ -574,6 +658,70 @@ impl<'a> App<'a> {
         }
     }
 
+    fn handle_save_prompt_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        match code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.message = Some("Save cancelled".into());
+            }
+            KeyCode::Enter => {
+                let path = PathBuf::from(self.file_textarea.lines().join(""));
+                self.save_to_file(path);
+                self.mode = Mode::Normal;
+            }
+            _ => {
+                self.file_textarea.input(Event::Key(event::KeyEvent::new(code, modifiers)));
+            }
+        }
+    }
+
+    fn save_to_file(&mut self, path: PathBuf) {
+        let track_text: String = self.track_textarea.lines().join("\n");
+        let track = if track_text.trim().is_empty() { None } else { Some(track_text.as_str()) };
+        let state = self.track_state.lock().unwrap();
+        let bpm = state.clock.current_bpm();
+        let bars = state.clock.current_bars();
+        drop(state);
+
+        match persist::save_patch(&path, &self.patch, bpm, bars, track) {
+            Ok(()) => {
+                self.file_path = Some(path.clone());
+                self.dirty = false;
+                self.message = Some(format!("Saved to {}", path.display()));
+            }
+            Err(e) => {
+                self.message = Some(format!("Save failed: {}", e));
+            }
+        }
+    }
+
+    fn load_from_file(&mut self, path: PathBuf) {
+        match persist::load_patch(&path) {
+            Ok((patch, bpm, bars, track)) => {
+                self.patch = patch;
+                self.file_path = Some(path.clone());
+                
+                {
+                    let mut state = self.track_state.lock().unwrap();
+                    state.clock.bpm(bpm).bars(bars);
+                }
+
+                if let Some(track_text) = track {
+                    self.track_textarea = TextArea::new(track_text.lines().map(|s| s.to_string()).collect());
+                    self.track_textarea.set_cursor_line_style(Style::default());
+                    self.track_textarea.set_block(Block::default());
+                    self.reparse_track();
+                }
+
+                self.commit_patch();
+                self.message = Some(format!("Loaded {}", path.display()));
+            }
+            Err(e) => {
+                self.message = Some(format!("Load failed: {}", e));
+            }
+        }
+    }
+
     fn handle_adsr_edit_key(&mut self, code: KeyCode, module_id: ModuleId, param_idx: usize) {
         let Some(_) = self.patch.module(module_id) else {
             self.mode = Mode::Normal;
@@ -585,66 +733,58 @@ impl<'a> App<'a> {
                 self.mode = Mode::Normal;
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                let new_idx = (param_idx + 1) % 4;
+                let new_idx = (param_idx + 1) % 2;
                 self.mode = Mode::AdsrEdit { module_id, param_idx: new_idx };
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                let new_idx = if param_idx == 0 { 3 } else { param_idx - 1 };
+                let new_idx = if param_idx == 0 { 1 } else { param_idx - 1 };
                 self.mode = Mode::AdsrEdit { module_id, param_idx: new_idx };
             }
             KeyCode::Char('l') | KeyCode::Right => {
                 if let Some(m) = self.patch.module_mut(module_id) {
-                    let (_, max, step) = match param_idx {
-                        0 => (0.001, 2.0, 0.01),
-                        1 => (0.001, 2.0, 0.01),
-                        2 => (0.0, 1.0, 0.05),
-                        3 => (0.001, 4.0, 0.01),
-                        _ => (0.0, 1.0, 0.01),
-                    };
-                    let idx = param_idx + 1;
-                    m.params.floats[idx] = (m.params.floats[idx] + step).min(max);
+                    if let super::module::ModuleParams::Adsr { attack_ratio, sustain, .. } = &mut m.params {
+                        match param_idx {
+                            0 => *attack_ratio = (*attack_ratio + 0.05).min(1.0),
+                            1 => *sustain = (*sustain + 0.05).min(1.0),
+                            _ => {}
+                        }
+                    }
                 }
                 self.commit_patch();
             }
             KeyCode::Char('h') | KeyCode::Left => {
                 if let Some(m) = self.patch.module_mut(module_id) {
-                    let (min, _, step) = match param_idx {
-                        0 => (0.001, 2.0, 0.01),
-                        1 => (0.001, 2.0, 0.01),
-                        2 => (0.0, 1.0, 0.05),
-                        3 => (0.001, 4.0, 0.01),
-                        _ => (0.0, 1.0, 0.01),
-                    };
-                    let idx = param_idx + 1;
-                    m.params.floats[idx] = (m.params.floats[idx] - step).max(min);
+                    if let super::module::ModuleParams::Adsr { attack_ratio, sustain, .. } = &mut m.params {
+                        match param_idx {
+                            0 => *attack_ratio = (*attack_ratio - 0.05).max(0.0),
+                            1 => *sustain = (*sustain - 0.05).max(0.0),
+                            _ => {}
+                        }
+                    }
                 }
                 self.commit_patch();
             }
             KeyCode::Char('L') => {
                 if let Some(m) = self.patch.module_mut(module_id) {
-                    let (_, max, step) = match param_idx {
-                        0 => (0.001, 2.0, 0.01),
-                        1 => (0.001, 2.0, 0.01),
-                        2 => (0.0, 1.0, 0.05),
-                        3 => (0.001, 4.0, 0.01),
-                        _ => (0.0, 1.0, 0.01),
-                    };
-                    let idx = param_idx + 1;
-                    m.params.floats[idx] = (m.params.floats[idx] + step * 10.0).min(max);
+                    if let super::module::ModuleParams::Adsr { attack_ratio, sustain, .. } = &mut m.params {
+                        match param_idx {
+                            0 => *attack_ratio = 1.0,
+                            1 => *sustain = 1.0,
+                            _ => {}
+                        }
+                    }
                 }
                 self.commit_patch();
             }
             KeyCode::Char('H') => {
                 if let Some(m) = self.patch.module_mut(module_id) {
-                    let (min, _, step) = match param_idx {
-                        0 => (0.001, 2.0, 0.01),
-                        1 => (0.001, 2.0, 0.01),
-                        2 => (0.0, 1.0, 0.05),
-                        3 => (0.001, 4.0, 0.01),
-                        _ => (0.0, 1.0, 0.01),
-                    };
-                    let idx = param_idx + 1;
-                    m.params.floats[idx] = (m.params.floats[idx] - step * 10.0).max(min);
+                    if let super::module::ModuleParams::Adsr { attack_ratio, sustain, .. } = &mut m.params {
+                        match param_idx {
+                            0 => *attack_ratio = 0.0,
+                            1 => *sustain = 0.0,
+                            _ => {}
+                        }
+                    }
                 }
                 self.commit_patch();
             }
@@ -658,7 +798,7 @@ impl<'a> App<'a> {
             return;
         };
 
-        let num_points = module.params.env_points.len();
+        let num_points = module.params.env_points().map(|p| p.len()).unwrap_or(0);
         if num_points == 0 {
             self.mode = Mode::Normal;
             return;
@@ -691,32 +831,40 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
                     if let Some(m) = self.patch.module_mut(module_id) {
-                        if let Some(p) = m.params.env_points.get_mut(point_idx) {
-                            p.value = (p.value + 0.05).min(1.0);
+                        if let Some(points) = m.params.env_points_mut() {
+                            if let Some(p) = points.get_mut(point_idx) {
+                                p.value = (p.value + 0.05).min(1.0);
+                            }
                         }
                     }
                     self.commit_patch();
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
                     if let Some(m) = self.patch.module_mut(module_id) {
-                        if let Some(p) = m.params.env_points.get_mut(point_idx) {
-                            p.value = (p.value - 0.05).max(0.0);
+                        if let Some(points) = m.params.env_points_mut() {
+                            if let Some(p) = points.get_mut(point_idx) {
+                                p.value = (p.value - 0.05).max(0.0);
+                            }
                         }
                     }
                     self.commit_patch();
                 }
                 KeyCode::Char('K') => {
                     if let Some(m) = self.patch.module_mut(module_id) {
-                        if let Some(p) = m.params.env_points.get_mut(point_idx) {
-                            p.value = 1.0;
+                        if let Some(points) = m.params.env_points_mut() {
+                            if let Some(p) = points.get_mut(point_idx) {
+                                p.value = 1.0;
+                            }
                         }
                     }
                     self.commit_patch();
                 }
                 KeyCode::Char('J') => {
                     if let Some(m) = self.patch.module_mut(module_id) {
-                        if let Some(p) = m.params.env_points.get_mut(point_idx) {
-                            p.value = 0.0;
+                        if let Some(points) = m.params.env_points_mut() {
+                            if let Some(p) = points.get_mut(point_idx) {
+                                p.value = 0.0;
+                            }
                         }
                     }
                     self.commit_patch();
@@ -741,41 +889,47 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Char('c') => {
                     if let Some(m) = self.patch.module_mut(module_id) {
-                        if let Some(p) = m.params.env_points.get_mut(point_idx) {
-                            p.curve = !p.curve;
+                        if let Some(points) = m.params.env_points_mut() {
+                            if let Some(p) = points.get_mut(point_idx) {
+                                p.curve = !p.curve;
+                            }
                         }
                     }
                     self.commit_patch();
                 }
                 KeyCode::Char(' ') => {
                     if let Some(m) = self.patch.module_mut(module_id) {
-                        let new_time = if m.params.env_points.is_empty() {
-                            0.5
-                        } else if point_idx + 1 < m.params.env_points.len() {
-                            (m.params.env_points[point_idx].time + m.params.env_points[point_idx + 1].time) / 2.0
-                        } else {
-                            (m.params.env_points[point_idx].time + 1.0) / 2.0
-                        };
-                        let new_value = m.params.env_points.get(point_idx).map(|p| p.value).unwrap_or(0.5);
-                        m.params.env_points.push(super::module::EnvPoint {
-                            time: new_time,
-                            value: new_value,
-                            curve: false,
-                        });
-                        m.params.env_points.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
-                        let new_idx = m.params.env_points.iter().position(|p| (p.time - new_time).abs() < 0.001).unwrap_or(point_idx);
-                        self.mode = Mode::EnvEdit { module_id, point_idx: new_idx, editing: false };
+                        if let Some(points) = m.params.env_points_mut() {
+                            let new_time = if points.is_empty() {
+                                0.5
+                            } else if point_idx + 1 < points.len() {
+                                (points[point_idx].time + points[point_idx + 1].time) / 2.0
+                            } else {
+                                (points[point_idx].time + 1.0) / 2.0
+                            };
+                            let new_value = points.get(point_idx).map(|p| p.value).unwrap_or(0.5);
+                            points.push(super::module::EnvPoint {
+                                time: new_time,
+                                value: new_value,
+                                curve: false,
+                            });
+                            points.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+                            let new_idx = points.iter().position(|p| (p.time - new_time).abs() < 0.001).unwrap_or(point_idx);
+                            self.mode = Mode::EnvEdit { module_id, point_idx: new_idx, editing: false };
+                        }
                     }
                     self.commit_patch();
                 }
                 KeyCode::Char('.') => {
                     if let Some(m) = self.patch.module_mut(module_id) {
-                        if m.params.env_points.len() > 2 {
-                            m.params.env_points.remove(point_idx);
-                            let new_idx = point_idx.min(m.params.env_points.len() - 1);
-                            self.mode = Mode::EnvEdit { module_id, point_idx: new_idx, editing: false };
-                        } else {
-                            self.message = Some("Need at least 2 points".into());
+                        if let Some(points) = m.params.env_points_mut() {
+                            if points.len() > 2 {
+                                points.remove(point_idx);
+                                let new_idx = point_idx.min(points.len() - 1);
+                                self.mode = Mode::EnvEdit { module_id, point_idx: new_idx, editing: false };
+                            } else {
+                                self.message = Some("Need at least 2 points".into());
+                            }
                         }
                     }
                     self.commit_patch();
@@ -787,14 +941,15 @@ impl<'a> App<'a> {
 
     fn adjust_env_point_time(&mut self, module_id: ModuleId, point_idx: usize, delta: f32) -> usize {
         let Some(m) = self.patch.module_mut(module_id) else { return point_idx };
-        let Some(p) = m.params.env_points.get_mut(point_idx) else { return point_idx };
+        let Some(points) = m.params.env_points_mut() else { return point_idx };
+        let Some(p) = points.get_mut(point_idx) else { return point_idx };
         
         let new_time = (p.time + delta).clamp(0.0, 1.0);
         p.time = new_time;
         
-        m.params.env_points.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+        points.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
         
-        m.params.env_points.iter()
+        points.iter()
             .position(|p| (p.time - new_time).abs() < 1e-6)
             .unwrap_or(point_idx)
     }
@@ -857,6 +1012,8 @@ impl<'a> App<'a> {
             Mode::AdsrEdit { .. } => "ADSR",
             Mode::EnvEdit { .. } => "ENV",
             Mode::TrackEdit => "TRACK",
+            Mode::SavePrompt => "SAVE",
+            Mode::QuitConfirm => "QUIT?",
         };
         let mut status = StatusWidget::new(self.cursor, mode_str).playing(self.playing);
         if let Some(ref msg) = self.message {
@@ -1002,12 +1159,38 @@ impl<'a> App<'a> {
                 f.render_widget(env_widget, inner);
             }
         }
+
+        if matches!(self.mode, Mode::SavePrompt) {
+            let prompt_width = 50u16.min(f.area().width.saturating_sub(4));
+            let prompt_height = 3u16;
+            let prompt_x = (f.area().width.saturating_sub(prompt_width)) / 2;
+            let prompt_y = (f.area().height.saturating_sub(prompt_height)) / 2;
+            let prompt_area = Rect::new(prompt_x, prompt_y, prompt_width, prompt_height);
+
+            f.render_widget(Clear, prompt_area);
+
+            let prompt_block = Block::default()
+                .title(" Save As (Enter confirm, Esc cancel) ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow));
+            f.render_widget(prompt_block, prompt_area);
+
+            let inner = Rect::new(
+                prompt_area.x + 1,
+                prompt_area.y + 1,
+                prompt_area.width.saturating_sub(2),
+                prompt_area.height.saturating_sub(2),
+            );
+            f.render_widget(&self.file_textarea, inner);
+        }
     }
 }
 
 const NUM_VOICES: usize = 6;
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let file_arg = std::env::args().nth(1).map(PathBuf::from);
+    
     let audio_patch = Arc::new(Mutex::new(CompiledPatch::default()));
     let audio_patch_clone = Arc::clone(&audio_patch);
     let track_state = Arc::new(Mutex::new(TrackState::new(NUM_VOICES)));
@@ -1067,6 +1250,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new(audio_patch, track_state);
+
+    if let Some(path) = file_arg {
+        app.load_from_file(path);
+    }
 
     loop {
         *playing.lock().unwrap() = app.playing;

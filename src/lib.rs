@@ -9,6 +9,7 @@ mod distortion;
 mod envelopes;
 mod filters;
 mod flanger;
+mod gate_ramp;
 mod keyboard;
 #[cfg(feature = "live")]
 mod live;
@@ -29,6 +30,7 @@ pub use distortion::*;
 pub use envelopes::*;
 pub use filters::*;
 pub use flanger::*;
+pub use gate_ramp::*;
 pub use keyboard::*;
 #[cfg(feature = "live")]
 pub use live::*;

@@ -176,7 +176,7 @@ impl Patch {
         true
     }
 
-    fn rebuild_channels(&mut self) {
+    pub fn rebuild_channels(&mut self) {
         self.grid.clear_channels();
 
         let module_data: Vec<_> = self.modules.iter()
@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn test_add_remove_module() {
         let mut patch = Patch::new(10, 10);
-        let id = patch.add_module(ModuleKind::Clock, GridPos::new(0, 0));
+        let id = patch.add_module(ModuleKind::Freq, GridPos::new(0, 0));
         assert!(id.is_some());
         assert!(patch.remove_module(id.unwrap()));
     }
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn test_move_module() {
         let mut patch = Patch::new(10, 10);
-        let id = patch.add_module(ModuleKind::Clock, GridPos::new(0, 0)).unwrap();
+        let id = patch.add_module(ModuleKind::Freq, GridPos::new(0, 0)).unwrap();
         assert!(patch.move_module(id, GridPos::new(2, 2)));
         assert_eq!(patch.module_position(id), Some(GridPos::new(2, 2)));
     }

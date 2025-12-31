@@ -4,11 +4,12 @@ use crate::delay::Delay;
 use crate::reverb::Reverb;
 use crate::distortion::Distortion;
 use crate::flanger::Flanger;
+use crate::gate_ramp::GateRamp;
 use crate::oscillators::Osc;
 use crate::clock::Clock;
 use crate::track::{Track, NoteEvent};
 use super::grid::{Cell, GridPos};
-use super::module::{Module, ModuleId, ModuleKind, ParamKind};
+use super::module::{Module, ModuleId, ModuleKind};
 use super::patch::Patch;
 use std::collections::{HashMap, VecDeque};
 
@@ -42,6 +43,14 @@ impl TrackState {
     pub fn num_voices(&self) -> usize {
         self.voices.len()
     }
+
+    pub fn set_track(&mut self, track: Option<Track>) {
+        self.track = track;
+        for v in &mut self.voices {
+            *v = Voice::default();
+        }
+        self.age_counter = 0;
+    }
 }
 
 impl TrackState {
@@ -61,7 +70,10 @@ impl TrackState {
                     let freq = 440.0 * 2.0f32.powf((pitch as f32 - 69.0) / 12.0);
                     self.age_counter += 1;
                     
-                    let idx = self.voices.iter().position(|v| v.gate < 0.5)
+                    let idx = self.voices.iter().enumerate()
+                        .filter(|(_, v)| v.gate < 0.5)
+                        .min_by_key(|(_, v)| v.age)
+                        .map(|(i, _)| i)
                         .or_else(|| self.voices.iter().enumerate().min_by_key(|(_, v)| v.age).map(|(i, _)| i));
                     
                     if let Some(i) = idx {
@@ -91,6 +103,7 @@ enum NodeKind {
     Freq,
     Gate,
     Oscillator(Osc),
+    GateRamp(GateRamp),
     Adsr(ADSR),
     Envelope(Envelope),
     Lpf(LowpassFilter),
@@ -118,10 +131,26 @@ struct CompiledVoice {
     nodes: Vec<AudioNode>,
     execution_order: Vec<usize>,
     output_node: Option<usize>,
+    last_gate: f32,
 }
 
 impl CompiledVoice {
+    fn reset(&mut self) {
+        for node in &mut self.nodes {
+            match &mut node.kind {
+                NodeKind::GateRamp(ramp) => ramp.reset(),
+                NodeKind::Adsr(adsr) => adsr.reset(),
+                _ => {}
+            }
+            node.output = 0.0;
+        }
+    }
+
     fn process(&mut self, signal: &mut crate::Signal, freq: f32, gate: f32) -> f32 {
+        if gate > 0.5 && self.last_gate < 0.5 {
+            self.reset();
+        }
+        self.last_gate = gate;
         for &idx in &self.execution_order {
             let inputs: Vec<f32> = self.nodes[idx]
                 .input_sources
@@ -143,9 +172,14 @@ impl CompiledVoice {
                     let g = inputs.get(2).copied().unwrap_or(1.0);
                     osc.freq(f).shift(s).gain(g).output(signal)
                 }
-                NodeKind::Adsr(adsr) => {
+                NodeKind::GateRamp(ramp) => {
                     let gate_in = inputs.first().copied().unwrap_or(0.0);
-                    adsr.output(gate_in, signal)
+                    ramp.output(gate_in, signal)
+                }
+                NodeKind::Adsr(adsr) => {
+                    let rise = inputs.first().copied().unwrap_or(0.0);
+                    let fall = inputs.get(1).copied().unwrap_or(0.0);
+                    adsr.output(rise, fall)
                 }
                 NodeKind::Envelope(env) => {
                     let phase = inputs.first().copied().unwrap_or(0.0);
@@ -294,6 +328,7 @@ fn compile_voice(modules: &[&Module], connections: &[(ModuleId, ModuleId, usize)
         nodes: Vec::new(),
         execution_order: Vec::new(),
         output_node: None,
+        last_gate: 0.0,
     };
     let mut module_to_node: HashMap<ModuleId, usize> = HashMap::new();
 
@@ -442,30 +477,39 @@ fn topological_sort(nodes: &[AudioNode]) -> Vec<usize> {
 }
 
 fn create_node_kind(module: &Module) -> NodeKind {
-    let p = &module.params.floats;
+    use super::module::{ModuleParams, WaveType, RampMode};
     
-    match module.kind {
-        ModuleKind::Freq => NodeKind::Freq,
-        ModuleKind::Gate => NodeKind::Gate,
-        ModuleKind::Osc => {
+    match (&module.kind, &module.params) {
+        (ModuleKind::Freq, _) => NodeKind::Freq,
+        (ModuleKind::Gate, _) => NodeKind::Gate,
+        (ModuleKind::Osc, ModuleParams::Osc { wave, .. }) => {
             let mut osc = Osc::default();
-            match p[0] as usize {
-                0 => osc.sin(),
-                1 => osc.squ(),
-                2 => osc.tri(),
-                3 => osc.saw(),
-                4 => osc.rsaw(),
-                _ => osc.noise(),
+            match wave {
+                WaveType::Sin => osc.sin(),
+                WaveType::Squ => osc.squ(),
+                WaveType::Tri => osc.tri(),
+                WaveType::Saw => osc.saw(),
+                WaveType::RSaw => osc.rsaw(),
+                WaveType::Noise => osc.noise(),
             };
             NodeKind::Oscillator(osc)
         }
-        ModuleKind::Adsr => {
+        (ModuleKind::GateRamp, ModuleParams::GateRamp { mode, time, .. }) => {
+            let mut ramp = GateRamp::default();
+            match mode {
+                RampMode::Rise => ramp.rise(),
+                RampMode::Fall => ramp.fall(),
+            };
+            ramp.time(*time);
+            NodeKind::GateRamp(ramp)
+        }
+        (ModuleKind::Adsr, ModuleParams::Adsr { attack_ratio, sustain, .. }) => {
             let mut adsr = ADSR::default();
-            adsr.att(p[1]).dec(p[2]).sus(p[3]).rel(p[4]);
+            adsr.att(*attack_ratio).sus(*sustain);
             NodeKind::Adsr(adsr)
         }
-        ModuleKind::Envelope => {
-            let points: Vec<EnvelopePoint> = module.params.env_points
+        (ModuleKind::Envelope, ModuleParams::Envelope { points, .. }) => {
+            let env_points: Vec<EnvelopePoint> = points
                 .iter()
                 .map(|p| EnvelopePoint {
                     time: p.time,
@@ -473,45 +517,46 @@ fn create_node_kind(module: &Module) -> NodeKind {
                     point_type: if p.curve { PointType::Curve } else { PointType::Linear },
                 })
                 .collect();
-            NodeKind::Envelope(Envelope::new(points))
+            NodeKind::Envelope(Envelope::new(env_points))
         }
-        ModuleKind::Lpf => {
+        (ModuleKind::Lpf, ModuleParams::Filter { freq, q, .. }) => {
             let mut filter = LowpassFilter::default();
-            filter.freq(p[1]).q(p[2]);
+            filter.freq(*freq).q(*q);
             NodeKind::Lpf(filter)
         }
-        ModuleKind::Hpf => {
+        (ModuleKind::Hpf, ModuleParams::Filter { freq, q, .. }) => {
             let mut filter = HighpassFilter::default();
-            filter.freq(p[1]).q(p[2]);
+            filter.freq(*freq).q(*q);
             NodeKind::Hpf(filter)
         }
-        ModuleKind::Delay => {
+        (ModuleKind::Delay, ModuleParams::Delay { samples, .. }) => {
             let mut delay = Delay::default();
-            delay.delay(p[1]);
+            delay.delay(*samples);
             NodeKind::Delay(delay)
         }
-        ModuleKind::Reverb => {
+        (ModuleKind::Reverb, ModuleParams::Reverb { room, damp, .. }) => {
             let mut reverb = Reverb::default();
-            reverb.roomsize(p[1]).damp(p[2]);
+            reverb.roomsize(*room).damp(*damp);
             NodeKind::Reverb(reverb)
         }
-        ModuleKind::Distortion => {
+        (ModuleKind::Distortion, ModuleParams::Distortion { drive, gain, .. }) => {
             let mut dist = Distortion::default();
-            dist.drive(p[1]).gain(p[2]);
+            dist.drive(*drive).gain(*gain);
             NodeKind::Distortion(dist)
         }
-        ModuleKind::Flanger => {
+        (ModuleKind::Flanger, ModuleParams::Flanger { rate, depth, feedback, .. }) => {
             let mut flanger = Flanger::default();
-            flanger.freq(p[1]).depth(p[2]).feedback(p[3]);
+            flanger.freq(*rate).depth(*depth).feedback(*feedback);
             NodeKind::Flanger(flanger)
         }
-        ModuleKind::Mul => NodeKind::Mul,
-        ModuleKind::Add => NodeKind::Add,
-        ModuleKind::Gain => NodeKind::Gain(p[1]),
-        ModuleKind::Probe => NodeKind::Probe { value: 0.0 },
-        ModuleKind::Output => NodeKind::Output,
-        ModuleKind::LSplit | ModuleKind::TSplit | ModuleKind::RJoin | ModuleKind::DJoin
-            | ModuleKind::TurnRD | ModuleKind::TurnDR => NodeKind::Pass,
+        (ModuleKind::Mul, _) => NodeKind::Mul,
+        (ModuleKind::Add, _) => NodeKind::Add,
+        (ModuleKind::Gain, ModuleParams::Gain { gain, .. }) => NodeKind::Gain(*gain),
+        (ModuleKind::Probe, _) => NodeKind::Probe { value: 0.0 },
+        (ModuleKind::Output, _) => NodeKind::Output,
+        (ModuleKind::LSplit, _) | (ModuleKind::TSplit, _) | (ModuleKind::RJoin, _) 
+            | (ModuleKind::DJoin, _) | (ModuleKind::TurnRD, _) | (ModuleKind::TurnDR, _) => NodeKind::Pass,
+        _ => NodeKind::Pass,
     }
 }
 
@@ -520,13 +565,12 @@ fn get_input_defaults(module: &Module) -> Vec<f32> {
         return vec![0.0; module.kind.port_count()];
     }
     
-    let p = &module.params.floats;
     let defs = module.kind.param_defs();
     
     defs.iter()
         .enumerate()
-        .filter(|(_, d)| !matches!(d.kind, ParamKind::Enum { .. }))
-        .map(|(i, _)| p[i])
+        .filter(|(_, d)| !matches!(d.kind, super::module::ParamKind::Enum))
+        .map(|(i, _)| module.params.get_float(i).unwrap_or(0.0))
         .collect()
 }
 

@@ -55,6 +55,10 @@ impl Envelope {
         }
     }
 
+    pub fn points(&self) -> &[EnvelopePoint] {
+        &self.points
+    }
+
     pub fn output(&self, time: f32) -> f32 {
         let time = time.clamp(0.0, 1.0);
 
@@ -131,43 +135,28 @@ impl Default for Envelope {
 
 #[derive(Clone)]
 pub struct ADSR {
-    attack: f32,
-    decay: f32,
+    attack_ratio: f32,
     sustain: f32,
-    release: f32,
-    attack_curve: f32,
-    decay_curve: f32,
-    release_curve: f32,
-    pressed_at: Option<usize>,
-    released_at: Option<usize>,
-    last_gate: bool,
+    release_start_value: f32,
+    last_rise: f32,
+    last_fall: f32,
 }
 
 impl Default for ADSR {
     fn default() -> Self {
         ADSR {
-            attack: 0.01,
-            decay: 0.1,
+            attack_ratio: 0.5,
             sustain: 0.7,
-            release: 0.3,
-            attack_curve: 0.0,
-            decay_curve: 0.0,
-            release_curve: 0.0,
-            pressed_at: None,
-            released_at: None,
-            last_gate: false,
+            release_start_value: 0.0,
+            last_rise: 0.0,
+            last_fall: 1.0,
         }
     }
 }
 
 impl ADSR {
-    pub fn att(&mut self, time: f32) -> &mut Self {
-        self.attack = time.max(0.001);
-        self
-    }
-
-    pub fn dec(&mut self, time: f32) -> &mut Self {
-        self.decay = time.max(0.001);
+    pub fn att(&mut self, ratio: f32) -> &mut Self {
+        self.attack_ratio = ratio.clamp(0.0, 1.0);
         self
     }
 
@@ -176,102 +165,59 @@ impl ADSR {
         self
     }
 
-    pub fn rel(&mut self, time: f32) -> &mut Self {
-        self.release = time.max(0.001);
-        self
+    pub fn reset(&mut self) {
+        self.release_start_value = 0.0;
+        self.last_rise = 0.0;
+        self.last_fall = 1.0;
     }
 
-    pub fn att_curve(&mut self, curve: f32) -> &mut Self {
-        self.attack_curve = curve.clamp(-1.0, 1.0);
-        self
-    }
+    pub fn output(&mut self, rise: f32, fall: f32) -> f32 {
+        let rise = rise.clamp(0.0, 1.0);
+        let fall = fall.clamp(0.0, 1.0);
 
-    pub fn dec_curve(&mut self, curve: f32) -> &mut Self {
-        self.decay_curve = curve.clamp(-1.0, 1.0);
-        self
-    }
-
-    pub fn rel_curve(&mut self, curve: f32) -> &mut Self {
-        self.release_curve = curve.clamp(-1.0, 1.0);
-        self
-    }
-
-    pub fn output(&mut self, gate: f32, signal: &Signal) -> f32 {
-        let pressed = gate > 0.5;
-        let current_time = signal.position;
-        let sample_rate = signal.sample_rate as f32;
-
-        if pressed && !self.last_gate {
-            self.pressed_at = Some(current_time);
-            self.released_at = None;
-        } else if !pressed && self.last_gate {
-            self.released_at = Some(current_time);
+        if fall < self.last_fall {
+            self.release_start_value = self.ads_value(self.last_rise);
         }
-        self.last_gate = pressed;
+        self.last_rise = rise;
+        self.last_fall = fall;
 
-        match (self.pressed_at, self.released_at) {
-            (None, _) => 0.0,
-            (Some(pressed_at), None) => {
-                let elapsed = (current_time - pressed_at) as f32 / sample_rate;
-                self.calculate_envelope_value(elapsed)
-            }
-            (Some(pressed_at), Some(released_at)) => {
-                let trigger_elapsed = (released_at - pressed_at) as f32 / sample_rate;
-                let release_elapsed = (current_time - released_at) as f32 / sample_rate;
+        let ads = self.ads_value(rise);
+        let release_multiplier = 1.0 - fall;
 
-                if release_elapsed >= self.release {
-                    0.0
-                } else {
-                    let release_start_value = self.calculate_envelope_value(trigger_elapsed);
-                    let release_progress = release_elapsed / self.release;
-                    let curved_progress = self.apply_curve(release_progress, self.release_curve);
-                    release_start_value * (1.0 - curved_progress)
-                }
-            }
-        }
-    }
-
-    fn calculate_envelope_value(&self, elapsed: f32) -> f32 {
-        if elapsed < self.attack {
-            let t = elapsed / self.attack;
-            let curved_t = self.apply_curve(t, self.attack_curve);
-            curved_t
-        } else if elapsed < self.attack + self.decay {
-            let decay_progress = (elapsed - self.attack) / self.decay;
-            let curved_progress = self.apply_curve(decay_progress, self.decay_curve);
-            1.0 + (self.sustain - 1.0) * curved_progress
+        if fall > 0.0 {
+            self.release_start_value * release_multiplier
         } else {
+            ads
+        }
+    }
+
+    fn ads_value(&self, rise: f32) -> f32 {
+        if self.attack_ratio <= 0.0 {
             self.sustain
-        }
-    }
-
-    fn apply_curve(&self, t: f32, curve: f32) -> f32 {
-        if curve.abs() < 0.001 {
-            return t;
-        }
-
-        let exp_curve = curve * 3.0;
-        if exp_curve > 0.0 {
-            (exp_curve * t).exp() / exp_curve.exp()
+        } else if rise < self.attack_ratio {
+            rise / self.attack_ratio
+        } else if self.attack_ratio >= 1.0 {
+            1.0
         } else {
-            1.0 - ((-exp_curve) * (1.0 - t)).exp() / ((-exp_curve).exp())
+            let decay_progress = (rise - self.attack_ratio) / (1.0 - self.attack_ratio);
+            1.0 + (self.sustain - 1.0) * decay_progress
         }
     }
 
     pub fn pluck(&mut self) -> &mut Self {
-        self.att(0.005).dec(0.5).sus(0.0).rel(0.2)
+        self.att(0.01).sus(0.0)
     }
 
     pub fn stab(&mut self) -> &mut Self {
-        self.att(0.001).dec(0.1).sus(0.0).rel(0.3)
+        self.att(0.01).sus(0.0)
     }
 
     pub fn lead(&mut self) -> &mut Self {
-        self.att(0.05).dec(0.3).sus(0.7).rel(0.4)
+        self.att(0.15).sus(0.7)
     }
 
     pub fn pad(&mut self) -> &mut Self {
-        self.att(0.5).dec(0.5).sus(0.7).rel(1.0)
+        self.att(0.5).sus(0.7)
     }
 }
 

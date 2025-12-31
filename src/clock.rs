@@ -27,6 +27,14 @@ impl Clock {
         self
     }
 
+    pub fn current_bpm(&self) -> f32 {
+        self.bpm
+    }
+
+    pub fn current_bars(&self) -> f32 {
+        self.bars
+    }
+
     pub fn output(&mut self, signal: &mut Signal) -> f32 {
         let beats_per_minute = self.bpm;
         let beats_per_second = beats_per_minute / 60.0;
