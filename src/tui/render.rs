@@ -28,6 +28,7 @@ fn set_str(buf: &mut Buffer, x: u16, y: u16, s: &str, style: Style) {
 pub struct GridWidget<'a> {
     patch: &'a Patch,
     cursor: GridPos,
+    view_center: GridPos,
     moving: Option<ModuleId>,
     probe_values: &'a [f32],
     selection: Option<(GridPos, GridPos)>,
@@ -38,6 +39,7 @@ impl<'a> GridWidget<'a> {
         Self {
             patch,
             cursor: GridPos::new(0, 0),
+            view_center: GridPos::new(0, 0),
             moving: None,
             probe_values: &[],
             selection: None,
@@ -46,6 +48,12 @@ impl<'a> GridWidget<'a> {
 
     pub fn cursor(mut self, pos: GridPos) -> Self {
         self.cursor = pos;
+        self.view_center = pos;
+        self
+    }
+
+    pub fn view_center(mut self, pos: GridPos) -> Self {
+        self.view_center = pos;
         self
     }
 
@@ -405,20 +413,20 @@ impl Widget for GridWidget<'_> {
         let half_cols = visible_cols / 2;
         let half_rows = visible_rows / 2;
         
-        let origin_x = if self.cursor.x < half_cols {
+        let origin_x = if self.view_center.x < half_cols {
             0
-        } else if self.cursor.x + half_cols >= grid.width() {
+        } else if self.view_center.x + half_cols >= grid.width() {
             grid.width().saturating_sub(visible_cols)
         } else {
-            self.cursor.x - half_cols
+            self.view_center.x - half_cols
         };
         
-        let origin_y = if self.cursor.y < half_rows {
+        let origin_y = if self.view_center.y < half_rows {
             0
-        } else if self.cursor.y + half_rows >= grid.height() {
+        } else if self.view_center.y + half_rows >= grid.height() {
             grid.height().saturating_sub(visible_rows)
         } else {
-            self.cursor.y - half_rows
+            self.view_center.y - half_rows
         };
         
         let viewport_origin = GridPos::new(origin_x, origin_y);

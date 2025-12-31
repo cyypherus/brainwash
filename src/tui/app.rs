@@ -10,7 +10,7 @@ use crate::scale::cmin;
 use crate::track::Track;
 use crate::Signal;
 use ratatui::crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseEventKind, MouseButton},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -22,7 +22,7 @@ use ratatui::{
     style::{Color, Style},
     widgets::{Block, Borders, Clear},
 };
-use tui_textarea::TextArea;
+
 use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
 use std::{io, time::Duration};
@@ -48,7 +48,7 @@ enum AppRequest {
     EditTrack,
 }
 
-struct App<'a> {
+struct App {
     patch: Patch,
     cursor: GridPos,
     mode: Mode,
@@ -64,32 +64,27 @@ struct App<'a> {
     audio_patch: Arc<Mutex<CompiledPatch>>,
     track_state: Arc<Mutex<TrackState>>,
     playing: bool,
-    track_textarea: TextArea<'a>,
+    track_text: String,
     file_path: Option<PathBuf>,
-    file_textarea: TextArea<'a>,
+    save_filename: String,
     probe_min: f32,
     probe_max: f32,
     probe_len: usize,
+    grid_area: Rect,
+    dragging: Option<ModuleId>,
+    view_center: GridPos,
 }
 
-impl<'a> App<'a> {
+impl App {
     fn new(audio_patch: Arc<Mutex<CompiledPatch>>, track_state: Arc<Mutex<TrackState>>) -> Self {
         let mut patch = Patch::new(20, 20);
         patch.add_module(ModuleKind::Output, GridPos::new(19, 19));
 
-        let mut textarea = TextArea::new(vec!["(0/2/4/7)".into()]);
-        textarea.set_cursor_line_style(Style::default());
-        textarea.set_block(Block::default());
-
-        let notation = "(0/2/4/7)";
+        let track_text = "(0/2/4/7)".to_string();
         let scale = cmin();
-        if let Ok(track) = Track::parse(notation, &scale) {
+        if let Ok(track) = Track::parse(&track_text, &scale) {
             track_state.lock().unwrap().set_track(Some(track));
         }
-
-        let mut file_textarea = TextArea::new(vec!["patch.bw".into()]);
-        file_textarea.set_cursor_line_style(Style::default());
-        file_textarea.set_block(Block::default());
 
         Self {
             patch,
@@ -107,19 +102,21 @@ impl<'a> App<'a> {
             audio_patch,
             track_state,
             playing: false,
-            track_textarea: textarea,
+            track_text,
             file_path: None,
-            file_textarea,
+            save_filename: "patch.bw".to_string(),
             probe_min: -1.0,
             probe_max: 1.0,
             probe_len: 4410,
+            grid_area: Rect::default(),
+            dragging: None,
+            view_center: GridPos::new(0, 0),
         }
     }
 
     fn reparse_track(&mut self) {
         let scale = cmin();
-        let notation: String = self.track_textarea.lines().join("");
-        match Track::parse(&notation, &scale) {
+        match Track::parse(&self.track_text, &scale) {
             Ok(track) => {
                 let mut state = self.track_state.lock().unwrap();
                 state.set_track(Some(track));
@@ -143,6 +140,76 @@ impl<'a> App<'a> {
         let new_x = (self.cursor.x as i16 + dx).clamp(0, grid.width() as i16 - 1) as u16;
         let new_y = (self.cursor.y as i16 + dy).clamp(0, grid.height() as i16 - 1) as u16;
         self.cursor = GridPos::new(new_x, new_y);
+        self.view_center = self.cursor;
+    }
+
+    fn screen_to_grid(&self, col: u16, row: u16) -> Option<GridPos> {
+        const CELL_WIDTH: u16 = 5;
+        const CELL_HEIGHT: u16 = 3;
+        if col < self.grid_area.x || row < self.grid_area.y {
+            return None;
+        }
+        let visible_cols = self.grid_area.width / CELL_WIDTH;
+        let visible_rows = self.grid_area.height / CELL_HEIGHT;
+        let half_cols = visible_cols / 2;
+        let half_rows = visible_rows / 2;
+        
+        let grid = self.patch.grid();
+        let origin_x = if self.view_center.x < half_cols {
+            0
+        } else if self.view_center.x + half_cols >= grid.width() as u16 {
+            (grid.width() as u16).saturating_sub(visible_cols)
+        } else {
+            self.view_center.x - half_cols
+        };
+        let origin_y = if self.view_center.y < half_rows {
+            0
+        } else if self.view_center.y + half_rows >= grid.height() as u16 {
+            (grid.height() as u16).saturating_sub(visible_rows)
+        } else {
+            self.view_center.y - half_rows
+        };
+        
+        let vx = (col - self.grid_area.x) / CELL_WIDTH;
+        let vy = (row - self.grid_area.y) / CELL_HEIGHT;
+        let gx = origin_x + vx;
+        let gy = origin_y + vy;
+        
+        if gx < grid.width() as u16 && gy < grid.height() as u16 {
+            Some(GridPos::new(gx, gy))
+        } else {
+            None
+        }
+    }
+
+    fn handle_mouse(&mut self, kind: MouseEventKind, col: u16, row: u16) {
+        if self.mode != Mode::Normal {
+            return;
+        }
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(pos) = self.screen_to_grid(col, row) {
+                    self.cursor = pos;
+                    if let Some(m) = self.patch.module_at(pos) {
+                        self.dragging = Some(m.id);
+                    }
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(id) = self.dragging {
+                    if let Some(pos) = self.screen_to_grid(col, row) {
+                        self.patch.move_module(id, pos);
+                        self.commit_patch();
+                        self.cursor = pos;
+                    }
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.dragging = None;
+                self.view_center = self.cursor;
+            }
+            _ => {}
+        }
     }
 
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
@@ -278,17 +345,14 @@ impl<'a> App<'a> {
                 if let Some(ref path) = self.file_path {
                     self.save_to_file(path.clone());
                 } else {
-                    self.file_textarea = TextArea::new(vec!["patch.bw".into()]);
-                    self.file_textarea.set_cursor_line_style(Style::default());
+                    self.save_filename = "patch.bw".to_string();
                     self.mode = Mode::SavePrompt;
                 }
             }
             Action::SaveAs => {
-                let default = self.file_path.as_ref()
+                self.save_filename = self.file_path.as_ref()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| "patch.bw".into());
-                self.file_textarea = TextArea::new(vec![default]);
-                self.file_textarea.set_cursor_line_style(Style::default());
                 self.mode = Mode::SavePrompt;
             }
             _ => {}
@@ -665,26 +729,29 @@ impl<'a> App<'a> {
         }
     }
 
-    fn handle_save_prompt_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+    fn handle_save_prompt_key(&mut self, code: KeyCode, _modifiers: KeyModifiers) {
         match code {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
                 self.message = Some("Save cancelled".into());
             }
             KeyCode::Enter => {
-                let path = PathBuf::from(self.file_textarea.lines().join(""));
+                let path = PathBuf::from(&self.save_filename);
                 self.save_to_file(path);
                 self.mode = Mode::Normal;
             }
-            _ => {
-                self.file_textarea.input(Event::Key(event::KeyEvent::new(code, modifiers)));
+            KeyCode::Backspace => {
+                self.save_filename.pop();
             }
+            KeyCode::Char(c) => {
+                self.save_filename.push(c);
+            }
+            _ => {}
         }
     }
 
     fn save_to_file(&mut self, path: PathBuf) {
-        let track_text: String = self.track_textarea.lines().join("\n");
-        let track = if track_text.trim().is_empty() { None } else { Some(track_text.as_str()) };
+        let track = if self.track_text.trim().is_empty() { None } else { Some(self.track_text.as_str()) };
         let state = self.track_state.lock().unwrap();
         let bpm = state.clock.current_bpm();
         let bars = state.clock.current_bars();
@@ -714,9 +781,7 @@ impl<'a> App<'a> {
                 }
 
                 if let Some(track_text) = track {
-                    self.track_textarea = TextArea::new(track_text.lines().map(|s| s.to_string()).collect());
-                    self.track_textarea.set_cursor_line_style(Style::default());
-                    self.track_textarea.set_block(Block::default());
+                    self.track_text = track_text;
                     self.reparse_track();
                 }
 
@@ -1060,8 +1125,10 @@ impl<'a> App<'a> {
             .filter_map(|i| audio_patch.probe_history(i).and_then(|h| h.back().copied()))
             .collect();
         drop(audio_patch);
+        self.grid_area = grid_area;
         let grid_widget = GridWidget::new(&self.patch)
             .cursor(self.cursor)
+            .view_center(self.view_center)
             .moving(moving_id)
             .selection(selection)
             .probe_values(&probe_values);
@@ -1271,9 +1338,10 @@ impl<'a> App<'a> {
                 prompt_area.x + 1,
                 prompt_area.y + 1,
                 prompt_area.width.saturating_sub(2),
-                prompt_area.height.saturating_sub(2),
+                1,
             );
-            f.render_widget(&self.file_textarea, inner);
+            let text = ratatui::widgets::Paragraph::new(self.save_filename.as_str());
+            f.render_widget(text, inner);
         }
     }
 }
@@ -1354,8 +1422,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         if event::poll(Duration::from_millis(50))? {
             let event = event::read()?;
-            if let Event::Key(key) = &event {
-                app.handle_key(key.code, key.modifiers);
+            match &event {
+                Event::Key(key) => {
+                    app.handle_key(key.code, key.modifiers);
+                }
+                Event::Mouse(mouse) => {
+                    app.handle_mouse(mouse.kind, mouse.column, mouse.row);
+                }
+                _ => {}
             }
         }
 
@@ -1365,9 +1439,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     disable_raw_mode()?;
                     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
                     
-                    let track_text: String = app.track_textarea.lines().join("\n");
                     let temp_path = std::env::temp_dir().join("brainwash_track.txt");
-                    fs::write(&temp_path, &track_text)?;
+                    fs::write(&temp_path, &app.track_text)?;
                     
                     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".into());
                     let status = Command::new(&editor).arg(&temp_path).status();
@@ -1375,9 +1448,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     if let Ok(s) = status {
                         if s.success() {
                             if let Ok(new_text) = fs::read_to_string(&temp_path) {
-                                app.track_textarea = TextArea::new(new_text.lines().map(|s| s.to_string()).collect());
-                                app.track_textarea.set_cursor_line_style(Style::default());
-                                app.track_textarea.set_block(Block::default());
+                                app.track_text = new_text;
                                 app.reparse_track();
                             }
                         }
