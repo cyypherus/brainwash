@@ -1,3 +1,4 @@
+use super::bindings::{self, Action};
 use super::grid::{Cell, GridPos};
 use super::module::{Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind};
 use super::patch::Patch;
@@ -330,6 +331,29 @@ impl<'a> GridWidget<'a> {
                     set_cell(buf, sx + dx, cy, '─', style);
                 }
             }
+            Cell::ChannelCross { color_v, color_h } => {
+                let cx = sx + CELL_WIDTH / 2;
+                let cy = sy + CELL_HEIGHT / 2;
+                let style_v = if is_cursor {
+                    Style::default().fg(Color::White).bg(color_v)
+                } else {
+                    Style::default().fg(color_v)
+                };
+                let style_h = if is_cursor {
+                    Style::default().fg(Color::White).bg(color_h)
+                } else {
+                    Style::default().fg(color_h)
+                };
+                for dy in 0..CELL_HEIGHT {
+                    if sy + dy != cy {
+                        set_cell(buf, cx, sy + dy, '│', style_v);
+                    }
+                }
+                for dx in 0..CELL_WIDTH {
+                    set_cell(buf, sx + dx, cy, '─', style_h);
+                }
+                set_cell(buf, cx, cy, '┼', style_v);
+            }
             Cell::ChannelCorner { color, down_right } => {
                 let style = if is_cursor {
                     Style::default().fg(Color::White).bg(color)
@@ -519,8 +543,11 @@ impl<'a> PaletteWidget<'a> {
 
 impl Widget for PaletteWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let hint_style = Style::default().fg(Color::DarkGray);
+        let hint_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+        let desc_style = Style::default().fg(Color::Gray).bg(Color::Rgb(40, 40, 40));
         let hint_y = area.y + area.height.saturating_sub(1);
+        let desc_y = hint_y.saturating_sub(1);
+        let max_w = area.width as usize;
 
         if self.searching {
             let mut y = area.y;
@@ -529,7 +556,7 @@ impl Widget for PaletteWidget<'_> {
             y += 1;
 
             for (idx, kind) in self.filtered_modules.iter().enumerate() {
-                if y >= area.y + area.height.saturating_sub(1) {
+                if y >= desc_y {
                     break;
                 }
                 let is_sel = idx == self.filter_selection;
@@ -542,6 +569,17 @@ impl Widget for PaletteWidget<'_> {
                 y += 1;
             }
 
+            if let Some(selected_kind) = self.filtered_modules.get(self.filter_selection) {
+                let desc: String = selected_kind.description().chars().take(max_w).collect();
+                for x in 0..area.width {
+                    set_cell(buf, area.x + x, desc_y, ' ', desc_style);
+                }
+                set_str(buf, area.x, desc_y, &desc, desc_style);
+            }
+
+            for x in 0..area.width {
+                set_cell(buf, area.x + x, hint_y, ' ', hint_style);
+            }
             set_str(buf, area.x, hint_y, " esc clear", hint_style);
             return;
         }
@@ -550,7 +588,7 @@ impl Widget for PaletteWidget<'_> {
         let mut y = area.y;
 
         for (cat_idx, cat) in categories.iter().enumerate() {
-            if y >= area.y + area.height.saturating_sub(1) {
+            if y >= desc_y {
                 break;
             }
 
@@ -565,8 +603,9 @@ impl Widget for PaletteWidget<'_> {
             y += 1;
 
             if is_selected_cat {
-                for (mod_idx, kind) in ModuleKind::by_category(*cat).iter().enumerate() {
-                    if y >= area.y + area.height.saturating_sub(1) {
+                let mods = ModuleKind::by_category(*cat);
+                for (mod_idx, kind) in mods.iter().enumerate() {
+                    if y >= desc_y {
                         break;
                     }
                     let is_sel = mod_idx == self.selected_module;
@@ -578,9 +617,19 @@ impl Widget for PaletteWidget<'_> {
                     set_str(buf, area.x + 1, y, &format!(" {} ", kind.name()), style);
                     y += 1;
                 }
+                if let Some(selected_kind) = mods.get(self.selected_module) {
+                    let desc: String = selected_kind.description().chars().take(max_w).collect();
+                    for x in 0..area.width {
+                        set_cell(buf, area.x + x, desc_y, ' ', desc_style);
+                    }
+                    set_str(buf, area.x, desc_y, &desc, desc_style);
+                }
             }
         }
 
+        for x in 0..area.width {
+            set_cell(buf, area.x + x, hint_y, ' ', hint_style);
+        }
         set_str(buf, area.x, hint_y, " hjkl / search", hint_style);
     }
 }
@@ -634,25 +683,37 @@ impl Widget for StatusWidget<'_> {
 
 pub struct HelpWidget;
 
+impl HelpWidget {
+    fn key_for(bindings: &[bindings::Binding], action: Action) -> &'static str {
+        bindings.iter()
+            .find(|b| b.action == action)
+            .map(|b| bindings::key_str(b.key))
+            .unwrap_or("?")
+    }
+}
+
 impl Widget for HelpWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let binds = bindings::normal_bindings();
+        
         let groups: &[&[(&str, &str)]] = &[
             &[
                 ("hjkl", "move"),
-                ("Space", "add"),
-                (".", "delete"),
-                ("m", "move"),
-                ("u", "edit"),
-                ("o", "rotate"),
-                ("v", "select"),
+                (Self::key_for(binds, Action::Place), "add"),
+                (Self::key_for(binds, Action::Inspect), "insert"),
+                (Self::key_for(binds, Action::Delete), "delete"),
+                (Self::key_for(binds, Action::Move), "move"),
+                (Self::key_for(binds, Action::Edit), "edit"),
+                (Self::key_for(binds, Action::Rotate), "rotate"),
+                (Self::key_for(binds, Action::Select), "select"),
             ],
             &[
-                ("t", "track"),
-                ("p", "play"),
+                (Self::key_for(binds, Action::TrackEdit), "track"),
+                (Self::key_for(binds, Action::TogglePlay), "play"),
             ],
             &[
-                ("s/S", "save"),
-                ("q", "quit"),
+                ("w/W", "save"),
+                (Self::key_for(binds, Action::Quit), "quit"),
             ],
         ];
 
@@ -700,7 +761,11 @@ impl Widget for EditWidget<'_> {
         let title = self.module.kind.name();
         set_str(buf, area.x, area.y, title, title_style);
 
-        let mut y = area.y + 2;
+        let desc = self.module.kind.description();
+        let desc_style = Style::default().fg(Color::DarkGray);
+        set_str(buf, area.x, area.y + 1, desc, desc_style);
+
+        let mut y = area.y + 3;
 
         for (i, def) in defs.iter().enumerate() {
             if y >= area.y + area.height {
@@ -959,4 +1024,123 @@ impl Widget for EnvelopeWidget<'_> {
     }
 }
 
+pub struct ProbeWidget<'a> {
+    history: &'a [f32],
+    min: f32,
+    max: f32,
+    len: usize,
+    current: f32,
+    selected_param: usize,
+}
 
+impl<'a> ProbeWidget<'a> {
+    pub fn new(history: &'a [f32], min: f32, max: f32, len: usize, current: f32, selected_param: usize) -> Self {
+        Self { history, min, max, len, current, selected_param }
+    }
+}
+
+impl Widget for ProbeWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if area.width < 10 || area.height < 5 {
+            return;
+        }
+
+        let header_height = 4u16;
+        let header_area = Rect::new(area.x, area.y, area.width, header_height.min(area.height));
+        let chart_area = Rect::new(
+            area.x,
+            area.y + header_height,
+            area.width,
+            area.height.saturating_sub(header_height),
+        );
+
+        let title_style = Style::default().fg(Color::Rgb(100, 220, 220)).add_modifier(Modifier::BOLD);
+        let label_style = Style::default().fg(Color::DarkGray);
+        let value_style = Style::default().fg(Color::White);
+        let selected_style = Style::default().fg(Color::Black).bg(Color::Rgb(100, 220, 220));
+
+        set_str(buf, header_area.x, header_area.y, "Probe", title_style);
+        
+        let current_str = format!("Value: {:.4}", self.current);
+        set_str(buf, header_area.x, header_area.y + 1, &current_str, value_style);
+        
+        let min_style = if self.selected_param == 0 { selected_style } else { label_style };
+        let max_style = if self.selected_param == 1 { selected_style } else { label_style };
+        let len_style = if self.selected_param == 2 { selected_style } else { label_style };
+        
+        let min_str = format!("Min: {:.2}", self.min);
+        let max_str = format!("Max: {:.2}", self.max);
+        let len_str = format!("Len: {}", self.len);
+        set_str(buf, header_area.x, header_area.y + 2, &min_str, min_style);
+        set_str(buf, header_area.x + min_str.len() as u16 + 2, header_area.y + 2, &max_str, max_style);
+        set_str(buf, header_area.x + min_str.len() as u16 + max_str.len() as u16 + 4, header_area.y + 2, &len_str, len_style);
+        set_str(buf, header_area.x, header_area.y + 3, "<hl> adjust, r reset, c clear", label_style);
+
+        if chart_area.width < 5 || chart_area.height < 3 {
+            return;
+        }
+
+        let w = chart_area.width as usize;
+        let h = (chart_area.height - 1) as f32;
+        let range = self.max - self.min;
+
+        let axis_style = Style::default().fg(Color::DarkGray);
+        for y in 0..chart_area.height {
+            set_cell(buf, chart_area.x, chart_area.y + y, '│', axis_style);
+        }
+        for x in 0..chart_area.width {
+            set_cell(buf, chart_area.x + x, chart_area.y + chart_area.height - 1, '─', axis_style);
+        }
+        set_cell(buf, chart_area.x, chart_area.y + chart_area.height - 1, '└', axis_style);
+
+        if self.min <= 0.0 && self.max >= 0.0 && range > 0.0 {
+            let zero_y = ((self.max / range) * h) as u16;
+            if zero_y < chart_area.height - 1 {
+                let zero_style = Style::default().fg(Color::Rgb(60, 60, 60));
+                for x in 1..chart_area.width {
+                    set_cell(buf, chart_area.x + x, chart_area.y + zero_y, '·', zero_style);
+                }
+            }
+        }
+
+        let curve_style = Style::default().fg(Color::Rgb(100, 220, 220));
+        let fill_style = Style::default().fg(Color::Rgb(40, 80, 80));
+        let start = self.history.len().saturating_sub(self.len);
+        let samples: Vec<f32> = self.history[start..].to_vec();
+        
+        let chart_w = (chart_area.width - 1) as usize;
+        for screen_i in 0..chart_w {
+            let x = (screen_i + 1) as u16;
+            
+            let sample_idx = if samples.len() <= chart_w {
+                if screen_i < samples.len() { Some(screen_i) } else { None }
+            } else {
+                let t = screen_i as f32 / chart_w as f32;
+                Some((t * samples.len() as f32) as usize)
+            };
+            
+            let Some(idx) = sample_idx else { continue };
+            let Some(&val) = samples.get(idx) else { continue };
+            
+            let normalized = if range > 0.0 {
+                ((self.max - val) / range).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            let y = (normalized * h) as u16;
+            let screen_x = chart_area.x + x;
+            let line_y = y.min(chart_area.height - 2);
+            
+            for fill_y in (line_y + 1)..(chart_area.height - 1) {
+                set_cell(buf, screen_x, chart_area.y + fill_y, '·', fill_style);
+            }
+            
+            set_cell(buf, screen_x, chart_area.y + line_y, '·', curve_style);
+        }
+
+        let max_str = format!("{:.1}", self.max);
+        let min_str = format!("{:.1}", self.min);
+        set_str(buf, chart_area.x + 1, chart_area.y, &max_str, label_style);
+        set_str(buf, chart_area.x + 1, chart_area.y + chart_area.height - 2, &min_str, label_style);
+    }
+}

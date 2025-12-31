@@ -1,23 +1,46 @@
-module 13 Gate 1 9
-module 7 Env 5 9
-module 5 Out 12 7
-module 4 Ramp 3 9
-module 12 Probe 7 7
-module 2 Probe 4 9
-module 8 Freq 6 7
-module 3 Osc 8 7
-module 11 Probe 2 9
+module 13 Probe 7 14
+module 14 TurnRD 6 11
+module 11 TurnRD 9 12
+module 10 TurnRD 5 10
+module 22 Rise 2 9
+module 28 Env 8 15
+module 1 TurnDR 5 15
+module 27 Probe 14 11
+module 7 LSplit 4 9
+module 8 Probe 9 15
+module 9 Fall 2 11
+module 16 Gate 0 9
+module 29 Probe 9 14
+module 2 TurnDR 7 12
+module 17 Out 19 11
+module 21 Probe 3 11
+module 20 Switch 10 13
+module 5 Probe 3 9
+module 0 Gate 0 11
+module 4 Mul 17 11
+module 18 TurnRD 7 9
+module 19 Osc 15 11
+module 6 TurnDR 4 14
+module 3 LSplit 4 11
+module 23 Gt 8 12
+module 15 TurnDR 9 13
+module 24 Env 8 14
+module 26 TurnDR 6 13
+module 25 Freq 13 11
+module 12 TurnDR 4 10
 
-param 4 2 0.18100001
-param 3 3 0.2
+param 4 1 0.19999993
+param 19 3 0.2
 
-port 4 0xFB
+port 4 0xFD
 
-env 7 0 0
-env 7 0.31000018 0.90000015
-env 7 0.75 0
-env 7 1 1
+env 24 0 0
+env 24 0.31000018 0.90000015
+env 24 0.75 0
+env 24 1 1
+env 28 0 1
+env 28 1 0
 
 track
-(0/1/2/3/4/5/_)
+({0&2&4}/_/_/3/4/5/_)
 end

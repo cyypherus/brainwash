@@ -5,6 +5,7 @@ use crate::reverb::Reverb;
 use crate::distortion::Distortion;
 use crate::flanger::Flanger;
 use crate::gate_ramp::GateRamp;
+use crate::ramp::Ramp;
 use crate::oscillators::Osc;
 use crate::clock::Clock;
 use crate::track::{Track, NoteEvent};
@@ -103,7 +104,9 @@ enum NodeKind {
     Freq,
     Gate,
     Oscillator(Osc),
-    GateRamp(GateRamp),
+    Rise(GateRamp),
+    Fall(GateRamp),
+    Ramp(Ramp),
     Adsr(ADSR),
     Envelope(Envelope),
     Lpf(LowpassFilter),
@@ -115,6 +118,9 @@ enum NodeKind {
     Mul,
     Add,
     Gain(f32),
+    Gt,
+    Lt,
+    Switch,
     Probe { value: f32 },
     Pass,
     Output,
@@ -138,7 +144,7 @@ impl CompiledVoice {
     fn reset(&mut self) {
         for node in &mut self.nodes {
             match &mut node.kind {
-                NodeKind::GateRamp(ramp) => ramp.reset(),
+                NodeKind::Rise(ramp) | NodeKind::Fall(ramp) => ramp.reset(),
                 NodeKind::Adsr(adsr) => adsr.reset(),
                 _ => {}
             }
@@ -172,9 +178,14 @@ impl CompiledVoice {
                     let g = inputs.get(2).copied().unwrap_or(1.0);
                     osc.freq(f).shift(s).gain(g).output(signal)
                 }
-                NodeKind::GateRamp(ramp) => {
+                NodeKind::Rise(ramp) | NodeKind::Fall(ramp) => {
                     let gate_in = inputs.first().copied().unwrap_or(0.0);
                     ramp.output(gate_in, signal)
+                }
+                NodeKind::Ramp(ramp) => {
+                    let val = inputs.first().copied().unwrap_or(0.0);
+                    ramp.value(val);
+                    ramp.output(signal)
                 }
                 NodeKind::Adsr(adsr) => {
                     let rise = inputs.first().copied().unwrap_or(0.0);
@@ -211,6 +222,22 @@ impl CompiledVoice {
                 }
                 NodeKind::Gain(g) => {
                     inputs.first().copied().unwrap_or(0.0) * *g
+                }
+                NodeKind::Gt => {
+                    let a = inputs.first().copied().unwrap_or(0.0);
+                    let b = inputs.get(1).copied().unwrap_or(0.0);
+                    if a > b { 1.0 } else { 0.0 }
+                }
+                NodeKind::Lt => {
+                    let a = inputs.first().copied().unwrap_or(0.0);
+                    let b = inputs.get(1).copied().unwrap_or(0.0);
+                    if a < b { 1.0 } else { 0.0 }
+                }
+                NodeKind::Switch => {
+                    let sel = inputs.first().copied().unwrap_or(0.0);
+                    let a = inputs.get(1).copied().unwrap_or(0.0);
+                    let b = inputs.get(2).copied().unwrap_or(0.0);
+                    if sel <= 0.5 { a } else { b }
                 }
                 NodeKind::Probe { value } => {
                     let v = inputs.first().copied().unwrap_or(0.0);
@@ -292,6 +319,8 @@ impl CompiledPatch {
         } else {
             new_sample
         };
+
+        let sample = sample.clamp(-1.0, 1.0);
         
         if let Some(ref current) = self.current {
             if !current.voices.is_empty() {
@@ -397,7 +426,7 @@ fn trace_down(grid: &super::grid::Grid, patch: &Patch, x: u16, start_y: u16) -> 
     for y in start_y..grid.height() {
         let pos = GridPos::new(x, y);
         match grid.get(pos) {
-            Cell::ChannelV { .. } => continue,
+            Cell::ChannelV { .. } | Cell::ChannelCross { .. } => continue,
             Cell::Module { id, local_x, local_y } => {
                 let module = patch.module(id)?;
                 if local_y == 0 && module.has_input_top() {
@@ -418,7 +447,7 @@ fn trace_right(grid: &super::grid::Grid, patch: &Patch, start_x: u16, y: u16) ->
     for x in start_x..grid.width() {
         let pos = GridPos::new(x, y);
         match grid.get(pos) {
-            Cell::ChannelH { .. } => continue,
+            Cell::ChannelH { .. } | Cell::ChannelCross { .. } => continue,
             Cell::Module { id, local_x, local_y } => {
                 let module = patch.module(id)?;
                 if local_x == 0 && module.has_input_left() {
@@ -477,7 +506,7 @@ fn topological_sort(nodes: &[AudioNode]) -> Vec<usize> {
 }
 
 fn create_node_kind(module: &Module) -> NodeKind {
-    use super::module::{ModuleParams, WaveType, RampMode};
+    use super::module::{ModuleParams, WaveType};
     
     match (&module.kind, &module.params) {
         (ModuleKind::Freq, _) => NodeKind::Freq,
@@ -494,14 +523,22 @@ fn create_node_kind(module: &Module) -> NodeKind {
             };
             NodeKind::Oscillator(osc)
         }
-        (ModuleKind::GateRamp, ModuleParams::GateRamp { mode, time, .. }) => {
+        (ModuleKind::Rise, ModuleParams::Rise { time, .. }) => {
             let mut ramp = GateRamp::default();
-            match mode {
-                RampMode::Rise => ramp.rise(),
-                RampMode::Fall => ramp.fall(),
-            };
+            ramp.rise();
             ramp.time(*time);
-            NodeKind::GateRamp(ramp)
+            NodeKind::Rise(ramp)
+        }
+        (ModuleKind::Fall, ModuleParams::Fall { time, .. }) => {
+            let mut ramp = GateRamp::default();
+            ramp.fall();
+            ramp.time(*time);
+            NodeKind::Fall(ramp)
+        }
+        (ModuleKind::Ramp, ModuleParams::Ramp { time, .. }) => {
+            let mut ramp = Ramp::default();
+            ramp.time(*time);
+            NodeKind::Ramp(ramp)
         }
         (ModuleKind::Adsr, ModuleParams::Adsr { attack_ratio, sustain, .. }) => {
             let mut adsr = ADSR::default();
@@ -552,6 +589,9 @@ fn create_node_kind(module: &Module) -> NodeKind {
         (ModuleKind::Mul, _) => NodeKind::Mul,
         (ModuleKind::Add, _) => NodeKind::Add,
         (ModuleKind::Gain, ModuleParams::Gain { gain, .. }) => NodeKind::Gain(*gain),
+        (ModuleKind::Gt, _) => NodeKind::Gt,
+        (ModuleKind::Lt, _) => NodeKind::Lt,
+        (ModuleKind::Switch, _) => NodeKind::Switch,
         (ModuleKind::Probe, _) => NodeKind::Probe { value: 0.0 },
         (ModuleKind::Output, _) => NodeKind::Output,
         (ModuleKind::LSplit, _) | (ModuleKind::TSplit, _) | (ModuleKind::RJoin, _) 

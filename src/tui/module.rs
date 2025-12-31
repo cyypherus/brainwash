@@ -65,39 +65,16 @@ impl WaveType {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum RampMode {
-    #[default]
-    Rise,
-    Fall,
-}
 
-impl RampMode {
-    pub fn name(&self) -> &'static str {
-        match self {
-            RampMode::Rise => "rise",
-            RampMode::Fall => "fall",
-        }
-    }
-
-    pub fn next(self) -> Self {
-        match self {
-            RampMode::Rise => RampMode::Fall,
-            RampMode::Fall => RampMode::Rise,
-        }
-    }
-
-    pub fn prev(self) -> Self {
-        self.next()
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModuleKind {
     Freq,
     Gate,
     Osc,
-    GateRamp,
+    Rise,
+    Fall,
+    Ramp,
     Adsr,
     Envelope,
     Lpf,
@@ -109,6 +86,9 @@ pub enum ModuleKind {
     Mul,
     Add,
     Gain,
+    Gt,
+    Lt,
+    Switch,
     Probe,
     Output,
     LSplit,
@@ -125,7 +105,9 @@ impl ModuleKind {
             ModuleKind::Freq => "Freq",
             ModuleKind::Gate => "Gate",
             ModuleKind::Osc => "Osc",
-            ModuleKind::GateRamp => "Ramp",
+            ModuleKind::Rise => "Rise",
+            ModuleKind::Fall => "Fall",
+            ModuleKind::Ramp => "Ramp",
             ModuleKind::Adsr => "ADSR",
             ModuleKind::Envelope => "Env",
             ModuleKind::Lpf => "LPF",
@@ -137,6 +119,9 @@ impl ModuleKind {
             ModuleKind::Mul => "Mul",
             ModuleKind::Add => "Add",
             ModuleKind::Gain => "Gain",
+            ModuleKind::Gt => "Gt",
+            ModuleKind::Lt => "Lt",
+            ModuleKind::Switch => "Switch",
             ModuleKind::Probe => "Probe",
             ModuleKind::Output => "Out",
             ModuleKind::LSplit => "LSplit ◁",
@@ -153,7 +138,9 @@ impl ModuleKind {
             ModuleKind::Freq => "FRQ",
             ModuleKind::Gate => "GAT",
             ModuleKind::Osc => "OSC",
-            ModuleKind::GateRamp => "RMP",
+            ModuleKind::Rise => "RIS",
+            ModuleKind::Fall => "FAL",
+            ModuleKind::Ramp => "RMP",
             ModuleKind::Adsr => "ADS",
             ModuleKind::Envelope => "ENV",
             ModuleKind::Lpf => "LPF",
@@ -165,6 +152,9 @@ impl ModuleKind {
             ModuleKind::Mul => "MUL",
             ModuleKind::Add => "ADD",
             ModuleKind::Gain => "GAN",
+            ModuleKind::Gt => " > ",
+            ModuleKind::Lt => " < ",
+            ModuleKind::Switch => "SWT",
             ModuleKind::Probe => "PRB",
             ModuleKind::Output => "OUT",
             ModuleKind::LSplit => " ◁ ",
@@ -176,11 +166,44 @@ impl ModuleKind {
         }
     }
 
+    pub fn description(&self) -> &'static str {
+        match self {
+            ModuleKind::Freq => "Note frequency from track",
+            ModuleKind::Gate => "Note gate (1=on, 0=off)",
+            ModuleKind::Osc => "Oscillator with waveform selection",
+            ModuleKind::Rise => "Ramps 0->1 while gate high",
+            ModuleKind::Fall => "Ramps 0->1 while gate low",
+            ModuleKind::Ramp => "Smoothly ramps to target value",
+            ModuleKind::Adsr => "Attack/decay/sustain/release",
+            ModuleKind::Envelope => "Custom envelope from points",
+            ModuleKind::Lpf => "Low-pass filter",
+            ModuleKind::Hpf => "High-pass filter",
+            ModuleKind::Delay => "Sample delay line",
+            ModuleKind::Reverb => "Freeverb reverb effect",
+            ModuleKind::Distortion => "Soft-clip distortion",
+            ModuleKind::Flanger => "Flanger/chorus effect",
+            ModuleKind::Mul => "Multiply A * B",
+            ModuleKind::Add => "Add A + B",
+            ModuleKind::Gain => "Scale input by gain",
+            ModuleKind::Gt => "1 if A > B, else 0",
+            ModuleKind::Lt => "1 if A < B, else 0",
+            ModuleKind::Switch => "Output A if Sel<=0.5, else B",
+            ModuleKind::Probe => "Display signal value",
+            ModuleKind::Output => "Final audio output",
+            ModuleKind::LSplit => "In from left, out down+right",
+            ModuleKind::TSplit => "In from top, out down+right",
+            ModuleKind::RJoin => "In from left+top, out right",
+            ModuleKind::DJoin => "In from left+top, out down",
+            ModuleKind::TurnRD => "In from left, out down",
+            ModuleKind::TurnDR => "In from top, out right",
+        }
+    }
+
     pub fn color(&self) -> Color {
         match self {
             ModuleKind::Freq | ModuleKind::Gate => Color::Rgb(100, 200, 100),
             ModuleKind::Osc => Color::Rgb(100, 150, 255),
-            ModuleKind::GateRamp | ModuleKind::Adsr | ModuleKind::Envelope => Color::Rgb(255, 200, 100),
+            ModuleKind::Rise | ModuleKind::Fall | ModuleKind::Ramp | ModuleKind::Adsr | ModuleKind::Envelope => Color::Rgb(255, 200, 100),
             ModuleKind::Lpf
             | ModuleKind::Hpf
             | ModuleKind::Delay
@@ -190,6 +213,9 @@ impl ModuleKind {
             ModuleKind::Mul
             | ModuleKind::Add
             | ModuleKind::Gain
+            | ModuleKind::Gt
+            | ModuleKind::Lt
+            | ModuleKind::Switch
             | ModuleKind::Probe => Color::Rgb(100, 220, 220),
             ModuleKind::Output => Color::Rgb(255, 100, 100),
             ModuleKind::LSplit
@@ -233,7 +259,7 @@ impl ModuleKind {
         match self {
             ModuleKind::Freq | ModuleKind::Gate => ModuleCategory::Track,
             ModuleKind::Osc => ModuleCategory::Generator,
-            ModuleKind::GateRamp | ModuleKind::Adsr | ModuleKind::Envelope => ModuleCategory::Envelope,
+            ModuleKind::Rise | ModuleKind::Fall | ModuleKind::Ramp | ModuleKind::Adsr | ModuleKind::Envelope => ModuleCategory::Envelope,
             ModuleKind::Lpf
             | ModuleKind::Hpf
             | ModuleKind::Delay
@@ -243,6 +269,9 @@ impl ModuleKind {
             ModuleKind::Mul
             | ModuleKind::Add
             | ModuleKind::Gain
+            | ModuleKind::Gt
+            | ModuleKind::Lt
+            | ModuleKind::Switch
             | ModuleKind::Probe => ModuleCategory::Math,
             ModuleKind::Output => ModuleCategory::Output,
             ModuleKind::LSplit
@@ -259,7 +288,9 @@ impl ModuleKind {
             ModuleKind::Freq,
             ModuleKind::Gate,
             ModuleKind::Osc,
-            ModuleKind::GateRamp,
+            ModuleKind::Rise,
+            ModuleKind::Fall,
+            ModuleKind::Ramp,
             ModuleKind::Adsr,
             ModuleKind::Envelope,
             ModuleKind::Lpf,
@@ -271,6 +302,9 @@ impl ModuleKind {
             ModuleKind::Mul,
             ModuleKind::Add,
             ModuleKind::Gain,
+            ModuleKind::Gt,
+            ModuleKind::Lt,
+            ModuleKind::Switch,
             ModuleKind::Probe,
             ModuleKind::Output,
             ModuleKind::LSplit,
@@ -428,10 +462,6 @@ impl Module {
                 WaveType::RSaw => "RSW",
                 WaveType::Noise => "NSE",
             },
-            ModuleParams::GateRamp { mode, .. } => match mode {
-                RampMode::Rise => "RIS",
-                RampMode::Fall => "FAL",
-            },
             _ => self.kind.short_name(),
         }
     }
@@ -481,9 +511,12 @@ impl ModuleKind {
                 ParamDef { name: "Shift", kind: ParamKind::Float { min: -24.0, max: 24.0, step: 1.0 } },
                 ParamDef { name: "Gain", kind: ParamKind::Float { min: 0.0, max: 1.0, step: 0.05 } },
             ],
-            ModuleKind::GateRamp => &[
-                ParamDef { name: "Mode", kind: ParamKind::Enum },
+            ModuleKind::Rise | ModuleKind::Fall => &[
                 ParamDef { name: "Gate", kind: ParamKind::Input },
+                ParamDef { name: "Time", kind: ParamKind::Float { min: 0.001, max: 10.0, step: 0.01 } },
+            ],
+            ModuleKind::Ramp => &[
+                ParamDef { name: "Val", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 0.1 } },
                 ParamDef { name: "Time", kind: ParamKind::Float { min: 0.001, max: 10.0, step: 0.01 } },
             ],
             ModuleKind::Adsr => &[
@@ -532,6 +565,19 @@ impl ModuleKind {
                 ParamDef { name: "In", kind: ParamKind::Float { min: -1.0, max: 1.0, step: 0.01 } },
                 ParamDef { name: "Gain", kind: ParamKind::Float { min: 0.0, max: 2.0, step: 0.05 } },
             ],
+            ModuleKind::Gt => &[
+                ParamDef { name: "A", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 0.1 } },
+                ParamDef { name: "B", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 0.1 } },
+            ],
+            ModuleKind::Lt => &[
+                ParamDef { name: "A", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 0.1 } },
+                ParamDef { name: "B", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 0.1 } },
+            ],
+            ModuleKind::Switch => &[
+                ParamDef { name: "Sel", kind: ParamKind::Input },
+                ParamDef { name: "A", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 0.1 } },
+                ParamDef { name: "B", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 0.1 } },
+            ],
             ModuleKind::Probe => &[
                 ParamDef { name: "In", kind: ParamKind::Float { min: -1.0, max: 1.0, step: 0.01 } },
             ],
@@ -555,7 +601,9 @@ pub struct EnvPoint {
 pub enum ModuleParams {
     None,
     Osc { wave: WaveType, freq: f32, shift: f32, gain: f32, connected: u8 },
-    GateRamp { mode: RampMode, time: f32, connected: u8 },
+    Rise { time: f32, connected: u8 },
+    Fall { time: f32, connected: u8 },
+    Ramp { value: f32, time: f32, connected: u8 },
     Adsr { attack_ratio: f32, sustain: f32, connected: u8 },
     Envelope { points: Vec<EnvPoint>, connected: u8 },
     Filter { freq: f32, q: f32, connected: u8 },
@@ -566,6 +614,9 @@ pub enum ModuleParams {
     Mul { a: f32, b: f32, connected: u8 },
     Add { a: f32, b: f32, connected: u8 },
     Gain { gain: f32, connected: u8 },
+    Gt { a: f32, b: f32, connected: u8 },
+    Lt { a: f32, b: f32, connected: u8 },
+    Switch { a: f32, b: f32, connected: u8 },
     Probe { connected: u8 },
     Output { connected: u8 },
 }
@@ -581,8 +632,16 @@ impl ModuleParams {
                 gain: 1.0, 
                 connected: 0xFF,
             },
-            ModuleKind::GateRamp => ModuleParams::GateRamp { 
-                mode: RampMode::Rise, 
+            ModuleKind::Rise => ModuleParams::Rise { 
+                time: 0.1, 
+                connected: 0xFF,
+            },
+            ModuleKind::Fall => ModuleParams::Fall { 
+                time: 0.1, 
+                connected: 0xFF,
+            },
+            ModuleKind::Ramp => ModuleParams::Ramp { 
+                value: 0.0,
                 time: 0.1, 
                 connected: 0xFF,
             },
@@ -637,6 +696,21 @@ impl ModuleParams {
                 gain: 1.0, 
                 connected: 0xFF,
             },
+            ModuleKind::Gt => ModuleParams::Gt { 
+                a: 0.0, 
+                b: 0.0, 
+                connected: 0xFF,
+            },
+            ModuleKind::Lt => ModuleParams::Lt { 
+                a: 0.0, 
+                b: 0.0, 
+                connected: 0xFF,
+            },
+            ModuleKind::Switch => ModuleParams::Switch { 
+                a: 0.0, 
+                b: 0.0, 
+                connected: 0xFF,
+            },
             ModuleKind::Probe => ModuleParams::Probe { connected: 0xFF },
             ModuleKind::Output => ModuleParams::Output { connected: 0xFF },
             ModuleKind::LSplit | ModuleKind::TSplit | ModuleKind::RJoin 
@@ -648,7 +722,9 @@ impl ModuleParams {
         match self {
             ModuleParams::None => 0xFF,
             ModuleParams::Osc { connected, .. } => *connected,
-            ModuleParams::GateRamp { connected, .. } => *connected,
+            ModuleParams::Rise { connected, .. } => *connected,
+            ModuleParams::Fall { connected, .. } => *connected,
+            ModuleParams::Ramp { connected, .. } => *connected,
             ModuleParams::Adsr { connected, .. } => *connected,
             ModuleParams::Envelope { connected, .. } => *connected,
             ModuleParams::Filter { connected, .. } => *connected,
@@ -659,6 +735,9 @@ impl ModuleParams {
             ModuleParams::Mul { connected, .. } => *connected,
             ModuleParams::Add { connected, .. } => *connected,
             ModuleParams::Gain { connected, .. } => *connected,
+            ModuleParams::Gt { connected, .. } => *connected,
+            ModuleParams::Lt { connected, .. } => *connected,
+            ModuleParams::Switch { connected, .. } => *connected,
             ModuleParams::Probe { connected, .. } => *connected,
             ModuleParams::Output { connected, .. } => *connected,
         }
@@ -668,7 +747,9 @@ impl ModuleParams {
         match self {
             ModuleParams::None => None,
             ModuleParams::Osc { connected, .. } => Some(connected),
-            ModuleParams::GateRamp { connected, .. } => Some(connected),
+            ModuleParams::Rise { connected, .. } => Some(connected),
+            ModuleParams::Fall { connected, .. } => Some(connected),
+            ModuleParams::Ramp { connected, .. } => Some(connected),
             ModuleParams::Adsr { connected, .. } => Some(connected),
             ModuleParams::Envelope { connected, .. } => Some(connected),
             ModuleParams::Filter { connected, .. } => Some(connected),
@@ -679,6 +760,9 @@ impl ModuleParams {
             ModuleParams::Mul { connected, .. } => Some(connected),
             ModuleParams::Add { connected, .. } => Some(connected),
             ModuleParams::Gain { connected, .. } => Some(connected),
+            ModuleParams::Gt { connected, .. } => Some(connected),
+            ModuleParams::Lt { connected, .. } => Some(connected),
+            ModuleParams::Switch { connected, .. } => Some(connected),
             ModuleParams::Probe { connected, .. } => Some(connected),
             ModuleParams::Output { connected, .. } => Some(connected),
         }
@@ -712,8 +796,13 @@ impl ModuleParams {
                 3 => Some(*gain),
                 _ => None,
             },
-            ModuleParams::GateRamp { time, .. } => match idx {
-                2 => Some(*time),
+            ModuleParams::Rise { time, .. } | ModuleParams::Fall { time, .. } => match idx {
+                1 => Some(*time),
+                _ => None,
+            },
+            ModuleParams::Ramp { value, time, .. } => match idx {
+                0 => Some(*value),
+                1 => Some(*time),
                 _ => None,
             },
             ModuleParams::Adsr { attack_ratio, sustain, .. } => match idx {
@@ -760,6 +849,21 @@ impl ModuleParams {
                 1 => Some(*gain),
                 _ => None,
             },
+            ModuleParams::Gt { a, b, .. } => match idx {
+                0 => Some(*a),
+                1 => Some(*b),
+                _ => None,
+            },
+            ModuleParams::Lt { a, b, .. } => match idx {
+                0 => Some(*a),
+                1 => Some(*b),
+                _ => None,
+            },
+            ModuleParams::Switch { a, b, .. } => match idx {
+                1 => Some(*a),
+                2 => Some(*b),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -772,8 +876,13 @@ impl ModuleParams {
                 3 => *gain = val,
                 _ => {}
             },
-            ModuleParams::GateRamp { time, .. } => match idx {
-                2 => *time = val,
+            ModuleParams::Rise { time, .. } | ModuleParams::Fall { time, .. } => match idx {
+                1 => *time = val,
+                _ => {}
+            },
+            ModuleParams::Ramp { value, time, .. } => match idx {
+                0 => *value = val,
+                1 => *time = val,
                 _ => {}
             },
             ModuleParams::Adsr { attack_ratio, sustain, .. } => match idx {
@@ -820,6 +929,21 @@ impl ModuleParams {
                 1 => *gain = val,
                 _ => {}
             },
+            ModuleParams::Gt { a, b, .. } => match idx {
+                0 => *a = val,
+                1 => *b = val,
+                _ => {}
+            },
+            ModuleParams::Lt { a, b, .. } => match idx {
+                0 => *a = val,
+                1 => *b = val,
+                _ => {}
+            },
+            ModuleParams::Switch { a, b, .. } => match idx {
+                1 => *a = val,
+                2 => *b = val,
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -841,7 +965,6 @@ impl ModuleParams {
     pub fn cycle_enum_next(&mut self) {
         match self {
             ModuleParams::Osc { wave, .. } => *wave = wave.next(),
-            ModuleParams::GateRamp { mode, .. } => *mode = mode.next(),
             _ => {}
         }
     }
@@ -849,19 +972,17 @@ impl ModuleParams {
     pub fn cycle_enum_prev(&mut self) {
         match self {
             ModuleParams::Osc { wave, .. } => *wave = wave.prev(),
-            ModuleParams::GateRamp { mode, .. } => *mode = mode.prev(),
             _ => {}
         }
     }
 
     pub fn has_enum(&self) -> bool {
-        matches!(self, ModuleParams::Osc { .. } | ModuleParams::GateRamp { .. })
+        matches!(self, ModuleParams::Osc { .. })
     }
 
     pub fn enum_display(&self) -> Option<&'static str> {
         match self {
             ModuleParams::Osc { wave, .. } => Some(wave.name()),
-            ModuleParams::GateRamp { mode, .. } => Some(mode.name()),
             _ => None,
         }
     }

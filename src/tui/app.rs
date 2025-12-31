@@ -2,8 +2,9 @@ use super::grid::GridPos;
 use super::module::{ModuleCategory, ModuleId, ModuleKind, ParamKind};
 use super::patch::Patch;
 use super::engine::{CompiledPatch, compile_patch, TrackState};
-use super::render::{AdsrWidget, EditWidget, EnvelopeWidget, GridWidget, HelpWidget, PaletteWidget, StatusWidget};
+use super::render::{AdsrWidget, EditWidget, EnvelopeWidget, GridWidget, HelpWidget, PaletteWidget, ProbeWidget, StatusWidget};
 use super::persist;
+use super::bindings::{self, Action, lookup};
 use crate::live::AudioPlayer;
 use crate::scale::cmin;
 use crate::track::Track;
@@ -37,6 +38,7 @@ enum Mode {
     Edit { module_id: ModuleId, param_idx: usize },
     AdsrEdit { module_id: ModuleId, param_idx: usize },
     EnvEdit { module_id: ModuleId, point_idx: usize, editing: bool },
+    ProbeEdit { module_id: ModuleId, param_idx: usize },
     TrackEdit,
     SavePrompt,
 }
@@ -59,6 +61,10 @@ struct App<'a> {
     track_textarea: TextArea<'a>,
     file_path: Option<PathBuf>,
     file_textarea: TextArea<'a>,
+    probe_history: Vec<f32>,
+    probe_min: f32,
+    probe_max: f32,
+    probe_len: usize,
 }
 
 impl<'a> App<'a> {
@@ -98,6 +104,10 @@ impl<'a> App<'a> {
             track_textarea: textarea,
             file_path: None,
             file_textarea,
+            probe_history: Vec::with_capacity(512),
+            probe_min: -1.0,
+            probe_max: 1.0,
+            probe_len: 128,
         }
     }
 
@@ -142,6 +152,7 @@ impl<'a> App<'a> {
             Mode::Edit { module_id, param_idx } => self.handle_edit_key(code, module_id, param_idx),
             Mode::AdsrEdit { module_id, param_idx } => self.handle_adsr_edit_key(code, module_id, param_idx),
             Mode::EnvEdit { module_id, point_idx, editing } => self.handle_env_edit_key(code, module_id, point_idx, editing),
+            Mode::ProbeEdit { module_id, param_idx } => self.handle_probe_edit_key(code, module_id, param_idx),
             Mode::TrackEdit => self.handle_track_edit_key(code, modifiers),
             Mode::SavePrompt => self.handle_save_prompt_key(code, modifiers),
             Mode::QuitConfirm => self.handle_quit_confirm_key(code),
@@ -149,11 +160,10 @@ impl<'a> App<'a> {
     }
 
     fn handle_quit_confirm_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                self.should_quit = true;
-            }
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+        let Some(action) = lookup(bindings::quit_confirm_bindings(), code) else { return };
+        match action {
+            Action::Confirm => self.should_quit = true,
+            Action::Cancel => {
                 self.mode = Mode::Normal;
                 self.message = Some("Quit cancelled".into());
             }
@@ -162,8 +172,9 @@ impl<'a> App<'a> {
     }
 
     fn handle_normal_key(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Char('q') | KeyCode::Esc => {
+        let Some(action) = lookup(bindings::normal_bindings(), code) else { return };
+        match action {
+            Action::Quit => {
                 if self.dirty {
                     self.mode = Mode::QuitConfirm;
                     self.message = Some("Unsaved changes. Quit? (y/n)".into());
@@ -171,32 +182,31 @@ impl<'a> App<'a> {
                     self.should_quit = true;
                 }
             }
-            KeyCode::Char('h') | KeyCode::Left => self.move_cursor(-1, 0),
-            KeyCode::Char('j') | KeyCode::Down => self.move_cursor(0, 1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_cursor(0, -1),
-            KeyCode::Char('l') | KeyCode::Right => self.move_cursor(1, 0),
-            KeyCode::Char('H') => self.move_cursor(-4, 0),
-            KeyCode::Char('J') => self.move_cursor(0, 4),
-            KeyCode::Char('K') => self.move_cursor(0, -4),
-            KeyCode::Char('L') => self.move_cursor(4, 0),
-            KeyCode::Char('[') => self.cursor = GridPos::new(0, 0),
-            KeyCode::Char(']') => {
+            Action::Left => self.move_cursor(-1, 0),
+            Action::Down => self.move_cursor(0, 1),
+            Action::Up => self.move_cursor(0, -1),
+            Action::Right => self.move_cursor(1, 0),
+            Action::LeftFast => self.move_cursor(-4, 0),
+            Action::DownFast => self.move_cursor(0, 4),
+            Action::UpFast => self.move_cursor(0, -4),
+            Action::RightFast => self.move_cursor(4, 0),
+            Action::Home => self.cursor = GridPos::new(0, 0),
+            Action::End => {
                 if let Some(out_id) = self.patch.output_id() {
                     if let Some(pos) = self.patch.module_position(out_id) {
                         self.cursor = pos;
                     }
                 }
             }
-            KeyCode::Char(' ') => {
+            Action::Place => {
                 self.mode = Mode::Palette;
             }
-            KeyCode::Char('m') | KeyCode::Enter => {
+            Action::Move => {
                 if let Some(id) = self.patch.module_id_at(self.cursor) {
                     self.mode = Mode::Move { module_id: id, origin: self.cursor };
-                    self.message = Some("Move mode - hjkl to move, Enter/m to place, Esc to cancel".into());
                 }
             }
-            KeyCode::Char('.') | KeyCode::Backspace => {
+            Action::Delete => {
                 if let Some(id) = self.patch.module_id_at(self.cursor) {
                     if let Some(m) = self.patch.module(id) {
                         if m.kind == ModuleKind::Output {
@@ -208,7 +218,7 @@ impl<'a> App<'a> {
                     }
                 }
             }
-            KeyCode::Char('o') => {
+            Action::Rotate => {
                 if let Some(id) = self.patch.module_id_at(self.cursor) {
                     if let Some(m) = self.patch.module(id) {
                         if m.kind.is_routing() {
@@ -222,13 +232,16 @@ impl<'a> App<'a> {
                     }
                 }
             }
-            KeyCode::Char('u') => {
+            Action::Edit => {
                 if let Some(id) = self.patch.module_id_at(self.cursor) {
                     if let Some(m) = self.patch.module(id) {
                         if m.kind == ModuleKind::Adsr {
                             self.mode = Mode::AdsrEdit { module_id: id, param_idx: 0 };
                         } else if m.kind == ModuleKind::Envelope {
                             self.mode = Mode::EnvEdit { module_id: id, point_idx: 0, editing: false };
+                        } else if m.kind == ModuleKind::Probe {
+                            self.probe_history.clear();
+                            self.mode = Mode::ProbeEdit { module_id: id, param_idx: 0 };
                         } else {
                             let defs = m.kind.param_defs();
                             if !defs.is_empty() {
@@ -240,30 +253,25 @@ impl<'a> App<'a> {
                     }
                 }
             }
-            KeyCode::Char('i') => {
+            Action::Inspect => {
                 if let Some(id) = self.patch.module_id_at(self.cursor) {
                     if let Some(m) = self.patch.module(id) {
                         self.open_palette_for_module(m.kind);
                     }
                 }
             }
-            KeyCode::Char('7') => self.open_palette_category(0),
-            KeyCode::Char('8') => self.open_palette_category(1),
-            KeyCode::Char('9') => self.open_palette_category(2),
-            KeyCode::Char('0') => self.open_palette_category(3),
-            KeyCode::Char('-') => self.open_palette_category(4),
-            KeyCode::Char('=') => self.open_palette_category(5),
-            KeyCode::Char('p') => {
+            Action::Palette(cat) => self.open_palette_category(cat),
+            Action::TogglePlay => {
                 self.playing = !self.playing;
                 self.message = Some(if self.playing { "Playing".into() } else { "Paused".into() });
             }
-            KeyCode::Char('t') => {
+            Action::TrackEdit => {
                 self.mode = Mode::TrackEdit;
             }
-            KeyCode::Char('v') => {
+            Action::Select => {
                 self.mode = Mode::Select { anchor: self.cursor };
             }
-            KeyCode::Char('s') => {
+            Action::Save => {
                 if let Some(ref path) = self.file_path {
                     self.save_to_file(path.clone());
                 } else {
@@ -272,7 +280,7 @@ impl<'a> App<'a> {
                     self.mode = Mode::SavePrompt;
                 }
             }
-            KeyCode::Char('S') => {
+            Action::SaveAs => {
                 let default = self.file_path.as_ref()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| "patch.bw".into());
@@ -337,7 +345,7 @@ impl<'a> App<'a> {
                         self.palette_filter_selection -= 1;
                     }
                 }
-                KeyCode::Enter => {
+                KeyCode::Enter | KeyCode::Char('/') => {
                     if let Some(kind) = filtered.get(self.palette_filter_selection) {
                         if *kind == ModuleKind::Output && self.patch.output_id().is_some() {
                             self.message = Some("Output exists".into());
@@ -348,6 +356,12 @@ impl<'a> App<'a> {
                             self.message = Some("Can't place here".into());
                         }
                     }
+                    self.palette_filter.clear();
+                    self.palette_filter_selection = 0;
+                    self.palette_searching = false;
+                    self.mode = Mode::Normal;
+                }
+                KeyCode::Char(' ') => {
                     self.palette_filter.clear();
                     self.palette_filter_selection = 0;
                     self.palette_searching = false;
@@ -400,7 +414,10 @@ impl<'a> App<'a> {
                     self.palette_category - 1
                 };
             }
-            KeyCode::Enter | KeyCode::Char(' ') => {
+            KeyCode::Char(' ') => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter | KeyCode::Char('i') => {
                 if let Some(kind) = modules.get(palette_module) {
                     if *kind == ModuleKind::Output && self.patch.output_id().is_some() {
                         self.message = Some("Output exists".into());
@@ -418,13 +435,14 @@ impl<'a> App<'a> {
     }
 
     fn handle_move_key(&mut self, code: KeyCode, module_id: ModuleId, origin: GridPos) {
-        match code {
-            KeyCode::Esc => {
+        let Some(action) = lookup(bindings::move_bindings(), code) else { return };
+        match action {
+            Action::Cancel => {
                 self.cursor = origin;
                 self.mode = Mode::Normal;
                 self.message = Some("Move cancelled".into());
             }
-            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('m') => {
+            Action::Confirm => {
                 if self.patch.move_module(module_id, self.cursor) {
                     self.mode = Mode::Normal;
                     self.message = Some("Moved".into());
@@ -433,39 +451,40 @@ impl<'a> App<'a> {
                     self.message = Some("Can't place here".into());
                 }
             }
-            KeyCode::Char('h') | KeyCode::Left => self.move_cursor(-1, 0),
-            KeyCode::Char('j') | KeyCode::Down => self.move_cursor(0, 1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_cursor(0, -1),
-            KeyCode::Char('l') | KeyCode::Right => self.move_cursor(1, 0),
-            KeyCode::Char('H') => self.move_cursor(-4, 0),
-            KeyCode::Char('J') => self.move_cursor(0, 4),
-            KeyCode::Char('K') => self.move_cursor(0, -4),
-            KeyCode::Char('L') => self.move_cursor(4, 0),
+            Action::Left => self.move_cursor(-1, 0),
+            Action::Down => self.move_cursor(0, 1),
+            Action::Up => self.move_cursor(0, -1),
+            Action::Right => self.move_cursor(1, 0),
+            Action::LeftFast => self.move_cursor(-4, 0),
+            Action::DownFast => self.move_cursor(0, 4),
+            Action::UpFast => self.move_cursor(0, -4),
+            Action::RightFast => self.move_cursor(4, 0),
             _ => {}
         }
     }
 
     fn handle_select_key(&mut self, code: KeyCode, anchor: GridPos) {
-        match code {
-            KeyCode::Esc => {
+        let Some(action) = lookup(bindings::select_bindings(), code) else { return };
+        match action {
+            Action::Cancel => {
                 self.mode = Mode::Normal;
             }
-            KeyCode::Char('h') | KeyCode::Left => self.move_cursor(-1, 0),
-            KeyCode::Char('j') | KeyCode::Down => self.move_cursor(0, 1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_cursor(0, -1),
-            KeyCode::Char('l') | KeyCode::Right => self.move_cursor(1, 0),
-            KeyCode::Char('H') => self.move_cursor(-4, 0),
-            KeyCode::Char('J') => self.move_cursor(0, 4),
-            KeyCode::Char('K') => self.move_cursor(0, -4),
-            KeyCode::Char('L') => self.move_cursor(4, 0),
-            KeyCode::Char('m') | KeyCode::Enter => {
+            Action::Left => self.move_cursor(-1, 0),
+            Action::Down => self.move_cursor(0, 1),
+            Action::Up => self.move_cursor(0, -1),
+            Action::Right => self.move_cursor(1, 0),
+            Action::LeftFast => self.move_cursor(-4, 0),
+            Action::DownFast => self.move_cursor(0, 4),
+            Action::UpFast => self.move_cursor(0, -4),
+            Action::RightFast => self.move_cursor(4, 0),
+            Action::Move => {
                 self.mode = Mode::SelectMove {
                     anchor,
                     extent: self.cursor,
                     move_origin: self.cursor,
                 };
             }
-            KeyCode::Char('x') => {
+            Action::Delete => {
                 let ids = self.modules_in_rect(anchor, self.cursor);
                 let count = ids.len();
                 for id in ids {
@@ -480,34 +499,34 @@ impl<'a> App<'a> {
     }
 
     fn handle_select_move_key(&mut self, code: KeyCode, anchor: GridPos, extent: GridPos, move_origin: GridPos) {
-        match code {
-            KeyCode::Esc => {
+        let Some(action) = lookup(bindings::move_bindings(), code) else { return };
+        match action {
+            Action::Cancel => {
                 self.cursor = move_origin;
                 self.mode = Mode::Normal;
                 self.message = Some("Move cancelled".into());
             }
-            KeyCode::Char('h') | KeyCode::Left => self.move_cursor(-1, 0),
-            KeyCode::Char('j') | KeyCode::Down => self.move_cursor(0, 1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_cursor(0, -1),
-            KeyCode::Char('l') | KeyCode::Right => self.move_cursor(1, 0),
-            KeyCode::Char('H') => self.move_cursor(-4, 0),
-            KeyCode::Char('J') => self.move_cursor(0, 4),
-            KeyCode::Char('K') => self.move_cursor(0, -4),
-            KeyCode::Char('L') => self.move_cursor(4, 0),
-            KeyCode::Char('m') | KeyCode::Enter | KeyCode::Char(' ') => {
+            Action::Left => self.move_cursor(-1, 0),
+            Action::Down => self.move_cursor(0, 1),
+            Action::Up => self.move_cursor(0, -1),
+            Action::Right => self.move_cursor(1, 0),
+            Action::LeftFast => self.move_cursor(-4, 0),
+            Action::DownFast => self.move_cursor(0, 4),
+            Action::UpFast => self.move_cursor(0, -4),
+            Action::RightFast => self.move_cursor(4, 0),
+            Action::Confirm => {
                 let dx = self.cursor.x as i16 - move_origin.x as i16;
                 let dy = self.cursor.y as i16 - move_origin.y as i16;
                 let ids = self.modules_in_rect(anchor, extent);
-                let mut moved = 0;
-                for id in ids {
-                    if let Some(pos) = self.patch.module_position(id) {
+                let moves: Vec<_> = ids.iter()
+                    .filter_map(|id| {
+                        let pos = self.patch.module_position(*id)?;
                         let new_x = (pos.x as i16 + dx).max(0) as u16;
                         let new_y = (pos.y as i16 + dy).max(0) as u16;
-                        if self.patch.move_module(id, GridPos::new(new_x, new_y)) {
-                            moved += 1;
-                        }
-                    }
-                }
+                        Some((*id, GridPos::new(new_x, new_y)))
+                    })
+                    .collect();
+                let moved = self.patch.move_modules(&moves);
                 self.mode = Mode::Normal;
                 self.message = Some(format!("Moved {} modules", moved));
                 self.commit_patch();
@@ -551,19 +570,20 @@ impl<'a> App<'a> {
         let defs = module.kind.param_defs();
         let total_params = defs.len();
 
-        match code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter | KeyCode::Char('u') => {
+        let Some(action) = lookup(bindings::edit_bindings(), code) else { return };
+        match action {
+            Action::Cancel => {
                 self.mode = Mode::Normal;
             }
-            KeyCode::Tab | KeyCode::Char('j') | KeyCode::Down => {
+            Action::Down => {
                 let new_idx = (param_idx + 1) % total_params;
                 self.mode = Mode::Edit { module_id, param_idx: new_idx };
             }
-            KeyCode::BackTab | KeyCode::Char('k') | KeyCode::Up => {
+            Action::Up => {
                 let new_idx = if param_idx == 0 { total_params - 1 } else { param_idx - 1 };
                 self.mode = Mode::Edit { module_id, param_idx: new_idx };
             }
-            KeyCode::Char('h') | KeyCode::Left => {
+            Action::ValueDown => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
                     if let Some(m) = self.patch.module_mut(module_id) {
@@ -582,7 +602,7 @@ impl<'a> App<'a> {
                     self.commit_patch();
                 }
             }
-            KeyCode::Char('l') | KeyCode::Right => {
+            Action::ValueUp => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
                     if let Some(m) = self.patch.module_mut(module_id) {
@@ -601,7 +621,7 @@ impl<'a> App<'a> {
                     self.commit_patch();
                 }
             }
-            KeyCode::Char('H') => {
+            Action::ValueDownFast => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
                     if let Some(m) = self.patch.module_mut(module_id) {
@@ -614,7 +634,7 @@ impl<'a> App<'a> {
                     self.commit_patch();
                 }
             }
-            KeyCode::Char('L') => {
+            Action::ValueUpFast => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
                     if let Some(m) = self.patch.module_mut(module_id) {
@@ -627,7 +647,7 @@ impl<'a> App<'a> {
                     self.commit_patch();
                 }
             }
-            KeyCode::Char(';') => {
+            Action::TogglePort => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
                     if !matches!(def.kind, ParamKind::Input) {
@@ -954,7 +974,69 @@ impl<'a> App<'a> {
             .unwrap_or(point_idx)
     }
 
-    fn ui(&self, f: &mut Frame) {
+    fn handle_probe_edit_key(&mut self, code: KeyCode, module_id: ModuleId, param_idx: usize) {
+        let Some(_) = self.patch.module(module_id) else {
+            self.mode = Mode::Normal;
+            return;
+        };
+
+        match code {
+            KeyCode::Esc | KeyCode::Char('u') => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                let new_idx = (param_idx + 1) % 3;
+                self.mode = Mode::ProbeEdit { module_id, param_idx: new_idx };
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let new_idx = if param_idx == 0 { 2 } else { param_idx - 1 };
+                self.mode = Mode::ProbeEdit { module_id, param_idx: new_idx };
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                match param_idx {
+                    0 => self.probe_min += 0.1,
+                    1 => self.probe_max += 0.1,
+                    2 => self.probe_len = (self.probe_len + 16).min(512),
+                    _ => {}
+                }
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                match param_idx {
+                    0 => self.probe_min -= 0.1,
+                    1 => self.probe_max -= 0.1,
+                    2 => self.probe_len = self.probe_len.saturating_sub(16).max(16),
+                    _ => {}
+                }
+            }
+            KeyCode::Char('L') => {
+                match param_idx {
+                    0 => self.probe_min += 1.0,
+                    1 => self.probe_max += 1.0,
+                    2 => self.probe_len = (self.probe_len + 64).min(512),
+                    _ => {}
+                }
+            }
+            KeyCode::Char('H') => {
+                match param_idx {
+                    0 => self.probe_min -= 1.0,
+                    1 => self.probe_max -= 1.0,
+                    2 => self.probe_len = self.probe_len.saturating_sub(64).max(16),
+                    _ => {}
+                }
+            }
+            KeyCode::Char('r') => {
+                self.probe_min = -1.0;
+                self.probe_max = 1.0;
+                self.probe_len = 128;
+            }
+            KeyCode::Char('c') => {
+                self.probe_history.clear();
+            }
+            _ => {}
+        }
+    }
+
+    fn ui(&mut self, f: &mut Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(0), Constraint::Length(1)])
@@ -1011,6 +1093,7 @@ impl<'a> App<'a> {
             Mode::Edit { .. } => "EDIT",
             Mode::AdsrEdit { .. } => "ADSR",
             Mode::EnvEdit { .. } => "ENV",
+            Mode::ProbeEdit { .. } => "PROBE",
             Mode::TrackEdit => "TRACK",
             Mode::SavePrompt => "SAVE",
             Mode::QuitConfirm => "QUIT?",
@@ -1022,8 +1105,8 @@ impl<'a> App<'a> {
         f.render_widget(status, status_area);
 
         if self.mode == Mode::Palette {
-            let palette_width = 18;
-            let palette_height = 16;
+            let palette_width = 32;
+            let palette_height = 22;
             let palette_x = (f.area().width.saturating_sub(palette_width)) / 2;
             let palette_y = (f.area().height.saturating_sub(palette_height)) / 2;
             let palette_area = Rect::new(palette_x, palette_y, palette_width, palette_height);
@@ -1051,8 +1134,8 @@ impl<'a> App<'a> {
 
         if let Mode::Edit { module_id, param_idx } = self.mode {
             if let Some(module) = self.patch.module(module_id) {
-                let edit_width = 24;
-                let edit_height = (module.kind.param_defs().len() + 4) as u16;
+                let edit_width = 36;
+                let edit_height = (module.kind.param_defs().len() + 6) as u16;
                 let edit_x = (f.area().width.saturating_sub(edit_width)) / 2;
                 let edit_y = (f.area().height.saturating_sub(edit_height)) / 2;
                 let edit_area = Rect::new(edit_x, edit_y, edit_width, edit_height);
@@ -1157,6 +1240,41 @@ impl<'a> App<'a> {
                 );
                 let env_widget = EnvelopeWidget::new(module, point_idx, editing);
                 f.render_widget(env_widget, inner);
+            }
+        }
+
+        if let Mode::ProbeEdit { module_id, param_idx } = self.mode {
+            if let Some(module) = self.patch.module(module_id) {
+                let probe_values: Vec<f32> = self.audio_patch.lock().unwrap().probe_values().to_vec();
+                let current = probe_values.first().copied().unwrap_or(0.0);
+                
+                self.probe_history.push(current);
+                while self.probe_history.len() > 512 {
+                    self.probe_history.remove(0);
+                }
+
+                let probe_width = f.area().width.saturating_sub(4);
+                let probe_height = f.area().height.saturating_sub(6);
+                let probe_x = 2;
+                let probe_y = 2;
+                let probe_area = Rect::new(probe_x, probe_y, probe_width, probe_height);
+
+                f.render_widget(Clear, probe_area);
+
+                let probe_block = Block::default()
+                    .title(" Probe ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(module.kind.color()));
+                f.render_widget(probe_block, probe_area);
+
+                let inner = Rect::new(
+                    probe_area.x + 1,
+                    probe_area.y + 1,
+                    probe_area.width.saturating_sub(2),
+                    probe_area.height.saturating_sub(2),
+                );
+                let probe_widget = ProbeWidget::new(&self.probe_history, self.probe_min, self.probe_max, self.probe_len, current, param_idx);
+                f.render_widget(probe_widget, inner);
             }
         }
 

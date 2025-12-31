@@ -33,6 +33,7 @@ pub enum Cell {
     Module { id: ModuleId, local_x: u8, local_y: u8 },
     ChannelV { color: Color },
     ChannelH { color: Color },
+    ChannelCross { color_v: Color, color_h: Color },
     ChannelCorner { color: Color, down_right: bool },
 }
 
@@ -44,7 +45,7 @@ impl Cell {
     pub fn is_channel(&self) -> bool {
         matches!(
             self,
-            Cell::ChannelV { .. } | Cell::ChannelH { .. } | Cell::ChannelCorner { .. }
+            Cell::ChannelV { .. } | Cell::ChannelH { .. } | Cell::ChannelCross { .. } | Cell::ChannelCorner { .. }
         )
     }
 }

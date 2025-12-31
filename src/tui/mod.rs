@@ -5,6 +5,7 @@ mod render;
 mod app;
 mod engine;
 mod persist;
+pub mod bindings;
 
 pub use app::run;
 pub use grid::{Grid, GridPos, Cell, Direction};
