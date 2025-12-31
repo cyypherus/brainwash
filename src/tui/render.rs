@@ -1,6 +1,7 @@
 use super::grid::{Cell, GridPos};
 use super::module::{Module, ModuleCategory, ModuleId, ModuleKind, ParamKind};
 use super::patch::Patch;
+use crate::envelopes::{Envelope, EnvelopePoint, PointType};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -27,6 +28,8 @@ pub struct GridWidget<'a> {
     patch: &'a Patch,
     cursor: GridPos,
     moving: Option<ModuleId>,
+    probe_values: &'a [f32],
+    selection: Option<(GridPos, GridPos)>,
 }
 
 impl<'a> GridWidget<'a> {
@@ -35,6 +38,8 @@ impl<'a> GridWidget<'a> {
             patch,
             cursor: GridPos::new(0, 0),
             moving: None,
+            probe_values: &[],
+            selection: None,
         }
     }
 
@@ -48,8 +53,23 @@ impl<'a> GridWidget<'a> {
         self
     }
 
-    fn screen_pos(&self, grid_pos: GridPos, area: Rect) -> (u16, u16) {
-        (area.x + grid_pos.x * CELL_WIDTH, area.y + grid_pos.y * CELL_HEIGHT)
+    pub fn selection(mut self, sel: Option<(GridPos, GridPos)>) -> Self {
+        self.selection = sel;
+        self
+    }
+
+    pub fn probe_values(mut self, values: &'a [f32]) -> Self {
+        self.probe_values = values;
+        self
+    }
+
+    fn screen_pos(&self, grid_pos: GridPos, viewport_origin: GridPos, area: Rect) -> (u16, u16) {
+        let rel_x = grid_pos.x as i32 - viewport_origin.x as i32;
+        let rel_y = grid_pos.y as i32 - viewport_origin.y as i32;
+        (
+            (area.x as i32 + rel_x * CELL_WIDTH as i32) as u16,
+            (area.y as i32 + rel_y * CELL_HEIGHT as i32) as u16,
+        )
     }
 
     fn render_empty(&self, buf: &mut Buffer, sx: u16, sy: u16, is_cursor: bool) {
@@ -82,7 +102,7 @@ impl<'a> GridWidget<'a> {
         }
     }
 
-    fn render_module(&self, buf: &mut Buffer, sx: u16, sy: u16, module: &Module, local_x: u8, local_y: u8, is_cursor: bool, is_moving: bool) {
+    fn render_module(&self, buf: &mut Buffer, sx: u16, sy: u16, module: &Module, local_x: u8, local_y: u8, is_cursor: bool, is_moving: bool, probe_value: Option<f32>) {
         let kind = module.kind;
         let color = kind.color();
         let width = module.width();
@@ -178,10 +198,18 @@ impl<'a> GridWidget<'a> {
         set_str(buf, sx, sy + 2, &bot_str, border_style);
 
         if is_top && is_left {
-            let name = kind.short_name();
-            let name_x = sx + 1;
-            for (i, ch) in name.chars().take(3).enumerate() {
-                set_cell(buf, name_x + i as u16, sy + 1, ch, text_style);
+            if let Some(val) = probe_value {
+                let val_str = format!("{:.1}", val);
+                let name_x = sx + 1;
+                for (i, ch) in val_str.chars().take(3).enumerate() {
+                    set_cell(buf, name_x + i as u16, sy + 1, ch, text_style);
+                }
+            } else {
+                let name = module.display_name();
+                let name_x = sx + 1;
+                for (i, ch) in name.chars().take(3).enumerate() {
+                    set_cell(buf, name_x + i as u16, sy + 1, ch, text_style);
+                }
             }
         }
 
@@ -237,15 +265,37 @@ impl<'a> GridWidget<'a> {
         }
     }
 
-    fn render_cell(&self, buf: &mut Buffer, area: Rect, grid_pos: GridPos) {
-        let (sx, sy) = self.screen_pos(grid_pos, area);
+    fn is_in_selection(&self, pos: GridPos) -> bool {
+        if let Some((a, b)) = self.selection {
+            let min_x = a.x.min(b.x);
+            let max_x = a.x.max(b.x);
+            let min_y = a.y.min(b.y);
+            let max_y = a.y.max(b.y);
+            pos.x >= min_x && pos.x <= max_x && pos.y >= min_y && pos.y <= max_y
+        } else {
+            false
+        }
+    }
+
+    fn render_cell(&self, buf: &mut Buffer, area: Rect, grid_pos: GridPos, viewport_origin: GridPos) {
+        let (sx, sy) = self.screen_pos(grid_pos, viewport_origin, area);
         
-        if sx + CELL_WIDTH > area.x + area.width || sy + CELL_HEIGHT > area.y + area.height {
+        if sx < area.x || sy < area.y || sx + CELL_WIDTH > area.x + area.width || sy + CELL_HEIGHT > area.y + area.height {
             return;
         }
 
         let is_cursor = grid_pos == self.cursor;
+        let is_selected = self.is_in_selection(grid_pos);
         let cell = self.patch.grid().get(grid_pos);
+        
+        if is_selected && !is_cursor {
+            let sel_style = Style::default().bg(Color::Rgb(60, 60, 80));
+            for dy in 0..CELL_HEIGHT {
+                for dx in 0..CELL_WIDTH {
+                    set_cell(buf, sx + dx, sy + dy, ' ', sel_style);
+                }
+            }
+        }
 
         match cell {
             Cell::Empty => {
@@ -254,7 +304,15 @@ impl<'a> GridWidget<'a> {
             Cell::Module { id, local_x, local_y } => {
                 if let Some(module) = self.patch.module(id) {
                     let is_moving = self.moving == Some(id);
-                    self.render_module(buf, sx, sy, module, local_x, local_y, is_cursor, is_moving);
+                    let probe_value = if module.kind == ModuleKind::Probe {
+                        let probe_idx = self.patch.all_modules()
+                            .filter(|m| m.kind == ModuleKind::Probe)
+                            .position(|m| m.id == id);
+                        probe_idx.and_then(|i| self.probe_values.get(i).copied())
+                    } else {
+                        None
+                    };
+                    self.render_module(buf, sx, sy, module, local_x, local_y, is_cursor, is_moving, probe_value);
                 }
             }
             Cell::ChannelV { color } => {
@@ -305,24 +363,137 @@ impl<'a> GridWidget<'a> {
 impl Widget for GridWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let grid = self.patch.grid();
-        for y in 0..grid.height() {
-            for x in 0..grid.width() {
-                self.render_cell(buf, area, GridPos::new(x, y));
+        
+        let gutter_left: u16 = 2;
+        let gutter_top: u16 = 1;
+        
+        let grid_area = Rect::new(
+            area.x + gutter_left,
+            area.y + gutter_top,
+            area.width.saturating_sub(gutter_left),
+            area.height.saturating_sub(gutter_top),
+        );
+        
+        let visible_cols = grid_area.width / CELL_WIDTH;
+        let visible_rows = grid_area.height / CELL_HEIGHT;
+        
+        let half_cols = visible_cols / 2;
+        let half_rows = visible_rows / 2;
+        
+        let origin_x = if self.cursor.x < half_cols {
+            0
+        } else if self.cursor.x + half_cols >= grid.width() {
+            grid.width().saturating_sub(visible_cols)
+        } else {
+            self.cursor.x - half_cols
+        };
+        
+        let origin_y = if self.cursor.y < half_rows {
+            0
+        } else if self.cursor.y + half_rows >= grid.height() {
+            grid.height().saturating_sub(visible_rows)
+        } else {
+            self.cursor.y - half_rows
+        };
+        
+        let viewport_origin = GridPos::new(origin_x, origin_y);
+        
+        for vy in 0..visible_rows {
+            for vx in 0..visible_cols {
+                let gx = origin_x + vx;
+                let gy = origin_y + vy;
+                if gx < grid.width() && gy < grid.height() {
+                    self.render_cell(buf, grid_area, GridPos::new(gx, gy), viewport_origin);
+                }
+            }
+        }
+        
+        let num_style = Style::default().fg(Color::Rgb(60, 60, 70));
+        
+        for vx in 0..visible_cols {
+            let gx = origin_x + vx;
+            if gx < grid.width() {
+                let sx = grid_area.x + vx * CELL_WIDTH + CELL_WIDTH / 2;
+                let label = format!("{}", gx);
+                for (i, ch) in label.chars().enumerate() {
+                    if sx + i as u16 <= area.x + area.width {
+                        set_cell(buf, sx + i as u16, area.y, ch, num_style);
+                    }
+                }
+            }
+        }
+        
+        for vy in 0..visible_rows {
+            let gy = origin_y + vy;
+            if gy < grid.height() {
+                let sy = grid_area.y + vy * CELL_HEIGHT + CELL_HEIGHT / 2;
+                let label = format!("{:>2}", gy);
+                for (i, ch) in label.chars().enumerate() {
+                    set_cell(buf, area.x + i as u16, sy, ch, num_style);
+                }
+            }
+        }
+        
+        let indicator_style = Style::default().fg(Color::Rgb(80, 80, 100));
+        
+        if origin_x > 0 {
+            for vy in 0..visible_rows {
+                let y = grid_area.y + vy * CELL_HEIGHT + CELL_HEIGHT / 2;
+                if let Some(cell) = buf.cell_mut((grid_area.x, y)) {
+                    cell.set_char('◂').set_style(indicator_style);
+                }
+            }
+        }
+        
+        if origin_x + visible_cols < grid.width() {
+            let x = grid_area.x + visible_cols * CELL_WIDTH - 1;
+            for vy in 0..visible_rows {
+                let y = grid_area.y + vy * CELL_HEIGHT + CELL_HEIGHT / 2;
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char('▸').set_style(indicator_style);
+                }
+            }
+        }
+        
+        if origin_y > 0 {
+            for vx in 0..visible_cols {
+                let x = grid_area.x + vx * CELL_WIDTH + CELL_WIDTH / 2;
+                if let Some(cell) = buf.cell_mut((x, grid_area.y)) {
+                    cell.set_char('▴').set_style(indicator_style);
+                }
+            }
+        }
+        
+        if origin_y + visible_rows < grid.height() {
+            let y = grid_area.y + visible_rows * CELL_HEIGHT - 1;
+            for vx in 0..visible_cols {
+                let x = grid_area.x + vx * CELL_WIDTH + CELL_WIDTH / 2;
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char('▾').set_style(indicator_style);
+                }
             }
         }
     }
 }
 
-pub struct PaletteWidget {
+pub struct PaletteWidget<'a> {
     selected_category: usize,
     selected_module: usize,
+    filter: &'a str,
+    filtered_modules: Vec<ModuleKind>,
+    filter_selection: usize,
+    searching: bool,
 }
 
-impl PaletteWidget {
+impl<'a> PaletteWidget<'a> {
     pub fn new() -> Self {
         Self {
             selected_category: 0,
             selected_module: 0,
+            filter: "",
+            filtered_modules: Vec::new(),
+            filter_selection: 0,
+            searching: false,
         }
     }
 
@@ -335,15 +506,50 @@ impl PaletteWidget {
         self.selected_module = idx;
         self
     }
+
+    pub fn filter(mut self, filter: &'a str, modules: Vec<ModuleKind>, selection: usize, searching: bool) -> Self {
+        self.filter = filter;
+        self.filtered_modules = modules;
+        self.filter_selection = selection;
+        self.searching = searching;
+        self
+    }
 }
 
-impl Widget for PaletteWidget {
+impl Widget for PaletteWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let hint_style = Style::default().fg(Color::DarkGray);
+        let hint_y = area.y + area.height.saturating_sub(1);
+
+        if self.searching {
+            let mut y = area.y;
+            let filter_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+            set_str(buf, area.x, y, &format!(" /{} ", self.filter), filter_style);
+            y += 1;
+
+            for (idx, kind) in self.filtered_modules.iter().enumerate() {
+                if y >= area.y + area.height.saturating_sub(1) {
+                    break;
+                }
+                let is_sel = idx == self.filter_selection;
+                let style = if is_sel {
+                    Style::default().fg(Color::Black).bg(kind.color())
+                } else {
+                    Style::default().fg(kind.color())
+                };
+                set_str(buf, area.x + 1, y, &format!(" {} ", kind.name()), style);
+                y += 1;
+            }
+
+            set_str(buf, area.x, hint_y, " esc clear", hint_style);
+            return;
+        }
+
         let categories = ModuleCategory::all();
         let mut y = area.y;
 
         for (cat_idx, cat) in categories.iter().enumerate() {
-            if y >= area.y + area.height {
+            if y >= area.y + area.height.saturating_sub(1) {
                 break;
             }
 
@@ -359,7 +565,7 @@ impl Widget for PaletteWidget {
 
             if is_selected_cat {
                 for (mod_idx, kind) in ModuleKind::by_category(*cat).iter().enumerate() {
-                    if y >= area.y + area.height {
+                    if y >= area.y + area.height.saturating_sub(1) {
                         break;
                     }
                     let is_sel = mod_idx == self.selected_module;
@@ -373,6 +579,8 @@ impl Widget for PaletteWidget {
                 }
             }
         }
+
+        set_str(buf, area.x, hint_y, " hjkl / search", hint_style);
     }
 }
 
@@ -434,6 +642,7 @@ impl Widget for HelpWidget {
             ("o", "rotate"),
             ("u", "edit"),
             (".", "delete"),
+            ("v", "select"),
             ("t", "track"),
             ("p", "play"),
             ("q", "quit"),
@@ -531,3 +740,225 @@ impl Widget for EditWidget<'_> {
         }
     }
 }
+
+pub struct AdsrWidget<'a> {
+    module: &'a Module,
+    selected_param: usize,
+}
+
+impl<'a> AdsrWidget<'a> {
+    pub fn new(module: &'a Module, selected_param: usize) -> Self {
+        Self { module, selected_param }
+    }
+
+    fn draw_curve(&self, buf: &mut Buffer, area: Rect, attack: f32, decay: f32, sustain: f32, release: f32) {
+        if area.width < 10 || area.height < 5 {
+            return;
+        }
+
+        let total_time = attack + decay + 0.5 + release;
+        let w = area.width as f32;
+        let h = (area.height - 1) as f32;
+
+        let attack_x = (attack / total_time * w) as u16;
+        let decay_x = ((attack + decay) / total_time * w) as u16;
+        let sustain_x = ((attack + decay + 0.5) / total_time * w) as u16;
+        let release_x = area.width;
+
+        let _sustain_y = ((1.0 - sustain) * h) as u16;
+
+        let curve_style = Style::default().fg(Color::Rgb(255, 200, 100));
+        let selected_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+        let label_style = Style::default().fg(Color::DarkGray);
+
+        for x in 0..area.width {
+            let y_val = if x <= attack_x {
+                if attack_x == 0 { 0.0 } else { x as f32 / attack_x as f32 }
+            } else if x <= decay_x {
+                let progress = if decay_x == attack_x { 1.0 } else { (x - attack_x) as f32 / (decay_x - attack_x) as f32 };
+                1.0 - progress * (1.0 - sustain)
+            } else if x <= sustain_x {
+                sustain
+            } else {
+                let progress = if release_x == sustain_x { 1.0 } else { (x - sustain_x) as f32 / (release_x - sustain_x) as f32 };
+                sustain * (1.0 - progress)
+            };
+
+            let y = ((1.0 - y_val) * h) as u16;
+            let screen_x = area.x + x;
+            let screen_y = area.y + y;
+
+            if screen_y < area.y + area.height {
+                set_cell(buf, screen_x, screen_y, '█', curve_style);
+            }
+        }
+
+        let labels = ["A", "D", "S", "R"];
+        let positions = [
+            attack_x / 2,
+            attack_x + (decay_x - attack_x) / 2,
+            decay_x + (sustain_x - decay_x) / 2,
+            sustain_x + (release_x - sustain_x) / 2,
+        ];
+
+        for (i, (label, pos)) in labels.iter().zip(positions.iter()).enumerate() {
+            let style = if i == self.selected_param { selected_style } else { label_style };
+            let x = area.x + (*pos).min(area.width.saturating_sub(1));
+            set_str(buf, x, area.y + area.height - 1, label, style);
+        }
+    }
+}
+
+impl<'a> Widget for AdsrWidget<'a> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let p = &self.module.params.floats;
+        let attack = p[1];
+        let decay = p[2];
+        let sustain = p[3];
+        let release = p[4];
+
+        let param_area = Rect::new(area.x, area.y, area.width, 5);
+        let curve_area = Rect::new(area.x, area.y + 5, area.width, area.height.saturating_sub(5));
+
+        let label_style = Style::default().fg(Color::DarkGray);
+        let value_style = Style::default().fg(Color::White);
+        let selected_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+
+        let params = [
+            ("Attack", attack, "s"),
+            ("Decay", decay, "s"),
+            ("Sustain", sustain, ""),
+            ("Release", release, "s"),
+        ];
+
+        for (i, (name, val, suffix)) in params.iter().enumerate() {
+            let y = param_area.y + i as u16;
+            let is_selected = i == self.selected_param;
+            let style = if is_selected { selected_style } else { label_style };
+            let v_style = if is_selected { selected_style } else { value_style };
+
+            set_str(buf, param_area.x, y, name, style);
+            let val_str = format!("{:.2}{}", val, suffix);
+            set_str(buf, param_area.x + 10, y, &val_str, v_style);
+
+            if is_selected {
+                set_str(buf, param_area.x + 10 + val_str.len() as u16 + 1, y, "<hl>", label_style);
+            }
+        }
+
+        self.draw_curve(buf, curve_area, attack, decay, sustain, release);
+    }
+}
+
+pub struct EnvelopeWidget<'a> {
+    module: &'a Module,
+    selected_point: usize,
+    editing: bool,
+}
+
+impl<'a> EnvelopeWidget<'a> {
+    pub fn new(module: &'a Module, selected_point: usize, editing: bool) -> Self {
+        Self { module, selected_point, editing }
+    }
+}
+
+impl Widget for EnvelopeWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let points = &self.module.params.env_points;
+        if points.is_empty() || area.width < 10 || area.height < 5 {
+            return;
+        }
+
+        let list_height = 2u16;
+        let list_area = Rect::new(area.x, area.y, area.width, list_height.min(area.height));
+        let curve_area = Rect::new(
+            area.x,
+            area.y + list_height,
+            area.width,
+            area.height.saturating_sub(list_height),
+        );
+
+        let label_style = Style::default().fg(Color::DarkGray);
+        let value_style = Style::default().fg(Color::White);
+        let selected_style = Style::default().fg(Color::Black).bg(Color::Rgb(255, 200, 100));
+        let editing_style = Style::default().fg(Color::Black).bg(Color::Yellow);
+        let curve_point_style = Style::default().fg(Color::Cyan);
+
+        let mut x_offset = 0u16;
+        for (i, p) in points.iter().enumerate() {
+            let is_sel = i == self.selected_point;
+            let style = if is_sel { 
+                if self.editing { editing_style } else { selected_style }
+            } else { 
+                value_style 
+            };
+            let type_ch = if p.curve { '~' } else { '/' };
+            let type_style = if is_sel { style } else if p.curve { curve_point_style } else { label_style };
+            
+            if x_offset < list_area.width {
+                set_cell(buf, list_area.x + x_offset, list_area.y, type_ch, type_style);
+                x_offset += 1;
+            }
+            let info = format!("{:.2},{:.2}", p.time, p.value);
+            for ch in info.chars() {
+                if x_offset < list_area.width {
+                    set_cell(buf, list_area.x + x_offset, list_area.y, ch, style);
+                    x_offset += 1;
+                }
+            }
+            if x_offset < list_area.width {
+                set_cell(buf, list_area.x + x_offset, list_area.y, ' ', label_style);
+                x_offset += 1;
+            }
+        }
+
+        if curve_area.width < 5 || curve_area.height < 3 {
+            return;
+        }
+
+        let w = (curve_area.width - 1) as f32;
+        let h = (curve_area.height - 1) as f32;
+
+        let curve_style = Style::default().fg(Color::Rgb(255, 200, 100));
+        let point_style = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+        let selected_point_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        let editing_point_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+
+        let env = Envelope::new(
+            points.iter()
+                .map(|p| EnvelopePoint {
+                    time: p.time,
+                    value: p.value,
+                    point_type: if p.curve { PointType::Curve } else { PointType::Linear },
+                })
+                .collect()
+        );
+
+        for x in 0..curve_area.width {
+            let t = x as f32 / w;
+            let val = env.output(t);
+            let y = ((1.0 - val) * h) as u16;
+            let screen_x = curve_area.x + x;
+            let screen_y = curve_area.y + y;
+            if screen_y < curve_area.y + curve_area.height {
+                set_cell(buf, screen_x, screen_y, '·', curve_style);
+            }
+        }
+
+        for (i, p) in points.iter().enumerate() {
+            let px = (p.time * w) as u16;
+            let py = ((1.0 - p.value) * h) as u16;
+            let screen_x = curve_area.x + px.min(curve_area.width - 1);
+            let screen_y = curve_area.y + py.min(curve_area.height - 1);
+            let is_sel = i == self.selected_point;
+            let style = if is_sel {
+                if self.editing { editing_point_style } else { selected_point_style }
+            } else {
+                point_style
+            };
+            set_cell(buf, screen_x, screen_y, '●', style);
+        }
+    }
+}
+
+

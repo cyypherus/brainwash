@@ -1,4 +1,4 @@
-use crate::{KeyState, Signal};
+use crate::Signal;
 
 #[derive(Clone, Debug, Copy)]
 pub enum PointType {
@@ -89,20 +89,19 @@ impl Envelope {
                 return match (p1.point_type, p2.point_type) {
                     (PointType::Linear, PointType::Linear) => p1.value + (p2.value - p1.value) * t,
                     _ => {
-                        let p0_val = if i > 0 {
-                            self.points[i - 1].value
+                        let m0 = if matches!(p1.point_type, PointType::Curve) && i > 0 {
+                            (p2.value - self.points[i - 1].value) * 0.5
                         } else {
-                            p1.value - (p2.value - p1.value) * 0.5
+                            0.0
                         };
 
-                        let p3_val = if i + 2 < self.points.len() {
-                            self.points[i + 2].value
+                        let m1 = if matches!(p2.point_type, PointType::Curve) && i + 2 < self.points.len() {
+                            (self.points[i + 2].value - p1.value) * 0.5
                         } else {
-                            p2.value + (p2.value - p1.value) * 0.5
+                            0.0
                         };
 
-                        self.catmull_rom(p0_val, p1.value, p2.value, p3_val, t)
-                            .clamp(0.0, 1.0)
+                        Self::hermite(p1.value, p2.value, m0, m1, t).clamp(0.0, 1.0)
                     }
                 };
             }
@@ -111,14 +110,16 @@ impl Envelope {
         self.points[self.points.len() - 1].value
     }
 
-    fn catmull_rom(&self, p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
+    fn hermite(p0: f32, p1: f32, m0: f32, m1: f32, t: f32) -> f32 {
         let t2 = t * t;
         let t3 = t2 * t;
-
-        0.5 * ((2.0 * p1)
-            + (-p0 + p2) * t
-            + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
-            + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3)
+        
+        let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+        let h10 = t3 - 2.0 * t2 + t;
+        let h01 = -2.0 * t3 + 3.0 * t2;
+        let h11 = t3 - t2;
+        
+        h00 * p0 + h10 * m0 + h01 * p1 + h11 * m1
     }
 }
 
@@ -137,7 +138,9 @@ pub struct ADSR {
     attack_curve: f32,
     decay_curve: f32,
     release_curve: f32,
-    retrigger_start_value: f32,
+    pressed_at: Option<usize>,
+    released_at: Option<usize>,
+    last_gate: bool,
 }
 
 impl Default for ADSR {
@@ -150,7 +153,9 @@ impl Default for ADSR {
             attack_curve: 0.0,
             decay_curve: 0.0,
             release_curve: 0.0,
-            retrigger_start_value: 0.0,
+            pressed_at: None,
+            released_at: None,
+            last_gate: false,
         }
     }
 }
@@ -191,20 +196,26 @@ impl ADSR {
         self
     }
 
-    pub fn output(&self, key_state: KeyState, signal: &Signal) -> f32 {
+    pub fn output(&mut self, gate: f32, signal: &Signal) -> f32 {
+        let pressed = gate > 0.5;
         let current_time = signal.position;
         let sample_rate = signal.sample_rate as f32;
 
-        match key_state {
-            KeyState::Idle => 0.0,
-            KeyState::Pressed { pressed_at } => {
+        if pressed && !self.last_gate {
+            self.pressed_at = Some(current_time);
+            self.released_at = None;
+        } else if !pressed && self.last_gate {
+            self.released_at = Some(current_time);
+        }
+        self.last_gate = pressed;
+
+        match (self.pressed_at, self.released_at) {
+            (None, _) => 0.0,
+            (Some(pressed_at), None) => {
                 let elapsed = (current_time - pressed_at) as f32 / sample_rate;
                 self.calculate_envelope_value(elapsed)
             }
-            KeyState::Released {
-                pressed_at,
-                released_at,
-            } => {
+            (Some(pressed_at), Some(released_at)) => {
                 let trigger_elapsed = (released_at - pressed_at) as f32 / sample_rate;
                 let release_elapsed = (current_time - released_at) as f32 / sample_rate;
 
@@ -224,7 +235,7 @@ impl ADSR {
         if elapsed < self.attack {
             let t = elapsed / self.attack;
             let curved_t = self.apply_curve(t, self.attack_curve);
-            self.retrigger_start_value + (1.0 - self.retrigger_start_value) * curved_t
+            curved_t
         } else if elapsed < self.attack + self.decay {
             let decay_progress = (elapsed - self.attack) / self.decay;
             let curved_progress = self.apply_curve(decay_progress, self.decay_curve);

@@ -34,6 +34,8 @@ pub enum ModuleKind {
     Flanger,
     Mul,
     Add,
+    Gain,
+    Probe,
     Output,
     LSplit,
     TSplit,
@@ -59,6 +61,8 @@ impl ModuleKind {
             ModuleKind::Flanger => "Flang",
             ModuleKind::Mul => "Mul",
             ModuleKind::Add => "Add",
+            ModuleKind::Gain => "Gain",
+            ModuleKind::Probe => "Probe",
             ModuleKind::Output => "Out",
             ModuleKind::LSplit => "LSplit ◁",
             ModuleKind::TSplit => "USplit △",
@@ -84,6 +88,8 @@ impl ModuleKind {
             ModuleKind::Flanger => "FLG",
             ModuleKind::Mul => "MUL",
             ModuleKind::Add => "ADD",
+            ModuleKind::Gain => "GAN",
+            ModuleKind::Probe => "PRB",
             ModuleKind::Output => "OUT",
             ModuleKind::LSplit => " ◁ ",
             ModuleKind::TSplit => " △ ",
@@ -106,7 +112,9 @@ impl ModuleKind {
             | ModuleKind::Distortion
             | ModuleKind::Flanger => Color::Rgb(200, 100, 255),
             ModuleKind::Mul
-            | ModuleKind::Add => Color::Rgb(100, 220, 220),
+            | ModuleKind::Add
+            | ModuleKind::Gain
+            | ModuleKind::Probe => Color::Rgb(100, 220, 220),
             ModuleKind::Output => Color::Rgb(255, 100, 100),
             ModuleKind::LSplit
             | ModuleKind::TSplit
@@ -149,7 +157,9 @@ impl ModuleKind {
             | ModuleKind::Distortion
             | ModuleKind::Flanger => ModuleCategory::Effect,
             ModuleKind::Mul
-            | ModuleKind::Add => ModuleCategory::Math,
+            | ModuleKind::Add
+            | ModuleKind::Gain
+            | ModuleKind::Probe => ModuleCategory::Math,
             ModuleKind::Output => ModuleCategory::Output,
             ModuleKind::LSplit
             | ModuleKind::TSplit
@@ -175,6 +185,8 @@ impl ModuleKind {
             ModuleKind::Flanger,
             ModuleKind::Mul,
             ModuleKind::Add,
+            ModuleKind::Gain,
+            ModuleKind::Probe,
             ModuleKind::Output,
             ModuleKind::LSplit,
             ModuleKind::TSplit,
@@ -321,6 +333,22 @@ impl Module {
         }
     }
 
+    pub fn display_name(&self) -> &'static str {
+        match self.kind {
+            ModuleKind::Osc => {
+                match self.params.floats[0] as usize {
+                    0 => "SIN",
+                    1 => "SQU",
+                    2 => "TRI",
+                    3 => "SAW",
+                    4 => "RSW",
+                    _ => "NSE",
+                }
+            }
+            _ => self.kind.short_name(),
+        }
+    }
+
     pub fn is_port_open(&self, port_idx: usize) -> bool {
         if self.kind.is_routing() {
             return port_idx < self.kind.port_count();
@@ -409,6 +437,13 @@ impl ModuleKind {
                 ParamDef { name: "A", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 1.0 } },
                 ParamDef { name: "B", kind: ParamKind::Float { min: -1000.0, max: 1000.0, step: 1.0 } },
             ],
+            ModuleKind::Gain => &[
+                ParamDef { name: "In", kind: ParamKind::Float { min: -1.0, max: 1.0, step: 0.01 } },
+                ParamDef { name: "Gain", kind: ParamKind::Float { min: 0.0, max: 2.0, step: 0.05 } },
+            ],
+            ModuleKind::Probe => &[
+                ParamDef { name: "In", kind: ParamKind::Float { min: -1.0, max: 1.0, step: 0.01 } },
+            ],
             ModuleKind::Output => &[
                 ParamDef { name: "In", kind: ParamKind::Float { min: -1.0, max: 1.0, step: 0.01 } },
             ],
@@ -418,10 +453,28 @@ impl ModuleKind {
 
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EnvPoint {
+    pub time: f32,
+    pub value: f32,
+    pub curve: bool,
+}
+
+#[derive(Clone, Debug)]
 pub struct ModuleParams {
     pub floats: [f32; 8],
     pub connected: u8,
+    pub env_points: Vec<EnvPoint>,
+}
+
+impl Default for ModuleParams {
+    fn default() -> Self {
+        Self {
+            floats: [0.0; 8],
+            connected: 0,
+            env_points: Vec::new(),
+        }
+    }
 }
 
 impl ModuleParams {
@@ -477,6 +530,15 @@ impl ModuleParams {
             ModuleKind::Mul => {
                 params.floats[0] = 1.0;
                 params.floats[1] = 1.0;
+            }
+            ModuleKind::Gain => {
+                params.floats[1] = 1.0;
+            }
+            ModuleKind::Envelope => {
+                params.env_points = vec![
+                    EnvPoint { time: 0.0, value: 0.0, curve: false },
+                    EnvPoint { time: 1.0, value: 1.0, curve: false },
+                ];
             }
             _ => {}
         }

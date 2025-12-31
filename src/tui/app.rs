@@ -2,7 +2,7 @@ use super::grid::GridPos;
 use super::module::{ModuleCategory, ModuleId, ModuleKind, ParamKind};
 use super::patch::Patch;
 use super::engine::{CompiledPatch, compile_patch, TrackState};
-use super::render::{EditWidget, GridWidget, HelpWidget, PaletteWidget, StatusWidget};
+use super::render::{AdsrWidget, EditWidget, EnvelopeWidget, GridWidget, HelpWidget, PaletteWidget, StatusWidget};
 use crate::live::AudioPlayer;
 use crate::scale::cmin;
 use crate::track::Track;
@@ -29,7 +29,11 @@ enum Mode {
     Normal,
     Palette,
     Move { module_id: ModuleId, origin: GridPos },
+    Select { anchor: GridPos },
+    SelectMove { anchor: GridPos, extent: GridPos, move_origin: GridPos },
     Edit { module_id: ModuleId, param_idx: usize },
+    AdsrEdit { module_id: ModuleId, param_idx: usize },
+    EnvEdit { module_id: ModuleId, point_idx: usize, editing: bool },
     TrackEdit,
 }
 
@@ -39,6 +43,9 @@ struct App<'a> {
     mode: Mode,
     palette_category: usize,
     palette_selections: [usize; 7],
+    palette_filter: String,
+    palette_filter_selection: usize,
+    palette_searching: bool,
     message: Option<String>,
     should_quit: bool,
     audio_patch: Arc<Mutex<CompiledPatch>>,
@@ -56,12 +63,21 @@ impl<'a> App<'a> {
         textarea.set_cursor_line_style(Style::default());
         textarea.set_block(Block::default());
 
+        let notation = "(0/2/4/7)";
+        let scale = cmin();
+        if let Ok(track) = Track::parse(notation, &scale) {
+            track_state.lock().unwrap().track = Some(track);
+        }
+
         Self {
             patch,
             cursor: GridPos::new(0, 0),
             mode: Mode::Normal,
             palette_category: 0,
             palette_selections: [0; 7],
+            palette_filter: String::new(),
+            palette_filter_selection: 0,
+            palette_searching: false,
             message: None,
             should_quit: false,
             audio_patch,
@@ -87,9 +103,9 @@ impl<'a> App<'a> {
     }
 
     fn commit_patch(&mut self) {
-        let compiled = compile_patch(&self.patch);
+        let num_voices = self.track_state.lock().unwrap().num_voices();
         let mut audio = self.audio_patch.lock().unwrap();
-        *audio = compiled;
+        compile_patch(&mut audio, &self.patch, num_voices);
     }
 
     fn move_cursor(&mut self, dx: i16, dy: i16) {
@@ -106,7 +122,11 @@ impl<'a> App<'a> {
             Mode::Normal => self.handle_normal_key(code),
             Mode::Palette => self.handle_palette_key(code),
             Mode::Move { module_id, origin } => self.handle_move_key(code, module_id, origin),
+            Mode::Select { anchor } => self.handle_select_key(code, anchor),
+            Mode::SelectMove { anchor, extent, move_origin } => self.handle_select_move_key(code, anchor, extent, move_origin),
             Mode::Edit { module_id, param_idx } => self.handle_edit_key(code, module_id, param_idx),
+            Mode::AdsrEdit { module_id, param_idx } => self.handle_adsr_edit_key(code, module_id, param_idx),
+            Mode::EnvEdit { module_id, point_idx, editing } => self.handle_env_edit_key(code, module_id, point_idx, editing),
             Mode::TrackEdit => self.handle_track_edit_key(code, modifiers),
         }
     }
@@ -168,11 +188,17 @@ impl<'a> App<'a> {
             KeyCode::Char('u') => {
                 if let Some(id) = self.patch.module_id_at(self.cursor) {
                     if let Some(m) = self.patch.module(id) {
-                        let defs = m.kind.param_defs();
-                        if !defs.is_empty() {
-                            self.mode = Mode::Edit { module_id: id, param_idx: 0 };
+                        if m.kind == ModuleKind::Adsr {
+                            self.mode = Mode::AdsrEdit { module_id: id, param_idx: 0 };
+                        } else if m.kind == ModuleKind::Envelope {
+                            self.mode = Mode::EnvEdit { module_id: id, point_idx: 0, editing: false };
                         } else {
-                            self.message = Some("No params to edit".into());
+                            let defs = m.kind.param_defs();
+                            if !defs.is_empty() {
+                                self.mode = Mode::Edit { module_id: id, param_idx: 0 };
+                            } else {
+                                self.message = Some("No params to edit".into());
+                            }
                         }
                     }
                 }
@@ -190,6 +216,9 @@ impl<'a> App<'a> {
             KeyCode::Char('t') => {
                 self.mode = Mode::TrackEdit;
             }
+            KeyCode::Char('v') => {
+                self.mode = Mode::Select { anchor: self.cursor };
+            }
             _ => {}
         }
     }
@@ -199,7 +228,66 @@ impl<'a> App<'a> {
         self.mode = Mode::Palette;
     }
 
+    fn filtered_modules(&self) -> Vec<ModuleKind> {
+        if self.palette_filter.is_empty() {
+            return Vec::new();
+        }
+        let filter = self.palette_filter.to_lowercase();
+        ModuleKind::all()
+            .iter()
+            .copied()
+            .filter(|k| k.name().to_lowercase().contains(&filter))
+            .collect()
+    }
+
     fn handle_palette_key(&mut self, code: KeyCode) {
+        if self.palette_searching {
+            let filtered = self.filtered_modules();
+            match code {
+                KeyCode::Esc => {
+                    self.palette_filter.clear();
+                    self.palette_filter_selection = 0;
+                    self.palette_searching = false;
+                }
+                KeyCode::Backspace => {
+                    self.palette_filter.pop();
+                    self.palette_filter_selection = 0;
+                }
+                KeyCode::Down => {
+                    if self.palette_filter_selection + 1 < filtered.len() {
+                        self.palette_filter_selection += 1;
+                    }
+                }
+                KeyCode::Up => {
+                    if self.palette_filter_selection > 0 {
+                        self.palette_filter_selection -= 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(kind) = filtered.get(self.palette_filter_selection) {
+                        if *kind == ModuleKind::Output && self.patch.output_id().is_some() {
+                            self.message = Some("Output exists".into());
+                        } else if self.patch.add_module(*kind, self.cursor).is_some() {
+                            self.message = Some(format!("{} placed", kind.name()));
+                            self.commit_patch();
+                        } else {
+                            self.message = Some("Can't place here".into());
+                        }
+                    }
+                    self.palette_filter.clear();
+                    self.palette_filter_selection = 0;
+                    self.palette_searching = false;
+                    self.mode = Mode::Normal;
+                }
+                KeyCode::Char(c) => {
+                    self.palette_filter.push(c);
+                    self.palette_filter_selection = 0;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         let categories = ModuleCategory::all();
         let current_cat = categories[self.palette_category];
         let modules = ModuleKind::by_category(current_cat);
@@ -208,6 +296,11 @@ impl<'a> App<'a> {
         match code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.mode = Mode::Normal;
+            }
+            KeyCode::Char('/') => {
+                self.palette_filter.clear();
+                self.palette_filter_selection = 0;
+                self.palette_searching = true;
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if palette_module + 1 < modules.len() {
@@ -223,10 +316,10 @@ impl<'a> App<'a> {
                     self.palette_category -= 1;
                 }
             }
-            KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => {
+            KeyCode::Char('l') | KeyCode::Right => {
                 self.palette_category = (self.palette_category + 1) % categories.len();
             }
-            KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => {
+            KeyCode::Char('h') | KeyCode::Left => {
                 self.palette_category = if self.palette_category == 0 {
                     categories.len() - 1
                 } else {
@@ -276,6 +369,95 @@ impl<'a> App<'a> {
             KeyCode::Char('L') => self.move_cursor(4, 0),
             _ => {}
         }
+    }
+
+    fn handle_select_key(&mut self, code: KeyCode, anchor: GridPos) {
+        match code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Char('h') | KeyCode::Left => self.move_cursor(-1, 0),
+            KeyCode::Char('j') | KeyCode::Down => self.move_cursor(0, 1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_cursor(0, -1),
+            KeyCode::Char('l') | KeyCode::Right => self.move_cursor(1, 0),
+            KeyCode::Char('H') => self.move_cursor(-4, 0),
+            KeyCode::Char('J') => self.move_cursor(0, 4),
+            KeyCode::Char('K') => self.move_cursor(0, -4),
+            KeyCode::Char('L') => self.move_cursor(4, 0),
+            KeyCode::Char('m') | KeyCode::Enter => {
+                self.mode = Mode::SelectMove {
+                    anchor,
+                    extent: self.cursor,
+                    move_origin: self.cursor,
+                };
+            }
+            KeyCode::Char('x') => {
+                let ids = self.modules_in_rect(anchor, self.cursor);
+                let count = ids.len();
+                for id in ids {
+                    self.patch.remove_module(id);
+                }
+                self.mode = Mode::Normal;
+                self.message = Some(format!("Deleted {} modules", count));
+                self.commit_patch();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_select_move_key(&mut self, code: KeyCode, anchor: GridPos, extent: GridPos, move_origin: GridPos) {
+        match code {
+            KeyCode::Esc => {
+                self.cursor = move_origin;
+                self.mode = Mode::Normal;
+                self.message = Some("Move cancelled".into());
+            }
+            KeyCode::Char('h') | KeyCode::Left => self.move_cursor(-1, 0),
+            KeyCode::Char('j') | KeyCode::Down => self.move_cursor(0, 1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_cursor(0, -1),
+            KeyCode::Char('l') | KeyCode::Right => self.move_cursor(1, 0),
+            KeyCode::Char('H') => self.move_cursor(-4, 0),
+            KeyCode::Char('J') => self.move_cursor(0, 4),
+            KeyCode::Char('K') => self.move_cursor(0, -4),
+            KeyCode::Char('L') => self.move_cursor(4, 0),
+            KeyCode::Char('m') | KeyCode::Enter | KeyCode::Char(' ') => {
+                let dx = self.cursor.x as i16 - move_origin.x as i16;
+                let dy = self.cursor.y as i16 - move_origin.y as i16;
+                let ids = self.modules_in_rect(anchor, extent);
+                let mut moved = 0;
+                for id in ids {
+                    if let Some(pos) = self.patch.module_position(id) {
+                        let new_x = (pos.x as i16 + dx).max(0) as u16;
+                        let new_y = (pos.y as i16 + dy).max(0) as u16;
+                        if self.patch.move_module(id, GridPos::new(new_x, new_y)) {
+                            moved += 1;
+                        }
+                    }
+                }
+                self.mode = Mode::Normal;
+                self.message = Some(format!("Moved {} modules", moved));
+                self.commit_patch();
+            }
+            _ => {}
+        }
+    }
+
+    fn modules_in_rect(&self, a: GridPos, b: GridPos) -> Vec<ModuleId> {
+        let min_x = a.x.min(b.x);
+        let max_x = a.x.max(b.x);
+        let min_y = a.y.min(b.y);
+        let max_y = a.y.max(b.y);
+        
+        self.patch.all_modules()
+            .filter_map(|m| {
+                let pos = self.patch.module_position(m.id)?;
+                if pos.x >= min_x && pos.x <= max_x && pos.y >= min_y && pos.y <= max_y {
+                    Some(m.id)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn handle_edit_key(&mut self, code: KeyCode, module_id: ModuleId, param_idx: usize) {
@@ -392,6 +574,231 @@ impl<'a> App<'a> {
         }
     }
 
+    fn handle_adsr_edit_key(&mut self, code: KeyCode, module_id: ModuleId, param_idx: usize) {
+        let Some(_) = self.patch.module(module_id) else {
+            self.mode = Mode::Normal;
+            return;
+        };
+
+        match code {
+            KeyCode::Esc | KeyCode::Char('u') => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                let new_idx = (param_idx + 1) % 4;
+                self.mode = Mode::AdsrEdit { module_id, param_idx: new_idx };
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let new_idx = if param_idx == 0 { 3 } else { param_idx - 1 };
+                self.mode = Mode::AdsrEdit { module_id, param_idx: new_idx };
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                if let Some(m) = self.patch.module_mut(module_id) {
+                    let (_, max, step) = match param_idx {
+                        0 => (0.001, 2.0, 0.01),
+                        1 => (0.001, 2.0, 0.01),
+                        2 => (0.0, 1.0, 0.05),
+                        3 => (0.001, 4.0, 0.01),
+                        _ => (0.0, 1.0, 0.01),
+                    };
+                    let idx = param_idx + 1;
+                    m.params.floats[idx] = (m.params.floats[idx] + step).min(max);
+                }
+                self.commit_patch();
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                if let Some(m) = self.patch.module_mut(module_id) {
+                    let (min, _, step) = match param_idx {
+                        0 => (0.001, 2.0, 0.01),
+                        1 => (0.001, 2.0, 0.01),
+                        2 => (0.0, 1.0, 0.05),
+                        3 => (0.001, 4.0, 0.01),
+                        _ => (0.0, 1.0, 0.01),
+                    };
+                    let idx = param_idx + 1;
+                    m.params.floats[idx] = (m.params.floats[idx] - step).max(min);
+                }
+                self.commit_patch();
+            }
+            KeyCode::Char('L') => {
+                if let Some(m) = self.patch.module_mut(module_id) {
+                    let (_, max, step) = match param_idx {
+                        0 => (0.001, 2.0, 0.01),
+                        1 => (0.001, 2.0, 0.01),
+                        2 => (0.0, 1.0, 0.05),
+                        3 => (0.001, 4.0, 0.01),
+                        _ => (0.0, 1.0, 0.01),
+                    };
+                    let idx = param_idx + 1;
+                    m.params.floats[idx] = (m.params.floats[idx] + step * 10.0).min(max);
+                }
+                self.commit_patch();
+            }
+            KeyCode::Char('H') => {
+                if let Some(m) = self.patch.module_mut(module_id) {
+                    let (min, _, step) = match param_idx {
+                        0 => (0.001, 2.0, 0.01),
+                        1 => (0.001, 2.0, 0.01),
+                        2 => (0.0, 1.0, 0.05),
+                        3 => (0.001, 4.0, 0.01),
+                        _ => (0.0, 1.0, 0.01),
+                    };
+                    let idx = param_idx + 1;
+                    m.params.floats[idx] = (m.params.floats[idx] - step * 10.0).max(min);
+                }
+                self.commit_patch();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_env_edit_key(&mut self, code: KeyCode, module_id: ModuleId, point_idx: usize, editing: bool) {
+        let Some(module) = self.patch.module(module_id) else {
+            self.mode = Mode::Normal;
+            return;
+        };
+
+        let num_points = module.params.env_points.len();
+        if num_points == 0 {
+            self.mode = Mode::Normal;
+            return;
+        }
+
+        if editing {
+            match code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('m') => {
+                    self.mode = Mode::EnvEdit { module_id, point_idx, editing: false };
+                }
+                KeyCode::Char('l') | KeyCode::Right => {
+                    let new_idx = self.adjust_env_point_time(module_id, point_idx, 0.01);
+                    self.mode = Mode::EnvEdit { module_id, point_idx: new_idx, editing: true };
+                    self.commit_patch();
+                }
+                KeyCode::Char('h') | KeyCode::Left => {
+                    let new_idx = self.adjust_env_point_time(module_id, point_idx, -0.01);
+                    self.mode = Mode::EnvEdit { module_id, point_idx: new_idx, editing: true };
+                    self.commit_patch();
+                }
+                KeyCode::Char('L') => {
+                    let new_idx = self.adjust_env_point_time(module_id, point_idx, 0.1);
+                    self.mode = Mode::EnvEdit { module_id, point_idx: new_idx, editing: true };
+                    self.commit_patch();
+                }
+                KeyCode::Char('H') => {
+                    let new_idx = self.adjust_env_point_time(module_id, point_idx, -0.1);
+                    self.mode = Mode::EnvEdit { module_id, point_idx: new_idx, editing: true };
+                    self.commit_patch();
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    if let Some(m) = self.patch.module_mut(module_id) {
+                        if let Some(p) = m.params.env_points.get_mut(point_idx) {
+                            p.value = (p.value + 0.05).min(1.0);
+                        }
+                    }
+                    self.commit_patch();
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if let Some(m) = self.patch.module_mut(module_id) {
+                        if let Some(p) = m.params.env_points.get_mut(point_idx) {
+                            p.value = (p.value - 0.05).max(0.0);
+                        }
+                    }
+                    self.commit_patch();
+                }
+                KeyCode::Char('K') => {
+                    if let Some(m) = self.patch.module_mut(module_id) {
+                        if let Some(p) = m.params.env_points.get_mut(point_idx) {
+                            p.value = 1.0;
+                        }
+                    }
+                    self.commit_patch();
+                }
+                KeyCode::Char('J') => {
+                    if let Some(m) = self.patch.module_mut(module_id) {
+                        if let Some(p) = m.params.env_points.get_mut(point_idx) {
+                            p.value = 0.0;
+                        }
+                    }
+                    self.commit_patch();
+                }
+                _ => {}
+            }
+        } else {
+            match code {
+                KeyCode::Esc | KeyCode::Char('u') => {
+                    self.mode = Mode::Normal;
+                }
+                KeyCode::Char('l') | KeyCode::Right => {
+                    let new_idx = (point_idx + 1) % num_points;
+                    self.mode = Mode::EnvEdit { module_id, point_idx: new_idx, editing: false };
+                }
+                KeyCode::Char('h') | KeyCode::Left => {
+                    let new_idx = if point_idx == 0 { num_points - 1 } else { point_idx - 1 };
+                    self.mode = Mode::EnvEdit { module_id, point_idx: new_idx, editing: false };
+                }
+                KeyCode::Char('m') | KeyCode::Enter => {
+                    self.mode = Mode::EnvEdit { module_id, point_idx, editing: true };
+                }
+                KeyCode::Char('c') => {
+                    if let Some(m) = self.patch.module_mut(module_id) {
+                        if let Some(p) = m.params.env_points.get_mut(point_idx) {
+                            p.curve = !p.curve;
+                        }
+                    }
+                    self.commit_patch();
+                }
+                KeyCode::Char(' ') => {
+                    if let Some(m) = self.patch.module_mut(module_id) {
+                        let new_time = if m.params.env_points.is_empty() {
+                            0.5
+                        } else if point_idx + 1 < m.params.env_points.len() {
+                            (m.params.env_points[point_idx].time + m.params.env_points[point_idx + 1].time) / 2.0
+                        } else {
+                            (m.params.env_points[point_idx].time + 1.0) / 2.0
+                        };
+                        let new_value = m.params.env_points.get(point_idx).map(|p| p.value).unwrap_or(0.5);
+                        m.params.env_points.push(super::module::EnvPoint {
+                            time: new_time,
+                            value: new_value,
+                            curve: false,
+                        });
+                        m.params.env_points.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+                        let new_idx = m.params.env_points.iter().position(|p| (p.time - new_time).abs() < 0.001).unwrap_or(point_idx);
+                        self.mode = Mode::EnvEdit { module_id, point_idx: new_idx, editing: false };
+                    }
+                    self.commit_patch();
+                }
+                KeyCode::Char('.') => {
+                    if let Some(m) = self.patch.module_mut(module_id) {
+                        if m.params.env_points.len() > 2 {
+                            m.params.env_points.remove(point_idx);
+                            let new_idx = point_idx.min(m.params.env_points.len() - 1);
+                            self.mode = Mode::EnvEdit { module_id, point_idx: new_idx, editing: false };
+                        } else {
+                            self.message = Some("Need at least 2 points".into());
+                        }
+                    }
+                    self.commit_patch();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn adjust_env_point_time(&mut self, module_id: ModuleId, point_idx: usize, delta: f32) -> usize {
+        let Some(m) = self.patch.module_mut(module_id) else { return point_idx };
+        let Some(p) = m.params.env_points.get_mut(point_idx) else { return point_idx };
+        
+        let new_time = (p.time + delta).clamp(0.0, 1.0);
+        p.time = new_time;
+        
+        m.params.env_points.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+        
+        m.params.env_points.iter()
+            .position(|p| (p.time - new_time).abs() < 1e-6)
+            .unwrap_or(point_idx)
+    }
+
     fn ui(&self, f: &mut Frame) {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -413,9 +820,18 @@ impl<'a> App<'a> {
             None
         };
 
+        let selection = match self.mode {
+            Mode::Select { anchor } => Some((anchor, self.cursor)),
+            Mode::SelectMove { anchor, extent, .. } => Some((anchor, extent)),
+            _ => None,
+        };
+
+        let probe_values: Vec<f32> = self.audio_patch.lock().unwrap().probe_values().to_vec();
         let grid_widget = GridWidget::new(&self.patch)
             .cursor(self.cursor)
-            .moving(moving_id);
+            .moving(moving_id)
+            .selection(selection)
+            .probe_values(&probe_values);
         f.render_widget(grid_widget, grid_area);
 
         let help_block = Block::default()
@@ -433,9 +849,13 @@ impl<'a> App<'a> {
 
         let mode_str = match self.mode {
             Mode::Normal => "NORMAL",
-            Mode::Palette => "SELECT",
+            Mode::Palette => "PALETTE",
             Mode::Move { .. } => "MOVE",
+            Mode::Select { .. } => "SELECT",
+            Mode::SelectMove { .. } => "SEL-MOVE",
             Mode::Edit { .. } => "EDIT",
+            Mode::AdsrEdit { .. } => "ADSR",
+            Mode::EnvEdit { .. } => "ENV",
             Mode::TrackEdit => "TRACK",
         };
         let mut status = StatusWidget::new(self.cursor, mode_str).playing(self.playing);
@@ -467,7 +887,8 @@ impl<'a> App<'a> {
             );
             let palette = PaletteWidget::new()
                 .selected_category(self.palette_category)
-                .selected_module(self.palette_selections[self.palette_category]);
+                .selected_module(self.palette_selections[self.palette_category])
+                .filter(&self.palette_filter, self.filtered_modules(), self.palette_filter_selection, self.palette_searching);
             f.render_widget(palette, inner);
         }
 
@@ -522,13 +943,74 @@ impl<'a> App<'a> {
 
             f.render_widget(&self.track_textarea, inner);
         }
+
+        if let Mode::AdsrEdit { module_id, param_idx } = self.mode {
+            if let Some(module) = self.patch.module(module_id) {
+                let env_width = f.area().width.saturating_sub(4);
+                let env_height = f.area().height.saturating_sub(6);
+                let env_x = 2;
+                let env_y = 2;
+                let env_area = Rect::new(env_x, env_y, env_width, env_height);
+
+                f.render_widget(Clear, env_area);
+
+                let env_block = Block::default()
+                    .title(" ADSR (jk select, hl adjust, Esc close) ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(module.kind.color()));
+                f.render_widget(env_block, env_area);
+
+                let inner = Rect::new(
+                    env_area.x + 1,
+                    env_area.y + 1,
+                    env_area.width.saturating_sub(2),
+                    env_area.height.saturating_sub(2),
+                );
+                let adsr_widget = AdsrWidget::new(module, param_idx);
+                f.render_widget(adsr_widget, inner);
+            }
+        }
+
+        if let Mode::EnvEdit { module_id, point_idx, editing } = self.mode {
+            if let Some(module) = self.patch.module(module_id) {
+                let env_width = f.area().width.saturating_sub(4);
+                let env_height = f.area().height.saturating_sub(6);
+                let env_x = 2;
+                let env_y = 2;
+                let env_area = Rect::new(env_x, env_y, env_width, env_height);
+
+                f.render_widget(Clear, env_area);
+
+                let title = if editing {
+                    " Envelope [MOVE] (hjkl move, Esc done) "
+                } else {
+                    " Envelope (hl select, m move, c curve, Space add, . del) "
+                };
+                let env_block = Block::default()
+                    .title(title)
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(module.kind.color()));
+                f.render_widget(env_block, env_area);
+
+                let inner = Rect::new(
+                    env_area.x + 1,
+                    env_area.y + 1,
+                    env_area.width.saturating_sub(2),
+                    env_area.height.saturating_sub(2),
+                );
+                let env_widget = EnvelopeWidget::new(module, point_idx, editing);
+                f.render_widget(env_widget, inner);
+            }
+        }
     }
 }
+
+const NUM_VOICES: usize = 6;
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let audio_patch = Arc::new(Mutex::new(CompiledPatch::default()));
     let audio_patch_clone = Arc::clone(&audio_patch);
-    let track_state = Arc::new(Mutex::new(TrackState::default()));
+    let track_state = Arc::new(Mutex::new(TrackState::new(NUM_VOICES)));
     let track_state_clone = Arc::clone(&track_state);
     
     let player = AudioPlayer::new()?;
@@ -560,7 +1042,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 for frame in data.chunks_mut(channels) {
                     track.update(&mut signal_lock);
                     let sample = assert_no_alloc(|| {
-                        patch.process(&mut signal_lock, track.current_freq, track.current_gate).clamp(-1., 1.)
+                        patch.process(&mut signal_lock, &track).clamp(-1., 1.)
                     });
                     
                     for channel_sample in frame.iter_mut() {
