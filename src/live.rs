@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 use assert_no_alloc::*;
 
 pub struct AudioPlayer {
-    device: Device,
-    config: StreamConfig,
+    pub device: Device,
+    pub config: StreamConfig,
 }
 
 impl AudioPlayer {

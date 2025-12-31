@@ -1,0 +1,266 @@
+use super::grid::{Cell, Grid, GridPos};
+use super::module::{Module, ModuleId, ModuleKind};
+use std::collections::HashMap;
+
+pub struct Patch {
+    grid: Grid,
+    modules: HashMap<ModuleId, Module>,
+    positions: HashMap<ModuleId, GridPos>,
+    next_module_id: u32,
+    output_id: Option<ModuleId>,
+}
+
+impl Patch {
+    pub fn new(width: u16, height: u16) -> Self {
+        Self {
+            grid: Grid::new(width, height),
+            modules: HashMap::new(),
+            positions: HashMap::new(),
+            next_module_id: 0,
+            output_id: None,
+        }
+    }
+
+    pub fn grid(&self) -> &Grid {
+        &self.grid
+    }
+
+    pub fn module(&self, id: ModuleId) -> Option<&Module> {
+        self.modules.get(&id)
+    }
+
+    pub fn module_mut(&mut self, id: ModuleId) -> Option<&mut Module> {
+        self.modules.get_mut(&id)
+    }
+
+    pub fn all_modules(&self) -> impl Iterator<Item = &Module> {
+        self.modules.values()
+    }
+
+    pub fn module_at(&self, pos: GridPos) -> Option<&Module> {
+        match self.grid.get(pos) {
+            Cell::Module { id, .. } => self.modules.get(&id),
+            _ => None,
+        }
+    }
+
+    pub fn module_id_at(&self, pos: GridPos) -> Option<ModuleId> {
+        match self.grid.get(pos) {
+            Cell::Module { id, .. } => Some(id),
+            _ => None,
+        }
+    }
+
+    pub fn module_position(&self, id: ModuleId) -> Option<GridPos> {
+        self.positions.get(&id).copied()
+    }
+
+    pub fn output_id(&self) -> Option<ModuleId> {
+        self.output_id
+    }
+
+    pub fn add_module(&mut self, kind: ModuleKind, pos: GridPos) -> Option<ModuleId> {
+        if kind == ModuleKind::Output && self.output_id.is_some() {
+            return None;
+        }
+
+        let id = ModuleId(self.next_module_id);
+        let module = Module::new(id, kind);
+        let width = module.width();
+        let height = module.height();
+
+        if !self.grid.place_module(id, pos, width, height) {
+            return None;
+        }
+
+        self.modules.insert(id, module);
+        self.positions.insert(id, pos);
+        self.next_module_id += 1;
+
+        if kind == ModuleKind::Output {
+            self.output_id = Some(id);
+        }
+
+        self.rebuild_channels();
+        Some(id)
+    }
+
+    pub fn remove_module(&mut self, id: ModuleId) -> bool {
+        if !self.modules.contains_key(&id) {
+            return false;
+        }
+
+        self.grid.remove_module(id);
+        self.positions.remove(&id);
+
+        if self.output_id == Some(id) {
+            self.output_id = None;
+        }
+
+        self.modules.remove(&id);
+        self.rebuild_channels();
+        true
+    }
+
+    pub fn move_module(&mut self, id: ModuleId, new_pos: GridPos) -> bool {
+        let Some(module) = self.modules.get(&id) else {
+            return false;
+        };
+        let width = module.width();
+        let height = module.height();
+
+        self.grid.clear_channels();
+
+        for dy in 0..height {
+            for dx in 0..width {
+                let p = GridPos::new(new_pos.x + dx as u16, new_pos.y + dy as u16);
+                if !self.grid.in_bounds(p) {
+                    self.rebuild_channels();
+                    return false;
+                }
+                let cell = self.grid.get(p);
+                match cell {
+                    Cell::Empty => {}
+                    Cell::Module { id: existing_id, .. } if existing_id == id => {}
+                    _ => {
+                        self.rebuild_channels();
+                        return false;
+                    }
+                }
+            }
+        }
+
+        self.grid.remove_module(id);
+        self.grid.place_module(id, new_pos, width, height);
+        self.positions.insert(id, new_pos);
+        self.rebuild_channels();
+        true
+    }
+
+    pub fn rotate_module(&mut self, id: ModuleId) -> bool {
+        let Some(module) = self.modules.get(&id) else {
+            return false;
+        };
+        
+        if module.kind.is_routing() {
+            return false;
+        }
+
+        let pos = match self.positions.get(&id) {
+            Some(p) => *p,
+            None => return false,
+        };
+
+        let new_width = module.height();
+        let new_height = module.width();
+
+        self.grid.clear_channels();
+        self.grid.remove_module(id);
+
+        for dy in 0..new_height {
+            for dx in 0..new_width {
+                let p = GridPos::new(pos.x + dx as u16, pos.y + dy as u16);
+                if !self.grid.in_bounds(p) || !self.grid.get(p).is_empty() {
+                    let module = self.modules.get(&id).unwrap();
+                    self.grid.place_module(id, pos, module.width(), module.height());
+                    self.rebuild_channels();
+                    return false;
+                }
+            }
+        }
+
+        self.modules.get_mut(&id).unwrap().rotate();
+        let module = self.modules.get(&id).unwrap();
+        self.grid.place_module(id, pos, module.width(), module.height());
+        self.rebuild_channels();
+        true
+    }
+
+    fn rebuild_channels(&mut self) {
+        self.grid.clear_channels();
+
+        let module_data: Vec<_> = self.modules.iter()
+            .filter_map(|(id, m)| {
+                self.positions.get(id).map(|pos| (*id, *pos, m.clone()))
+            })
+            .collect();
+
+        for (id, pos, module) in &module_data {
+            let color = module.kind.color();
+            let width = module.width();
+            let height = module.height();
+            let bottom_y = pos.y + height as u16;
+            let right_x = pos.x + width as u16;
+
+            if module.has_output_bottom() {
+                for target_y in bottom_y..self.grid.height() {
+                    let target_pos = GridPos::new(pos.x, target_y);
+                    if let Cell::Module { id: target_id, local_x, local_y } = self.grid.get(target_pos) {
+                        if target_id != *id {
+                            if let Some(target_mod) = self.modules.get(&target_id) {
+                                if local_y == 0 && target_mod.has_input_top() && target_mod.is_port_open(local_x as usize) {
+                                    for y in bottom_y..target_y {
+                                        let p = GridPos::new(pos.x, y);
+                                        if self.grid.get(p).is_empty() {
+                                            self.grid.set(p, Cell::ChannelV { color });
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if module.has_output_right() {
+                let out_y = pos.y;
+                for target_x in right_x..self.grid.width() {
+                    let target_pos = GridPos::new(target_x, out_y);
+                    if let Cell::Module { id: target_id, local_x, local_y } = self.grid.get(target_pos) {
+                        if target_id != *id {
+                            if let Some(target_mod) = self.modules.get(&target_id) {
+                                if local_x == 0 && target_mod.has_input_left() && target_mod.is_port_open(local_y as usize) {
+                                    for x in right_x..target_x {
+                                        let p = GridPos::new(x, out_y);
+                                        if self.grid.get(p).is_empty() {
+                                            self.grid.set(p, Cell::ChannelH { color });
+                                        }
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Default for Patch {
+    fn default() -> Self {
+        Self::new(24, 16)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_remove_module() {
+        let mut patch = Patch::new(10, 10);
+        let id = patch.add_module(ModuleKind::Clock, GridPos::new(0, 0));
+        assert!(id.is_some());
+        assert!(patch.remove_module(id.unwrap()));
+    }
+
+    #[test]
+    fn test_move_module() {
+        let mut patch = Patch::new(10, 10);
+        let id = patch.add_module(ModuleKind::Clock, GridPos::new(0, 0)).unwrap();
+        assert!(patch.move_module(id, GridPos::new(2, 2)));
+        assert_eq!(patch.module_position(id), Some(GridPos::new(2, 2)));
+    }
+}

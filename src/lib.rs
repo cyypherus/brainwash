@@ -18,8 +18,7 @@ mod reverb;
 mod scale;
 mod signal;
 mod track;
-#[cfg(feature = "tui")]
-mod tui;
+
 mod utils;
 #[cfg(feature = "wav")]
 mod wav;
@@ -40,7 +39,7 @@ pub use scale::*;
 pub use signal::*;
 pub use track::*;
 #[cfg(feature = "tui")]
-pub use tui::*;
+pub mod tui;
 pub use utils::*;
 #[cfg(feature = "wav")]
 pub use wav::*;
