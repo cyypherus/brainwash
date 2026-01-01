@@ -12,4 +12,4 @@ pub use engine::{CompiledPatch, compile_patch};
 pub use grid::{Cell, Direction, Grid, GridPos};
 pub use module::{Module, ModuleId, ModuleKind, Orientation};
 pub use patch::Patch;
-pub use persist::{load_patch, save_patch};
+pub use persist::{load_patchset, save_patchset};

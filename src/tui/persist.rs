@@ -1,7 +1,9 @@
 use super::grid::GridPos;
-use super::module::{ModuleKind, ModuleParams, Orientation};
-use super::patch::Patch;
+use super::module::{ModuleKind, ModuleParams, Orientation, SubPatchId};
+use super::patch::{Patch, PatchSet, SubPatchDef};
+use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -16,6 +18,16 @@ pub struct PatchFile {
     pub modules: Vec<ModuleDef>,
     #[serde(default)]
     pub track: Option<String>,
+    #[serde(default)]
+    pub subpatches: Vec<SubPatchFileDef>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SubPatchFileDef {
+    pub id: u32,
+    pub name: String,
+    pub color: (u8, u8, u8),
+    pub modules: Vec<ModuleDef>,
 }
 
 fn default_bpm() -> f32 {
@@ -47,6 +59,7 @@ impl PatchFile {
             bars: 1.0,
             modules: Vec::new(),
             track: None,
+            subpatches: Vec::new(),
         }
     }
 }
@@ -57,36 +70,29 @@ impl Default for PatchFile {
     }
 }
 
-pub fn patch_to_file(patch: &Patch, bpm: f32, bars: f32, track: Option<&str>) -> PatchFile {
-    let mut pf = PatchFile::new();
-    pf.bpm = bpm;
-    pf.bars = bars;
-    pf.track = track.map(|s| s.to_string());
-
-    for module in patch.all_modules() {
-        let pos = patch
-            .module_position(module.id)
-            .unwrap_or(GridPos::new(0, 0));
-
-        pf.modules.push(ModuleDef {
-            id: module.id.0,
-            kind: module.kind,
-            x: pos.x,
-            y: pos.y,
-            orientation: module.orientation,
-            params: module.params.clone(),
-        });
-    }
-
-    pf
+fn patch_to_modules(patch: &Patch) -> Vec<ModuleDef> {
+    patch
+        .all_modules()
+        .map(|module| {
+            let pos = patch
+                .module_position(module.id)
+                .unwrap_or(GridPos::new(0, 0));
+            ModuleDef {
+                id: module.id.0,
+                kind: module.kind,
+                x: pos.x,
+                y: pos.y,
+                orientation: module.orientation,
+                params: module.params.clone(),
+            }
+        })
+        .collect()
 }
 
-pub fn file_to_patch(pf: &PatchFile) -> (Patch, f32, f32, Option<String>) {
-    let mut patch = Patch::new(32, 32);
-
-    for mdef in &pf.modules {
+fn modules_to_patch(modules: &[ModuleDef], width: u16, height: u16) -> Patch {
+    let mut patch = Patch::new(width, height);
+    for mdef in modules {
         let pos = GridPos::new(mdef.x, mdef.y);
-
         if let Some(id) = patch.add_module(mdef.kind, pos) {
             if let Some(module) = patch.module_mut(id) {
                 module.orientation = mdef.orientation;
@@ -94,20 +100,69 @@ pub fn file_to_patch(pf: &PatchFile) -> (Patch, f32, f32, Option<String>) {
             }
         }
     }
-
     patch.rebuild_channels();
-
-    (patch, pf.bpm, pf.bars, pf.track.clone())
+    patch
 }
 
-pub fn save_patch(
+fn color_to_rgb(c: Color) -> (u8, u8, u8) {
+    match c {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => (255, 150, 50),
+    }
+}
+
+pub fn patchset_to_file(patches: &PatchSet, bpm: f32, bars: f32, track: Option<&str>) -> PatchFile {
+    let mut pf = PatchFile::new();
+    pf.bpm = bpm;
+    pf.bars = bars;
+    pf.track = track.map(|s| s.to_string());
+    pf.modules = patch_to_modules(&patches.root);
+
+    for (id, sub) in &patches.subpatches {
+        pf.subpatches.push(SubPatchFileDef {
+            id: id.0,
+            name: sub.name.clone(),
+            color: color_to_rgb(sub.color),
+            modules: patch_to_modules(&sub.patch),
+        });
+    }
+
+    pf
+}
+
+pub fn file_to_patchset(pf: &PatchFile) -> (PatchSet, f32, f32, Option<String>) {
+    let root = modules_to_patch(&pf.modules, 32, 32);
+
+    let mut subpatches = HashMap::new();
+    let mut max_id = 0u32;
+
+    for sub in &pf.subpatches {
+        let id = SubPatchId(sub.id);
+        max_id = max_id.max(sub.id);
+
+        let (r, g, b) = sub.color;
+        let mut def = SubPatchDef::new(sub.name.clone(), Color::Rgb(r, g, b));
+        def.patch = modules_to_patch(&sub.modules, 10, 10);
+        subpatches.insert(id, def);
+    }
+
+    let patches = PatchSet {
+        root,
+        subpatches,
+        next_subpatch_id: max_id + 1,
+    };
+
+    (patches, pf.bpm, pf.bars, pf.track.clone())
+}
+
+pub fn save_patchset(
     path: &Path,
-    patch: &Patch,
+    patches: &PatchSet,
     bpm: f32,
     bars: f32,
     track: Option<&str>,
 ) -> io::Result<()> {
-    let pf = patch_to_file(patch, bpm, bars, track);
+    let pf = patchset_to_file(patches, bpm, bars, track);
     let config = ron::ser::PrettyConfig::new()
         .depth_limit(4)
         .indentor("  ".to_string());
@@ -116,11 +171,11 @@ pub fn save_patch(
     fs::write(path, content)
 }
 
-pub fn load_patch(path: &Path) -> io::Result<(Patch, f32, f32, Option<String>)> {
+pub fn load_patchset(path: &Path) -> io::Result<(PatchSet, f32, f32, Option<String>)> {
     let content = fs::read_to_string(path)?;
     let pf: PatchFile =
         ron::from_str(&content).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    Ok(file_to_patch(&pf))
+    Ok(file_to_patchset(&pf))
 }
 
 #[cfg(test)]
@@ -130,12 +185,12 @@ mod tests {
 
     #[test]
     fn test_ron_format() {
-        let mut patch = Patch::new(20, 20);
-        patch.add_module(ModuleKind::Freq, GridPos::new(0, 0));
-        let osc_id = patch.add_module(ModuleKind::Osc, GridPos::new(0, 2)).unwrap();
-        patch.add_module(ModuleKind::Output, GridPos::new(0, 7));
+        let mut patches = PatchSet::new(20, 20);
+        patches.root.add_module(ModuleKind::Freq, GridPos::new(0, 0));
+        let osc_id = patches.root.add_module(ModuleKind::Osc, GridPos::new(0, 2)).unwrap();
+        patches.root.add_module(ModuleKind::Output, GridPos::new(0, 7));
 
-        if let Some(osc) = patch.module_mut(osc_id) {
+        if let Some(osc) = patches.root.module_mut(osc_id) {
             osc.params = ModuleParams::Osc {
                 wave: crate::tui::module::WaveType::Saw,
                 freq: 440.0,
@@ -146,29 +201,29 @@ mod tests {
             };
         }
 
-        let pf = patch_to_file(&patch, 120.0, 1.0, Some("C4 D4 E4"));
+        let pf = patchset_to_file(&patches, 120.0, 1.0, Some("C4 D4 E4"));
         let config = ron::ser::PrettyConfig::new().depth_limit(4).indentor("  ".to_string());
         println!("{}", ron::ser::to_string_pretty(&pf, config).unwrap());
     }
 
     #[test]
     fn test_roundtrip() {
-        let mut patch = Patch::new(20, 20);
+        let mut patches = PatchSet::new(20, 20);
 
-        let _freq_id = patch
+        let _freq_id = patches.root
             .add_module(ModuleKind::Freq, GridPos::new(0, 0))
             .unwrap();
-        let osc_id = patch
+        let osc_id = patches.root
             .add_module(ModuleKind::Osc, GridPos::new(0, 2))
             .unwrap();
-        let env_id = patch
+        let env_id = patches.root
             .add_module(ModuleKind::Envelope, GridPos::new(2, 0))
             .unwrap();
-        let _out_id = patch
+        let _out_id = patches.root
             .add_module(ModuleKind::Output, GridPos::new(0, 7))
             .unwrap();
 
-        if let Some(osc) = patch.module_mut(osc_id) {
+        if let Some(osc) = patches.root.module_mut(osc_id) {
             osc.orientation = Orientation::Vertical;
             osc.params = ModuleParams::Osc {
                 wave: crate::tui::module::WaveType::Saw,
@@ -180,7 +235,7 @@ mod tests {
             };
         }
 
-        if let Some(env) = patch.module_mut(env_id) {
+        if let Some(env) = patches.root.module_mut(env_id) {
             if let Some(pts) = env.params.env_points_mut() {
                 *pts = vec![
                     EnvPoint {
@@ -202,7 +257,7 @@ mod tests {
             }
         }
 
-        let pf = patch_to_file(&patch, 90.0, 4.0, Some("C4 E4 G4\n# comment\nD4"));
+        let pf = patchset_to_file(&patches, 90.0, 4.0, Some("C4 E4 G4\n# comment\nD4"));
 
         let serialized = ron::ser::to_string_pretty(&pf, ron::ser::PrettyConfig::default()).unwrap();
         let pf2: PatchFile = ron::from_str(&serialized).unwrap();
@@ -212,13 +267,13 @@ mod tests {
         assert_eq!(pf2.modules.len(), 4);
         assert!(pf2.track.as_ref().unwrap().contains("# comment"));
 
-        let (patch2, bpm2, bars2, track2) = file_to_patch(&pf2);
+        let (patches2, bpm2, bars2, track2) = file_to_patchset(&pf2);
 
         assert!((bpm2 - 90.0).abs() < 0.01);
         assert!((bars2 - 4.0).abs() < 0.01);
         assert!(track2.unwrap().contains("# comment"));
 
-        let modules: Vec<_> = patch2.all_modules().collect();
+        let modules: Vec<_> = patches2.root.all_modules().collect();
         assert_eq!(modules.len(), 4);
 
         let osc2 = modules.iter().find(|m| m.kind == ModuleKind::Osc).unwrap();

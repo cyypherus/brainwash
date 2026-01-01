@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ModuleId(pub u32);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SubPatchId(pub u32);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Orientation {
     #[default]
@@ -118,6 +121,9 @@ pub enum ModuleKind {
     DJoin,
     TurnRD,
     TurnDR,
+    SubIn,
+    SubOut,
+    SubPatch(SubPatchId),
 }
 
 impl ModuleKind {
@@ -151,6 +157,9 @@ impl ModuleKind {
             ModuleKind::DJoin => "DJoin ▼",
             ModuleKind::TurnRD => "Turn ┐",
             ModuleKind::TurnDR => "Turn └",
+            ModuleKind::SubIn => "SubIn",
+            ModuleKind::SubOut => "SubOut",
+            ModuleKind::SubPatch(_) => "Sub",
         }
     }
 
@@ -184,6 +193,9 @@ impl ModuleKind {
             ModuleKind::DJoin => " ▼ ",
             ModuleKind::TurnRD => " ┐ ",
             ModuleKind::TurnDR => " └ ",
+            ModuleKind::SubIn => "SIN",
+            ModuleKind::SubOut => "SOT",
+            ModuleKind::SubPatch(_) => "SUB",
         }
     }
 
@@ -217,6 +229,9 @@ impl ModuleKind {
             ModuleKind::DJoin => "In from left+top, out down",
             ModuleKind::TurnRD => "In from left, out down",
             ModuleKind::TurnDR => "In from top, out right",
+            ModuleKind::SubIn => "Subpatch input port",
+            ModuleKind::SubOut => "Subpatch output port",
+            ModuleKind::SubPatch(_) => "Subpatch instance",
         }
     }
 
@@ -249,13 +264,20 @@ impl ModuleKind {
             | ModuleKind::DJoin
             | ModuleKind::TurnRD
             | ModuleKind::TurnDR => Color::Rgb(180, 180, 180),
+            ModuleKind::SubIn | ModuleKind::SubOut => Color::Rgb(255, 180, 100),
+            ModuleKind::SubPatch(_) => Color::Rgb(255, 150, 50),
         }
     }
 
     pub fn port_count(&self) -> usize {
         match self {
-            ModuleKind::LSplit | ModuleKind::TSplit | ModuleKind::TurnRD | ModuleKind::TurnDR => 1,
+            ModuleKind::LSplit
+            | ModuleKind::TSplit
+            | ModuleKind::TurnRD
+            | ModuleKind::TurnDR => 1,
             ModuleKind::RJoin | ModuleKind::DJoin => 2,
+            ModuleKind::SubIn => 0,
+            ModuleKind::SubOut => 1,
             _ => self
                 .param_defs()
                 .iter()
@@ -275,7 +297,7 @@ impl ModuleKind {
 
     pub fn output_count(&self) -> usize {
         match self {
-            ModuleKind::Output => 0,
+            ModuleKind::Output | ModuleKind::SubOut => 0,
             ModuleKind::LSplit | ModuleKind::TSplit => 2,
             _ => 1,
         }
@@ -322,6 +344,9 @@ impl ModuleKind {
             | ModuleKind::DJoin
             | ModuleKind::TurnRD
             | ModuleKind::TurnDR => ModuleCategory::Routing,
+            ModuleKind::SubIn | ModuleKind::SubOut | ModuleKind::SubPatch(_) => {
+                ModuleCategory::Subpatch
+            }
         }
     }
 
@@ -355,6 +380,9 @@ impl ModuleKind {
             ModuleKind::TSplit,
             ModuleKind::RJoin,
             ModuleKind::DJoin,
+            ModuleKind::SubIn,
+            ModuleKind::SubOut,
+            ModuleKind::SubPatch(SubPatchId(0)),
         ]
     }
 
@@ -375,6 +403,7 @@ pub enum ModuleCategory {
     Effect,
     Math,
     Routing,
+    Subpatch,
     Output,
 }
 
@@ -387,6 +416,7 @@ impl ModuleCategory {
             ModuleCategory::Effect => "Effects",
             ModuleCategory::Math => "Math",
             ModuleCategory::Routing => "Routing",
+            ModuleCategory::Subpatch => "Subpatch",
             ModuleCategory::Output => "Output",
         }
     }
@@ -399,6 +429,7 @@ impl ModuleCategory {
             ModuleCategory::Effect,
             ModuleCategory::Math,
             ModuleCategory::Routing,
+            ModuleCategory::Subpatch,
             ModuleCategory::Output,
         ]
     }
@@ -410,6 +441,33 @@ pub struct Module {
     pub kind: ModuleKind,
     pub orientation: Orientation,
     pub params: ModuleParams,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct PortInfo {
+    pub label: char,
+    pub connected: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct RenderInfo {
+    pub width: u8,
+    pub height: u8,
+    pub name: &'static str,
+    pub color: Color,
+    pub input_edge: Edge,
+    pub output_edge: Edge,
+    pub input_ports: Vec<PortInfo>,
+    pub output_ports: Vec<PortInfo>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edge {
+    Top,
+    Left,
+    Bottom,
+    Right,
+    None,
 }
 
 impl Module {
@@ -426,13 +484,87 @@ impl Module {
         self.orientation = self.orientation.rotate();
     }
 
+    pub fn render_info(&self) -> RenderInfo {
+        let input_count = self.input_port_count() as usize;
+        let output_count = self.output_port_count() as usize;
+
+        let (input_edge, output_edge) = if self.kind.is_routing() {
+            match self.kind {
+                ModuleKind::LSplit | ModuleKind::TurnRD => (Edge::Left, Edge::Bottom),
+                ModuleKind::TSplit => (Edge::Top, Edge::Bottom),
+                ModuleKind::RJoin => (Edge::Left, Edge::Right),
+                ModuleKind::DJoin => (Edge::Top, Edge::Bottom),
+                ModuleKind::TurnDR => (Edge::Top, Edge::Right),
+                _ => (Edge::None, Edge::None),
+            }
+        } else {
+            match self.orientation {
+                Orientation::Horizontal => (Edge::Left, Edge::Right),
+                Orientation::Vertical => (Edge::Top, Edge::Bottom),
+            }
+        };
+
+        let input_edge = if input_count == 0 { Edge::None } else { input_edge };
+        let output_edge = if output_count == 0 { Edge::None } else { output_edge };
+
+        let defs = self.kind.param_defs();
+        let port_params: Vec<_> = defs.iter().enumerate().filter(|(_, d)| d.kind.is_port()).collect();
+
+        let input_ports: Vec<PortInfo> = (0..input_count)
+            .map(|i| {
+                if let Some(&(param_idx, def)) = port_params.get(i) {
+                    let connected = match def.kind {
+                        ParamKind::Input => true,
+                        ParamKind::Float { .. } => self.params.is_connected(param_idx),
+                        _ => true,
+                    };
+                    PortInfo {
+                        label: def.name.chars().next().unwrap_or(' '),
+                        connected,
+                    }
+                } else {
+                    PortInfo { label: ' ', connected: true }
+                }
+            })
+            .collect();
+
+        let output_ports: Vec<PortInfo> = (0..output_count)
+            .map(|_| PortInfo { label: ' ', connected: true })
+            .collect();
+
+        RenderInfo {
+            width: self.width(),
+            height: self.height(),
+            name: self.display_name(),
+            color: self.kind.color(),
+            input_edge,
+            output_edge,
+            input_ports,
+            output_ports,
+        }
+    }
+
+    pub fn input_port_count(&self) -> u8 {
+        if let ModuleParams::SubPatch { inputs, .. } = self.params {
+            return inputs.max(1);
+        }
+        self.kind.port_count().max(1) as u8
+    }
+
+    pub fn output_port_count(&self) -> u8 {
+        if let ModuleParams::SubPatch { outputs, .. } = self.params {
+            return outputs.max(1);
+        }
+        self.kind.output_count().max(1) as u8
+    }
+
     pub fn width(&self) -> u8 {
         if self.kind.is_routing() {
             return 1;
         }
         match self.orientation {
-            Orientation::Horizontal => 1,
-            Orientation::Vertical => self.kind.port_count().max(1) as u8,
+            Orientation::Horizontal => self.output_port_count(),
+            Orientation::Vertical => self.input_port_count(),
         }
     }
 
@@ -441,17 +573,17 @@ impl Module {
             return 1;
         }
         match self.orientation {
-            Orientation::Horizontal => self.kind.port_count().max(1) as u8,
-            Orientation::Vertical => 1,
+            Orientation::Horizontal => self.input_port_count(),
+            Orientation::Vertical => self.output_port_count(),
         }
     }
 
     pub fn has_input_top(&self) -> bool {
-        if self.kind.port_count() == 0 {
+        if self.input_port_count() == 0 {
             return false;
         }
         match self.kind {
-            ModuleKind::LSplit | ModuleKind::TurnRD => false,
+            ModuleKind::LSplit | ModuleKind::TurnRD | ModuleKind::SubIn => false,
             ModuleKind::TSplit | ModuleKind::TurnDR => true,
             ModuleKind::RJoin | ModuleKind::DJoin => true,
             _ => self.orientation == Orientation::Vertical,
@@ -459,37 +591,37 @@ impl Module {
     }
 
     pub fn has_input_left(&self) -> bool {
-        if self.kind.port_count() == 0 {
+        if self.input_port_count() == 0 {
             return false;
         }
         match self.kind {
             ModuleKind::LSplit | ModuleKind::TurnRD => true,
-            ModuleKind::TSplit | ModuleKind::TurnDR => false,
+            ModuleKind::TSplit | ModuleKind::TurnDR | ModuleKind::SubIn => false,
             ModuleKind::RJoin | ModuleKind::DJoin => true,
             _ => self.orientation == Orientation::Horizontal,
         }
     }
 
     pub fn has_output_bottom(&self) -> bool {
-        if self.kind.output_count() == 0 {
+        if self.output_port_count() == 0 {
             return false;
         }
         match self.kind {
             ModuleKind::LSplit | ModuleKind::TSplit | ModuleKind::TurnRD => true,
-            ModuleKind::RJoin | ModuleKind::TurnDR => false,
+            ModuleKind::RJoin | ModuleKind::TurnDR | ModuleKind::SubOut => false,
             ModuleKind::DJoin => true,
             _ => self.orientation == Orientation::Vertical,
         }
     }
 
     pub fn has_output_right(&self) -> bool {
-        if self.kind.output_count() == 0 {
+        if self.output_port_count() == 0 {
             return false;
         }
         match self.kind {
             ModuleKind::LSplit | ModuleKind::TSplit | ModuleKind::TurnDR => true,
             ModuleKind::RJoin => true,
-            ModuleKind::DJoin | ModuleKind::TurnRD => false,
+            ModuleKind::DJoin | ModuleKind::TurnRD | ModuleKind::SubOut => false,
             _ => self.orientation == Orientation::Horizontal,
         }
     }
@@ -511,6 +643,10 @@ impl Module {
     pub fn is_port_open(&self, port_idx: usize) -> bool {
         if self.kind.is_routing() {
             return port_idx < self.kind.port_count();
+        }
+
+        if let ModuleParams::SubPatch { inputs, outputs } = self.params {
+            return port_idx < inputs.max(outputs) as usize;
         }
 
         let Some(param_idx) = self.kind.port_to_param_idx(port_idx) else {
@@ -936,6 +1072,11 @@ impl ModuleKind {
                     step: 0.01,
                 },
             }],
+            ModuleKind::SubIn => &[],
+            ModuleKind::SubOut => &[ParamDef {
+                name: "In",
+                kind: ParamKind::Input,
+            }],
             _ => &[],
         }
     }
@@ -1040,6 +1181,10 @@ pub enum ModuleParams {
     },
     Output {
         connected: u8,
+    },
+    SubPatch {
+        inputs: u8,
+        outputs: u8,
     },
 }
 
@@ -1154,7 +1299,13 @@ impl ModuleParams {
             | ModuleKind::RJoin
             | ModuleKind::DJoin
             | ModuleKind::TurnRD
-            | ModuleKind::TurnDR => ModuleParams::None,
+            | ModuleKind::TurnDR
+            | ModuleKind::SubIn
+            | ModuleKind::SubOut => ModuleParams::None,
+            ModuleKind::SubPatch(_) => ModuleParams::SubPatch {
+                inputs: 1,
+                outputs: 1,
+            },
         }
     }
 
@@ -1180,12 +1331,13 @@ impl ModuleParams {
             ModuleParams::Switch { connected, .. } => *connected,
             ModuleParams::Probe { connected, .. } => *connected,
             ModuleParams::Output { connected, .. } => *connected,
+            ModuleParams::SubPatch { .. } => 0xFF,
         }
     }
 
     pub fn connected_mut(&mut self) -> Option<&mut u8> {
         match self {
-            ModuleParams::None => None,
+            ModuleParams::None | ModuleParams::SubPatch { .. } => None,
             ModuleParams::Osc { connected, .. } => Some(connected),
             ModuleParams::Rise { connected, .. } => Some(connected),
             ModuleParams::Fall { connected, .. } => Some(connected),

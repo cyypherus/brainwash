@@ -1,6 +1,6 @@
 use super::bindings;
 use super::grid::{Cell, GridPos};
-use super::module::{Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind};
+use super::module::{Edge, Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind};
 use super::patch::Patch;
 use crate::envelopes::{Envelope, EnvelopePoint, PointType};
 use ratatui::{
@@ -131,8 +131,8 @@ pub struct GridWidget<'a> {
     cursor: GridPos,
     view_center: GridPos,
     moving: Option<ModuleId>,
-    copy_previews: Vec<(&'a Module, GridPos)>,
-    move_previews: Vec<(&'a Module, GridPos)>,
+    copy_previews: Vec<(Module, GridPos)>,
+    move_previews: Vec<(Module, GridPos)>,
     probe_values: &'a [f32],
     selection: Option<(GridPos, GridPos)>,
 }
@@ -167,12 +167,12 @@ impl<'a> GridWidget<'a> {
         self
     }
 
-    pub fn copy_previews(mut self, previews: Vec<(&'a Module, GridPos)>) -> Self {
+    pub fn copy_previews(mut self, previews: Vec<(Module, GridPos)>) -> Self {
         self.copy_previews = previews;
         self
     }
 
-    pub fn move_previews(mut self, previews: Vec<(&'a Module, GridPos)>) -> Self {
+    pub fn move_previews(mut self, previews: Vec<(Module, GridPos)>) -> Self {
         self.move_previews = previews;
         self
     }
@@ -385,78 +385,61 @@ impl<'a> GridWidget<'a> {
         set_str(buf, sx, sy + 1, &mid_str, border_style);
         set_str(buf, sx, sy + 2, &bot_str, border_style);
 
-        if is_top && is_left {
-            if let Some(val) = probe_value {
-                let val_str = format!("{:.1}", val);
-                let name_x = sx + 1;
-                for (i, ch) in val_str.chars().take(3).enumerate() {
-                    set_cell(buf, name_x + i as u16, sy + 1, ch, text_style);
-                }
-            } else {
-                let name = module.display_name();
-                let name_x = sx + 1;
-                for (i, ch) in name.chars().take(3).enumerate() {
-                    set_cell(buf, name_x + i as u16, sy + 1, ch, text_style);
-                }
-            }
-        }
-
         let cx = sx + CELL_WIDTH / 2;
         let cy = sy + CELL_HEIGHT / 2;
 
-        let port_pos = match module.orientation {
-            super::module::Orientation::Horizontal => local_y as usize,
-            super::module::Orientation::Vertical => local_x as usize,
+        let info = module.render_info();
+
+        if is_top && is_left {
+            if let Some(val) = probe_value {
+                let val_str = format!("{:.1}", val);
+                for (i, ch) in val_str.chars().take(3).enumerate() {
+                    set_cell(buf, sx + 1 + i as u16, sy + 1, ch, text_style);
+                }
+            } else {
+                for (i, ch) in info.name.chars().take(3).enumerate() {
+                    set_cell(buf, sx + 1 + i as u16, sy + 1, ch, text_style);
+                }
+            }
+        }
+
+        let input_idx = match info.input_edge {
+            Edge::Top => local_x as usize,
+            Edge::Left => local_y as usize,
+            _ => usize::MAX,
         };
 
-        if !kind.is_routing() {
-            let defs = kind.param_defs();
-            let port_params: Vec<_> = defs
-                .iter()
-                .enumerate()
-                .filter(|(_, d)| d.kind.is_port())
-                .collect();
-
-            if let Some(&(param_idx, def)) = port_params.get(port_pos) {
-                let port_char = match def.kind {
-                    ParamKind::Input => '●',
-                    ParamKind::Float { .. } => {
-                        if module.params.is_connected(param_idx) {
-                            '●'
-                        } else {
-                            '✕'
-                        }
+        if let Some(port) = info.input_ports.get(input_idx) {
+            let port_char = if port.connected { '●' } else { '✕' };
+            match info.input_edge {
+                Edge::Top => {
+                    if port.label != ' ' {
+                        set_cell(buf, cx - 1, sy, port.label, port_style);
                     }
-                    _ => unreachable!(),
-                };
-
-                let label = def.name.chars().next().unwrap_or(' ');
-
-                if module.has_input_top() {
-                    set_cell(buf, cx - 1, sy, label, port_style);
                     set_cell(buf, cx, sy, port_char, port_style);
                 }
-                if module.has_input_left() {
-                    set_cell(buf, sx, cy - 1, label, port_style);
+                Edge::Left => {
+                    if port.label != ' ' {
+                        set_cell(buf, sx, cy - 1, port.label, port_style);
+                    }
                     set_cell(buf, sx, cy, port_char, port_style);
                 }
+                _ => {}
             }
         }
 
-        if kind.is_routing() {
-            if is_top && is_left && module.has_input_top() {
-                set_cell(buf, cx, sy, '●', port_style);
-            }
-            if is_left && module.has_input_left() {
-                set_cell(buf, sx, cy, '●', port_style);
-            }
-        }
+        let output_idx = match info.output_edge {
+            Edge::Bottom => local_x as usize,
+            Edge::Right => local_y as usize,
+            _ => usize::MAX,
+        };
 
-        if is_bottom && is_left && module.has_output_bottom() {
-            set_cell(buf, cx, sy + CELL_HEIGHT - 1, '○', port_style);
-        }
-        if is_top && is_right && module.has_output_right() {
-            set_cell(buf, sx + CELL_WIDTH - 1, cy, '○', port_style);
+        if output_idx < info.output_ports.len() {
+            match info.output_edge {
+                Edge::Bottom => set_cell(buf, cx, sy + CELL_HEIGHT - 1, '○', port_style),
+                Edge::Right => set_cell(buf, sx + CELL_WIDTH - 1, cy, '○', port_style),
+                _ => {}
+            }
         }
     }
 

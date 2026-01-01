@@ -37,6 +37,9 @@ pub enum Action {
     Undo,
     Redo,
     Search,
+    MakeSubpatch,
+    EditSubpatch,
+    ExitSubpatch,
 }
 
 pub struct Binding {
@@ -60,23 +63,27 @@ pub fn normal_bindings() -> &'static [Binding] {
         Binding { key: KeyCode::Char('.'), action: Action::Delete, hint: "delete", group: None },
         Binding { key: KeyCode::Char('o'), action: Action::Rotate, hint: "rotate", group: None },
         Binding { key: KeyCode::Char('m'), action: Action::Move, hint: "grab", group: None },
-        Binding { key: KeyCode::Char('y'), action: Action::Edit, hint: "edit", group: None },
+        Binding { key: KeyCode::Char('i'), action: Action::Edit, hint: "info", group: None },
         Binding { key: KeyCode::Char('u'), action: Action::Undo, hint: "undo", group: None },
         Binding { key: KeyCode::Char('U'), action: Action::Redo, hint: "redo", group: None },
-        Binding { key: KeyCode::Char('i'), action: Action::Copy, hint: "copy", group: None },
-        Binding { key: KeyCode::Char('p'), action: Action::TogglePlay, hint: "play", group: None },
+        Binding { key: KeyCode::Char('y'), action: Action::Copy, hint: "yank", group: None },
+        Binding { key: KeyCode::Char(' '), action: Action::TogglePlay, hint: "play", group: None },
         Binding { key: KeyCode::Char('t'), action: Action::TrackEdit, hint: "track", group: None },
         Binding { key: KeyCode::Char(','), action: Action::Select, hint: "select", group: None },
         Binding { key: KeyCode::Char('w'), action: Action::Save, hint: "save", group: None },
         Binding { key: KeyCode::Char('W'), action: Action::SaveAs, hint: "save as", group: None },
         Binding { key: KeyCode::Char('s'), action: Action::TrackSettings, hint: "settings", group: None },
         Binding { key: KeyCode::Char('Q'), action: Action::Quit, hint: "quit", group: None },
+        Binding { key: KeyCode::Char('p'), action: Action::EditSubpatch, hint: "enter sub", group: None },
+        Binding { key: KeyCode::Esc, action: Action::ExitSubpatch, hint: "exit sub", group: None },
+        Binding { key: KeyCode::Char('n'), action: Action::Palette(0), hint: "menu", group: None },
         Binding { key: KeyCode::Char('7'), action: Action::Palette(0), hint: "track", group: None },
         Binding { key: KeyCode::Char('8'), action: Action::Palette(1), hint: "gen", group: None },
         Binding { key: KeyCode::Char('9'), action: Action::Palette(2), hint: "env", group: None },
         Binding { key: KeyCode::Char('0'), action: Action::Palette(3), hint: "fx", group: None },
         Binding { key: KeyCode::Char('-'), action: Action::Palette(4), hint: "math", group: None },
         Binding { key: KeyCode::Char('='), action: Action::Palette(5), hint: "route", group: None },
+        Binding { key: KeyCode::Char('`'), action: Action::Palette(6), hint: "sub", group: None },
     ]
 }
 
@@ -91,7 +98,6 @@ pub fn palette_bindings() -> &'static [Binding] {
         Binding { key: KeyCode::Up, action: Action::Up, hint: "move", group: Some("arrows") },
         Binding { key: KeyCode::Right, action: Action::Right, hint: "move", group: Some("arrows") },
         Binding { key: KeyCode::Enter, action: Action::Confirm, hint: "place", group: Some("confirm") },
-        Binding { key: KeyCode::Char('i'), action: Action::Confirm, hint: "place", group: Some("confirm") },
         Binding { key: KeyCode::Char('/'), action: Action::Search, hint: "search", group: None },
         Binding { key: KeyCode::Esc, action: Action::Cancel, hint: "cancel", group: Some("cancel") },
         Binding { key: KeyCode::Char('q'), action: Action::Cancel, hint: "cancel", group: Some("cancel") },
@@ -110,8 +116,8 @@ pub fn move_bindings() -> &'static [Binding] {
         Binding { key: KeyCode::Up, action: Action::Up, hint: "move", group: Some("arrows") },
         Binding { key: KeyCode::Right, action: Action::Right, hint: "move", group: Some("arrows") },
         Binding { key: KeyCode::Char('m'), action: Action::Confirm, hint: "place", group: Some("confirm") },
+        Binding { key: KeyCode::Char('y'), action: Action::Confirm, hint: "place", group: Some("confirm") },
         Binding { key: KeyCode::Enter, action: Action::Confirm, hint: "place", group: Some("confirm") },
-        Binding { key: KeyCode::Char('i'), action: Action::Confirm, hint: "place", group: Some("confirm") },
         Binding { key: KeyCode::Esc, action: Action::Cancel, hint: "cancel", group: None },
     ]
 }
@@ -128,7 +134,7 @@ pub fn edit_bindings() -> &'static [Binding] {
         Binding { key: KeyCode::Right, action: Action::ValueUp, hint: "adjust", group: Some("lr") },
         Binding { key: KeyCode::Char(';'), action: Action::TogglePort, hint: "port", group: None },
         Binding { key: KeyCode::Esc, action: Action::Cancel, hint: "done", group: Some("done") },
-        Binding { key: KeyCode::Char('y'), action: Action::Cancel, hint: "done", group: Some("done") },
+        Binding { key: KeyCode::Char('i'), action: Action::Cancel, hint: "done", group: Some("done") },
     ]
 }
 
@@ -143,7 +149,7 @@ pub fn env_bindings() -> &'static [Binding] {
         Binding { key: KeyCode::Char('.'), action: Action::DeletePoint, hint: "delete", group: None },
         Binding { key: KeyCode::Char('c'), action: Action::ToggleCurve, hint: "curve", group: None },
         Binding { key: KeyCode::Esc, action: Action::Cancel, hint: "done", group: Some("done") },
-        Binding { key: KeyCode::Char('y'), action: Action::Cancel, hint: "done", group: Some("done") },
+        Binding { key: KeyCode::Char('i'), action: Action::Cancel, hint: "done", group: Some("done") },
     ]
 }
 
@@ -177,7 +183,8 @@ pub fn select_bindings() -> &'static [Binding] {
         Binding { key: KeyCode::Enter, action: Action::Move, hint: "grab", group: Some("grab") },
         Binding { key: KeyCode::Char('.'), action: Action::Delete, hint: "delete", group: Some("del") },
         Binding { key: KeyCode::Char('x'), action: Action::Delete, hint: "delete", group: Some("del") },
-        Binding { key: KeyCode::Char('i'), action: Action::Copy, hint: "copy", group: None },
+        Binding { key: KeyCode::Char('y'), action: Action::Copy, hint: "yank", group: None },
+        Binding { key: KeyCode::Char('p'), action: Action::MakeSubpatch, hint: "subpatch", group: None },
         Binding { key: KeyCode::Esc, action: Action::Cancel, hint: "cancel", group: Some("cancel") },
         Binding { key: KeyCode::Char(','), action: Action::Cancel, hint: "cancel", group: Some("cancel") },
     ]
@@ -229,7 +236,7 @@ pub fn probe_bindings() -> &'static [Binding] {
         Binding { key: KeyCode::Char('r'), action: Action::Delete, hint: "reset", group: None },
         Binding { key: KeyCode::Char('c'), action: Action::ToggleCurve, hint: "cycle", group: None },
         Binding { key: KeyCode::Esc, action: Action::Cancel, hint: "done", group: Some("done") },
-        Binding { key: KeyCode::Char('y'), action: Action::Cancel, hint: "done", group: Some("done") },
+        Binding { key: KeyCode::Char('i'), action: Action::Cancel, hint: "done", group: Some("done") },
     ]
 }
 
@@ -280,8 +287,11 @@ pub fn key_str(key: KeyCode) -> &'static str {
             'r' => "r",
             't' => "t",
             's' => "s",
+            'S' => "S",
+            'e' => "e",
             'c' => "c",
             'x' => "x",
+            '`' => "`",
             ',' => ",",
             'w' => "w",
             'W' => "W",

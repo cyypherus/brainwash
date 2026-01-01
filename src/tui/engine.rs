@@ -1,6 +1,6 @@
 use super::grid::{Cell, GridPos};
-use super::module::{Module, ModuleId, ModuleKind};
-use super::patch::Patch;
+use super::module::{Module, ModuleId, ModuleKind, SubPatchId};
+use super::patch::{Patch, PatchSet};
 use crate::clock::Clock;
 use crate::delay::Delay;
 use crate::distortion::Distortion;
@@ -385,15 +385,251 @@ impl CompiledPatch {
     }
 }
 
-pub fn compile_patch(patch: &mut CompiledPatch, ui_patch: &Patch, num_voices: usize) {
-    let modules: Vec<_> = ui_patch.all_modules().collect();
-    let connections = trace_connections(ui_patch);
+pub fn compile_patch(patch: &mut CompiledPatch, patches: &PatchSet, num_voices: usize) {
+    let (modules, connections) = flatten_patchset(patches);
+    let module_refs: Vec<&Module> = modules.iter().collect();
 
     let voices = (0..num_voices)
-        .map(|_| compile_voice(&modules, &connections))
+        .map(|_| compile_voice(&module_refs, &connections))
         .collect();
 
     patch.set_voices(voices);
+}
+
+fn flatten_patchset(patches: &PatchSet) -> (Vec<Module>, Vec<(ModuleId, ModuleId, usize)>) {
+    let mut flat_modules: Vec<Module> = Vec::new();
+    let mut id_map: HashMap<(Option<SubPatchId>, ModuleId), ModuleId> = HashMap::new();
+    let mut next_id = 0u32;
+
+    for module in patches.root.all_modules() {
+        if let ModuleKind::SubPatch(sub_id) = module.kind {
+            if let Some(sub) = patches.subpatch(sub_id) {
+                let sub_pos = patches.root.module_position(module.id);
+                expand_subpatch(
+                    sub_id,
+                    sub,
+                    sub_pos,
+                    module.id,
+                    &mut flat_modules,
+                    &mut id_map,
+                    &mut next_id,
+                );
+            }
+        } else {
+            let new_id = ModuleId(next_id);
+            next_id += 1;
+            id_map.insert((None, module.id), new_id);
+
+            let mut m = module.clone();
+            m.id = new_id;
+            flat_modules.push(m);
+        }
+    }
+
+    let mut connections = Vec::new();
+
+    for module in patches.root.all_modules() {
+        if matches!(module.kind, ModuleKind::SubPatch(_)) {
+            continue;
+        }
+
+        let Some(pos) = patches.root.module_position(module.id) else {
+            continue;
+        };
+
+        if module.has_output_bottom() {
+            if let Some((target_id, port_idx)) =
+                trace_down(patches.root.grid(), &patches.root, pos.x, pos.y + module.height() as u16)
+            {
+                let src = id_map.get(&(None, module.id)).copied();
+                let dst = id_map.get(&(None, target_id)).copied();
+                if let (Some(s), Some(d)) = (src, dst) {
+                    connections.push((s, d, port_idx));
+                }
+            }
+        }
+
+        if module.has_output_right() {
+            if let Some((target_id, port_idx)) =
+                trace_right(patches.root.grid(), &patches.root, pos.x + module.width() as u16, pos.y)
+            {
+                let src = id_map.get(&(None, module.id)).copied();
+                let dst = id_map.get(&(None, target_id)).copied();
+                if let (Some(s), Some(d)) = (src, dst) {
+                    connections.push((s, d, port_idx));
+                }
+            }
+        }
+    }
+
+    trace_subpatch_connections(patches, &id_map, &mut connections);
+
+    (flat_modules, connections)
+}
+
+fn expand_subpatch(
+    sub_id: SubPatchId,
+    sub: &super::patch::SubPatchDef,
+    _parent_pos: Option<GridPos>,
+    _parent_module_id: ModuleId,
+    flat_modules: &mut Vec<Module>,
+    id_map: &mut HashMap<(Option<SubPatchId>, ModuleId), ModuleId>,
+    next_id: &mut u32,
+) {
+    for module in sub.patch.all_modules() {
+        let new_id = ModuleId(*next_id);
+        *next_id += 1;
+        id_map.insert((Some(sub_id), module.id), new_id);
+
+        let mut m = module.clone();
+        m.id = new_id;
+        flat_modules.push(m);
+    }
+}
+
+fn trace_subpatch_connections(
+    patches: &PatchSet,
+    id_map: &HashMap<(Option<SubPatchId>, ModuleId), ModuleId>,
+    connections: &mut Vec<(ModuleId, ModuleId, usize)>,
+) {
+    for module in patches.root.all_modules() {
+        let ModuleKind::SubPatch(sub_id) = module.kind else {
+            continue;
+        };
+        let Some(sub) = patches.subpatch(sub_id) else {
+            continue;
+        };
+        let Some(parent_pos) = patches.root.module_position(module.id) else {
+            continue;
+        };
+
+        let mut sub_inputs: Vec<_> = sub.patch.all_modules()
+            .filter(|m| m.kind == ModuleKind::SubIn)
+            .filter_map(|m| {
+                let pos = sub.patch.module_position(m.id)?;
+                Some((pos.y, m.id))
+            })
+            .collect();
+        sub_inputs.sort_by_key(|(y, _)| *y);
+        let sub_inputs: Vec<_> = sub_inputs.into_iter().enumerate().map(|(i, (_, id))| (i, id)).collect();
+
+        let mut sub_outputs: Vec<_> = sub.patch.all_modules()
+            .filter(|m| m.kind == ModuleKind::SubOut)
+            .filter_map(|m| {
+                let pos = sub.patch.module_position(m.id)?;
+                Some((pos.x, m.id))
+            })
+            .collect();
+        sub_outputs.sort_by_key(|(x, _)| *x);
+        let sub_outputs: Vec<_> = sub_outputs.into_iter().enumerate().map(|(i, (_, id))| (i, id)).collect();
+
+        for src in patches.root.all_modules() {
+            if src.id == module.id {
+                continue;
+            }
+            let Some(src_pos) = patches.root.module_position(src.id) else {
+                continue;
+            };
+
+            if src.has_output_right() && module.has_input_left() {
+                let start_x = src_pos.x + src.width() as u16;
+                if let Some((target_id, port_idx)) =
+                    trace_right(patches.root.grid(), &patches.root, start_x, src_pos.y)
+                {
+                    if target_id == module.id {
+                        if let Some(&(_, sub_in_id)) = sub_inputs.iter().find(|(idx, _)| *idx == port_idx) {
+                            let flat_src = id_map.get(&(None, src.id)).copied();
+                            let flat_dst = id_map.get(&(Some(sub_id), sub_in_id)).copied();
+                            if let (Some(s), Some(d)) = (flat_src, flat_dst) {
+                                connections.push((s, d, 0));
+                            }
+                        }
+                    }
+                }
+            }
+
+            if src.has_output_bottom() && module.has_input_top() {
+                let start_y = src_pos.y + src.height() as u16;
+                if let Some((target_id, port_idx)) =
+                    trace_down(patches.root.grid(), &patches.root, src_pos.x, start_y)
+                {
+                    if target_id == module.id {
+                        if let Some(&(_, sub_in_id)) = sub_inputs.iter().find(|(idx, _)| *idx == port_idx) {
+                            let flat_src = id_map.get(&(None, src.id)).copied();
+                            let flat_dst = id_map.get(&(Some(sub_id), sub_in_id)).copied();
+                            if let (Some(s), Some(d)) = (flat_src, flat_dst) {
+                                connections.push((s, d, 0));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if module.has_output_bottom() {
+            for (out_idx, sub_out_id) in &sub_outputs {
+                let out_x = parent_pos.x + *out_idx as u16;
+                let out_y = parent_pos.y + module.height() as u16;
+
+                if let Some((target_id, port_idx)) =
+                    trace_down(patches.root.grid(), &patches.root, out_x, out_y)
+                {
+                    let flat_src = id_map.get(&(Some(sub_id), *sub_out_id)).copied();
+                    let flat_dst = id_map.get(&(None, target_id)).copied();
+                    if let (Some(s), Some(d)) = (flat_src, flat_dst) {
+                        connections.push((s, d, port_idx));
+                    }
+                }
+            }
+        }
+
+        if module.has_output_right() {
+            for (out_idx, sub_out_id) in &sub_outputs {
+                let out_x = parent_pos.x + module.width() as u16;
+                let out_y = parent_pos.y + *out_idx as u16;
+
+                if let Some((target_id, port_idx)) =
+                    trace_right(patches.root.grid(), &patches.root, out_x, out_y)
+                {
+                    let flat_src = id_map.get(&(Some(sub_id), *sub_out_id)).copied();
+                    let flat_dst = id_map.get(&(None, target_id)).copied();
+                    if let (Some(s), Some(d)) = (flat_src, flat_dst) {
+                        connections.push((s, d, port_idx));
+                    }
+                }
+            }
+        }
+
+        for internal in sub.patch.all_modules() {
+            let Some(pos) = sub.patch.module_position(internal.id) else {
+                continue;
+            };
+
+            if internal.has_output_bottom() {
+                if let Some((target_id, port_idx)) =
+                    trace_down(sub.patch.grid(), &sub.patch, pos.x, pos.y + internal.height() as u16)
+                {
+                    let flat_src = id_map.get(&(Some(sub_id), internal.id)).copied();
+                    let flat_dst = id_map.get(&(Some(sub_id), target_id)).copied();
+                    if let (Some(s), Some(d)) = (flat_src, flat_dst) {
+                        connections.push((s, d, port_idx));
+                    }
+                }
+            }
+
+            if internal.has_output_right() {
+                if let Some((target_id, port_idx)) =
+                    trace_right(sub.patch.grid(), &sub.patch, pos.x + internal.width() as u16, pos.y)
+                {
+                    let flat_src = id_map.get(&(Some(sub_id), internal.id)).copied();
+                    let flat_dst = id_map.get(&(Some(sub_id), target_id)).copied();
+                    if let (Some(s), Some(d)) = (flat_src, flat_dst) {
+                        connections.push((s, d, port_idx));
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn compile_voice(
@@ -440,37 +676,6 @@ fn compile_voice(
 
     voice.execution_order = topological_sort(&voice.nodes);
     voice
-}
-
-fn trace_connections(patch: &Patch) -> Vec<(ModuleId, ModuleId, usize)> {
-    let mut connections = Vec::new();
-    let grid = patch.grid();
-
-    for module in patch.all_modules() {
-        let Some(pos) = patch.module_position(module.id) else {
-            continue;
-        };
-        let width = module.width();
-        let height = module.height();
-
-        if module.has_output_bottom() {
-            let out_x = pos.x;
-            let start_y = pos.y + height as u16;
-            if let Some((target_id, port_idx)) = trace_down(grid, patch, out_x, start_y) {
-                connections.push((module.id, target_id, port_idx));
-            }
-        }
-
-        if module.has_output_right() {
-            let out_y = pos.y;
-            let start_x = pos.x + width as u16;
-            if let Some((target_id, port_idx)) = trace_right(grid, patch, start_x, out_y) {
-                connections.push((module.id, target_id, port_idx));
-            }
-        }
-    }
-
-    connections
 }
 
 fn trace_down(
@@ -691,7 +896,10 @@ fn create_node_kind(module: &Module) -> NodeKind {
         | (ModuleKind::RJoin, _)
         | (ModuleKind::DJoin, _)
         | (ModuleKind::TurnRD, _)
-        | (ModuleKind::TurnDR, _) => NodeKind::Pass,
+        | (ModuleKind::TurnDR, _)
+        | (ModuleKind::SubIn, _)
+        | (ModuleKind::SubOut, _) => NodeKind::Pass,
+        (ModuleKind::SubPatch(_), _) => NodeKind::Pass,
         _ => NodeKind::Pass,
     }
 }
@@ -701,6 +909,16 @@ fn get_input_defaults(module: &Module) -> Vec<f32> {
         return vec![0.0; module.kind.port_count()];
     }
 
+    if matches!(module.kind, ModuleKind::SubPatch(_)) {
+        return Vec::new();
+    }
+
+    match module.kind {
+        ModuleKind::SubIn => return Vec::new(),
+        ModuleKind::SubOut => return vec![0.0],
+        _ => {}
+    }
+
     let defs = module.kind.param_defs();
 
     defs.iter()
@@ -708,4 +926,94 @@ fn get_input_defaults(module: &Module) -> Vec<f32> {
         .filter(|(_, d)| !matches!(d.kind, super::module::ParamKind::Enum))
         .map(|(i, _)| module.params.get_float(i).unwrap_or(0.0))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::grid::GridPos;
+
+    use ratatui::style::Color;
+
+    #[test]
+    fn test_flatten_simple() {
+        let mut patches = PatchSet::new(20, 20);
+
+        patches.root.add_module(ModuleKind::Freq, GridPos::new(0, 0));
+        patches.root.add_module(ModuleKind::Osc, GridPos::new(1, 0));
+        patches.root.add_module(ModuleKind::Output, GridPos::new(5, 0));
+
+        let (modules, connections) = flatten_patchset(&patches);
+
+        assert_eq!(modules.len(), 3);
+        assert!(connections.iter().any(|(src, dst, _)| {
+            let src_kind = modules.iter().find(|m| m.id == *src).map(|m| m.kind);
+            let dst_kind = modules.iter().find(|m| m.id == *dst).map(|m| m.kind);
+            src_kind == Some(ModuleKind::Freq) && dst_kind == Some(ModuleKind::Osc)
+        }));
+    }
+
+    #[test]
+    fn test_flatten_with_subpatch() {
+        let mut patches = PatchSet::new(20, 20);
+
+        patches.root.add_module(ModuleKind::Freq, GridPos::new(0, 0));
+
+        let sub_id = patches.create_subpatch("Test".into(), Color::Red);
+
+        if let Some(sub) = patches.subpatch_mut(sub_id) {
+            sub.patch.add_module(ModuleKind::SubIn, GridPos::new(0, 0));
+            sub.patch.add_module(ModuleKind::Gain, GridPos::new(0, 1));
+            sub.patch.add_module(ModuleKind::SubOut, GridPos::new(0, 3));
+        }
+
+        patches.root.add_module(ModuleKind::SubPatch(sub_id), GridPos::new(0, 1));
+        patches.root.add_module(ModuleKind::Output, GridPos::new(0, 3));
+
+        let (modules, _connections) = flatten_patchset(&patches);
+
+        assert_eq!(modules.len(), 5);
+
+        assert!(modules.iter().any(|m| m.kind == ModuleKind::Freq));
+        assert!(modules.iter().any(|m| m.kind == ModuleKind::SubIn));
+        assert!(modules.iter().any(|m| m.kind == ModuleKind::Gain));
+        assert!(modules.iter().any(|m| m.kind == ModuleKind::SubOut));
+        assert!(modules.iter().any(|m| m.kind == ModuleKind::Output));
+
+        assert!(!modules.iter().any(|m| matches!(m.kind, ModuleKind::SubPatch(_))));
+    }
+
+    #[test]
+    fn test_subpatch_connections() {
+        let mut patches = PatchSet::new(20, 20);
+
+        patches.root.add_module(ModuleKind::Freq, GridPos::new(0, 0));
+
+        let sub_id = patches.create_subpatch("Test".into(), Color::Red);
+
+        if let Some(sub) = patches.subpatch_mut(sub_id) {
+            sub.patch.add_module(ModuleKind::SubIn, GridPos::new(0, 0));
+            sub.patch.add_module(ModuleKind::SubOut, GridPos::new(1, 0));
+        }
+
+        patches.root.add_module(ModuleKind::SubPatch(sub_id), GridPos::new(1, 0));
+        patches.root.add_module(ModuleKind::Output, GridPos::new(2, 0));
+        patches.root.rebuild_channels();
+
+        let (modules, connections) = flatten_patchset(&patches);
+
+        let freq_id = modules.iter().find(|m| m.kind == ModuleKind::Freq).map(|m| m.id);
+        let sub_in_id = modules.iter().find(|m| m.kind == ModuleKind::SubIn).map(|m| m.id);
+        let sub_out_id = modules.iter().find(|m| m.kind == ModuleKind::SubOut).map(|m| m.id);
+        let output_id = modules.iter().find(|m| m.kind == ModuleKind::Output).map(|m| m.id);
+
+        assert!(connections.iter().any(|(src, dst, _)| Some(*src) == freq_id && Some(*dst) == sub_in_id),
+            "Freq->SubIn connection missing. Connections: {:?}", connections);
+
+        assert!(connections.iter().any(|(src, dst, _)| Some(*src) == sub_in_id && Some(*dst) == sub_out_id),
+            "SubIn->SubOut connection missing. Connections: {:?}", connections);
+
+        assert!(connections.iter().any(|(src, dst, _)| Some(*src) == sub_out_id && Some(*dst) == output_id),
+            "SubOut->Output connection missing. Connections: {:?}", connections);
+    }
 }

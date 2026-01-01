@@ -1,6 +1,72 @@
 use super::grid::{Cell, Grid, GridPos};
-use super::module::{Module, ModuleId, ModuleKind};
+use super::module::{Module, ModuleId, ModuleKind, SubPatchId};
+use ratatui::style::Color;
 use std::collections::HashMap;
+
+#[derive(Clone)]
+pub struct SubPatchDef {
+    pub name: String,
+    pub color: Color,
+    pub patch: Patch,
+}
+
+impl SubPatchDef {
+    pub fn new(name: String, color: Color) -> Self {
+        Self {
+            name,
+            color,
+            patch: Patch::new(10, 10),
+        }
+    }
+
+    pub fn inputs(&self) -> impl Iterator<Item = &Module> {
+        self.patch.all_modules().filter(|m| m.kind == ModuleKind::SubIn)
+    }
+
+    pub fn outputs(&self) -> impl Iterator<Item = &Module> {
+        self.patch.all_modules().filter(|m| m.kind == ModuleKind::SubOut)
+    }
+
+    pub fn input_count(&self) -> usize {
+        self.inputs().count()
+    }
+
+    pub fn output_count(&self) -> usize {
+        self.outputs().count()
+    }
+}
+
+#[derive(Clone)]
+pub struct PatchSet {
+    pub root: Patch,
+    pub subpatches: HashMap<SubPatchId, SubPatchDef>,
+    pub next_subpatch_id: u32,
+}
+
+impl PatchSet {
+    pub fn new(width: u16, height: u16) -> Self {
+        Self {
+            root: Patch::new(width, height),
+            subpatches: HashMap::new(),
+            next_subpatch_id: 0,
+        }
+    }
+
+    pub fn create_subpatch(&mut self, name: String, color: Color) -> SubPatchId {
+        let id = SubPatchId(self.next_subpatch_id);
+        self.next_subpatch_id += 1;
+        self.subpatches.insert(id, SubPatchDef::new(name, color));
+        id
+    }
+
+    pub fn subpatch(&self, id: SubPatchId) -> Option<&SubPatchDef> {
+        self.subpatches.get(&id)
+    }
+
+    pub fn subpatch_mut(&mut self, id: SubPatchId) -> Option<&mut SubPatchDef> {
+        self.subpatches.get_mut(&id)
+    }
+}
 
 #[derive(Clone)]
 pub struct Patch {
@@ -245,6 +311,35 @@ impl Patch {
         let module = self.modules.get(&id).unwrap();
         self.grid
             .place_module(id, pos, module.width(), module.height());
+        self.rebuild_channels();
+        true
+    }
+
+    pub fn refit_module(&mut self, id: ModuleId) -> bool {
+        let Some(module) = self.modules.get(&id) else {
+            return false;
+        };
+        let Some(&pos) = self.positions.get(&id) else {
+            return false;
+        };
+
+        let new_width = module.width();
+        let new_height = module.height();
+
+        self.grid.remove_module(id);
+
+        for dy in 0..new_height {
+            for dx in 0..new_width {
+                let p = GridPos::new(pos.x + dx as u16, pos.y + dy as u16);
+                if !self.grid.in_bounds(p) || !self.grid.get(p).is_empty() {
+                    self.grid.place_module(id, pos, 1, 1);
+                    self.rebuild_channels();
+                    return false;
+                }
+            }
+        }
+
+        self.grid.place_module(id, pos, new_width, new_height);
         self.rebuild_channels();
         true
     }

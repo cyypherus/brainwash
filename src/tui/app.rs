@@ -1,8 +1,8 @@
 use super::bindings::{self, Action, lookup};
 use super::engine::{CompiledPatch, TrackState, compile_patch};
 use super::grid::GridPos;
-use super::module::{Module, ModuleCategory, ModuleId, ModuleKind, ParamKind};
-use super::patch::Patch;
+use super::module::{Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind, SubPatchId};
+use super::patch::{Patch, PatchSet};
 use super::persist;
 use super::render::{
     AdsrWidget, EditWidget, EnvelopeWidget, GridWidget, HelpWidget, PaletteWidget, ProbeWidget,
@@ -96,14 +96,16 @@ enum AppRequest {
 }
 
 struct App {
-    patch: Patch,
-    undo_stack: Vec<Patch>,
-    redo_stack: Vec<Patch>,
+    patches: PatchSet,
+    editing_subpatch: Option<SubPatchId>,
+    subpatch_stack: Vec<(Option<SubPatchId>, GridPos)>,
+    undo_stack: Vec<PatchSet>,
+    redo_stack: Vec<PatchSet>,
     cursor: GridPos,
     mode: Mode,
     pending_request: Option<AppRequest>,
     palette_category: usize,
-    palette_selections: [usize; 7],
+    palette_selections: [usize; 8],
     palette_filter: String,
     palette_filter_selection: usize,
     palette_searching: bool,
@@ -185,10 +187,23 @@ fn scale_from_idx(idx: usize) -> Scale {
     }
 }
 
+const SUBPATCH_COLORS: &[Color] = &[
+    Color::Rgb(255, 150, 50),
+    Color::Rgb(50, 200, 150),
+    Color::Rgb(150, 100, 255),
+    Color::Rgb(255, 100, 150),
+    Color::Rgb(100, 200, 255),
+    Color::Rgb(255, 200, 100),
+];
+
+fn subpatch_color(index: usize) -> Color {
+    SUBPATCH_COLORS[index % SUBPATCH_COLORS.len()]
+}
+
 impl App {
     fn new(audio_patch: Arc<Mutex<CompiledPatch>>, track_state: Arc<Mutex<TrackState>>) -> Self {
-        let mut patch = Patch::new(20, 20);
-        patch.add_module(ModuleKind::Output, GridPos::new(19, 19));
+        let mut patches = PatchSet::new(20, 20);
+        patches.root.add_module(ModuleKind::Output, GridPos::new(19, 19));
 
         let track_text = r#"
 #
@@ -213,14 +228,16 @@ impl App {
         track_state.lock().unwrap().clock.bpm(bpm);
 
         Self {
-            patch,
+            patches,
+            editing_subpatch: None,
+            subpatch_stack: Vec::new(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             cursor: GridPos::new(0, 0),
             mode: Mode::Normal,
             pending_request: None,
             palette_category: 0,
-            palette_selections: [0; 7],
+            palette_selections: [0; 8],
             palette_filter: String::new(),
             palette_filter_selection: 0,
             palette_searching: false,
@@ -244,6 +261,26 @@ impl App {
         }
     }
 
+    fn patch(&self) -> &Patch {
+        match self.editing_subpatch {
+            Some(sub_id) => self
+                .patches
+                .subpatch(sub_id)
+                .map(|s| &s.patch)
+                .unwrap_or(&self.patches.root),
+            None => &self.patches.root,
+        }
+    }
+
+    fn patch_mut(&mut self) -> &mut Patch {
+        match self.editing_subpatch {
+            Some(sub_id) if self.patches.subpatches.contains_key(&sub_id) => {
+                &mut self.patches.subpatches.get_mut(&sub_id).unwrap().patch
+            }
+            _ => &mut self.patches.root,
+        }
+    }
+
     fn reparse_track(&mut self) {
         let scale = scale_from_idx(self.scale_idx);
         match Track::parse(&self.track_text, &scale) {
@@ -259,7 +296,7 @@ impl App {
     }
 
     fn snapshot(&mut self) {
-        self.undo_stack.push(self.patch.clone());
+        self.undo_stack.push(self.patches.clone());
         self.redo_stack.clear();
         if self.undo_stack.len() > 100 {
             self.undo_stack.remove(0);
@@ -274,14 +311,14 @@ impl App {
     fn recompile_patch(&mut self) {
         let num_voices = self.track_state.lock().unwrap().num_voices();
         let mut audio = self.audio_patch.lock().unwrap();
-        compile_patch(&mut audio, &self.patch, num_voices);
+        compile_patch(&mut audio, &self.patches, num_voices);
         self.dirty = true;
     }
 
     fn undo(&mut self) {
         if let Some(prev) = self.undo_stack.pop() {
-            self.redo_stack.push(self.patch.clone());
-            self.patch = prev;
+            self.redo_stack.push(self.patches.clone());
+            self.patches = prev;
             self.recompile_patch();
             self.message = Some("Undo".into());
         } else {
@@ -291,8 +328,8 @@ impl App {
 
     fn redo(&mut self) {
         if let Some(next) = self.redo_stack.pop() {
-            self.undo_stack.push(self.patch.clone());
-            self.patch = next;
+            self.undo_stack.push(self.patches.clone());
+            self.patches = next;
             self.recompile_patch();
             self.message = Some("Redo".into());
         } else {
@@ -301,7 +338,7 @@ impl App {
     }
 
     fn move_cursor(&mut self, dx: i16, dy: i16) {
-        let grid = self.patch.grid();
+        let grid = self.patch().grid();
         let new_x = (self.cursor.x as i16 + dx).clamp(0, grid.width() as i16 - 1) as u16;
         let new_y = (self.cursor.y as i16 + dy).clamp(0, grid.height() as i16 - 1) as u16;
         self.cursor = GridPos::new(new_x, new_y);
@@ -325,7 +362,7 @@ impl App {
         let half_cols = visible_cols / 2;
         let half_rows = visible_rows / 2;
 
-        let grid = self.patch.grid();
+        let grid = self.patch().grid();
         let origin_x = if self.view_center.x < half_cols {
             0
         } else if self.view_center.x + half_cols >= grid.width() as u16 {
@@ -381,7 +418,7 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(pos) = self.screen_to_grid(col, row) {
                     self.cursor = pos;
-                    if let Some(m) = self.patch.module_at(pos) {
+                    if let Some(m) = self.patch().module_at(pos) {
                         self.dragging = Some(m.id);
                     } else {
                         self.mode = Mode::MouseSelect { anchor: pos };
@@ -391,7 +428,7 @@ impl App {
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(id) = self.dragging {
                     if let Some(pos) = self.screen_to_grid(col, row) {
-                        self.patch.move_module(id, pos);
+                        self.patch_mut().move_module(id, pos);
                         self.commit_patch();
                         self.cursor = pos;
                     }
@@ -494,14 +531,14 @@ impl App {
                         let mut unique_ids = std::collections::HashSet::new();
                         for x in anchor.x..=extent.x {
                             for y in anchor.y..=extent.y {
-                                if let Some(m) = self.patch.module_at(GridPos::new(x, y)) {
+                                if let Some(m) = self.patch().module_at(GridPos::new(x, y)) {
                                     unique_ids.insert(m.id);
                                 }
                             }
                         }
                         let mut moves = Vec::new();
                         for &id in &unique_ids {
-                            if let Some(old_pos) = self.patch.module_position(id) {
+                            if let Some(old_pos) = self.patch().module_position(id) {
                                 let new_pos = GridPos::new(
                                     (old_pos.x as i16 + dx).max(0) as u16,
                                     (old_pos.y as i16 + dy).max(0) as u16,
@@ -509,7 +546,7 @@ impl App {
                                 moves.push((id, new_pos));
                             }
                         }
-                        let moved = self.patch.move_modules(&moves);
+                        let moved = self.patch_mut().move_modules(&moves);
                         if moved > 0 {
                             self.commit_patch();
                             let new_anchor = GridPos::new(
@@ -618,7 +655,7 @@ impl App {
                 self.mode = Mode::Palette;
             }
             Action::Move => {
-                if let Some(id) = self.patch.module_id_at(self.cursor) {
+                if let Some(id) = self.patch().module_id_at(self.cursor) {
                     self.mode = Mode::Move {
                         module_id: id,
                         origin: self.cursor,
@@ -626,11 +663,11 @@ impl App {
                 }
             }
             Action::Delete => {
-                if let Some(id) = self.patch.module_id_at(self.cursor) {
-                    if let Some(m) = self.patch.module(id) {
+                if let Some(id) = self.patch().module_id_at(self.cursor) {
+                    if let Some(m) = self.patch().module(id) {
                         if m.kind == ModuleKind::Output {
                             self.message = Some("Cannot delete output".into());
-                        } else if self.patch.remove_module(id) {
+                        } else if self.patch_mut().remove_module(id) {
                             self.message = Some("Deleted".into());
                             self.commit_patch();
                         }
@@ -638,11 +675,11 @@ impl App {
                 }
             }
             Action::Rotate => {
-                if let Some(id) = self.patch.module_id_at(self.cursor) {
-                    if let Some(m) = self.patch.module(id) {
+                if let Some(id) = self.patch().module_id_at(self.cursor) {
+                    if let Some(m) = self.patch().module(id) {
                         if m.kind.is_routing() {
-                            self.message = Some("Cannot rotate routing modules".into());
-                        } else if self.patch.rotate_module(id) {
+                            self.message = Some("Cannot rotate".into());
+                        } else if self.patch_mut().rotate_module(id) {
                             self.message = Some("Rotated".into());
                             self.commit_patch();
                         } else {
@@ -652,8 +689,8 @@ impl App {
                 }
             }
             Action::Edit => {
-                if let Some(id) = self.patch.module_id_at(self.cursor) {
-                    if let Some(m) = self.patch.module(id) {
+                if let Some(id) = self.patch().module_id_at(self.cursor) {
+                    if let Some(m) = self.patch().module(id) {
                         if m.kind == ModuleKind::Adsr {
                             self.mode = Mode::AdsrEdit {
                                 module_id: id,
@@ -685,8 +722,8 @@ impl App {
                 }
             }
             Action::Copy => {
-                if let Some(id) = self.patch.module_id_at(self.cursor) {
-                    if let Some(m) = self.patch.module(id).cloned() {
+                if let Some(id) = self.patch().module_id_at(self.cursor) {
+                    if let Some(m) = self.patch().module(id).cloned() {
                         self.mode = Mode::Copy { module: m };
                         self.message = Some("Place copy with space/enter".into());
                     }
@@ -729,6 +766,54 @@ impl App {
             Action::Redo => self.redo(),
             Action::TrackSettings => {
                 self.mode = Mode::TrackSettings { param_idx: 0 };
+            }
+            Action::EditSubpatch => {
+                let on_subpatch = self.patch().module_id_at(self.cursor)
+                    .and_then(|id| self.patch().module(id))
+                    .and_then(|m| match m.kind {
+                        ModuleKind::SubPatch(sub_id) => Some(sub_id),
+                        _ => None,
+                    });
+                if let Some(sub_id) = on_subpatch {
+                    let name = self
+                        .patches
+                        .subpatch(sub_id)
+                        .map(|s| s.name.clone())
+                        .unwrap_or_default();
+                    self.subpatch_stack.push((self.editing_subpatch, self.cursor));
+                    self.editing_subpatch = Some(sub_id);
+                    self.cursor = GridPos::new(0, 0);
+                    self.message = Some(format!("Editing '{}'", name));
+                } else if let Some(sub_id) = self.editing_subpatch.take() {
+                    let name = self
+                        .patches
+                        .subpatch(sub_id)
+                        .map(|s| s.name.clone())
+                        .unwrap_or_default();
+                    self.sync_subpatch_ports(sub_id);
+                    if let Some((parent, cursor)) = self.subpatch_stack.pop() {
+                        self.editing_subpatch = parent;
+                        self.cursor = cursor;
+                    }
+                    self.message = Some(format!("Exited '{}'", name));
+                    self.commit_patch();
+                }
+            }
+            Action::ExitSubpatch => {
+                if let Some(sub_id) = self.editing_subpatch.take() {
+                    let name = self
+                        .patches
+                        .subpatch(sub_id)
+                        .map(|s| s.name.clone())
+                        .unwrap_or_default();
+                    self.sync_subpatch_ports(sub_id);
+                    if let Some((parent, cursor)) = self.subpatch_stack.pop() {
+                        self.editing_subpatch = parent;
+                        self.cursor = cursor;
+                    }
+                    self.message = Some(format!("Exited '{}'", name));
+                    self.commit_patch();
+                }
             }
             _ => {}
         }
@@ -800,10 +885,20 @@ impl App {
                 };
             }
             Action::Confirm => {
+                let cursor = self.cursor;
                 if let Some(kind) = modules.get(palette_module) {
-                    if *kind == ModuleKind::Output && self.patch.output_id().is_some() {
+                    if *kind == ModuleKind::Output && self.patch().output_id().is_some() {
                         self.message = Some("Output exists".into());
-                    } else if self.patch.add_module(*kind, self.cursor).is_some() {
+                    } else if matches!(kind, ModuleKind::SubPatch(_)) {
+                        let color = subpatch_color(self.patches.subpatches.len());
+                        let sub_id = self.patches.create_subpatch("Sub".into(), color);
+                        if self.patch_mut().add_module(ModuleKind::SubPatch(sub_id), cursor).is_some() {
+                            self.message = Some("SubPatch placed".into());
+                            self.commit_patch();
+                        } else {
+                            self.message = Some("Can't place here".into());
+                        }
+                    } else if self.patch_mut().add_module(*kind, cursor).is_some() {
                         self.message = Some(format!("{} placed", kind.name()));
                         self.commit_patch();
                     } else {
@@ -839,10 +934,20 @@ impl App {
                 }
             }
             KeyCode::Enter => {
+                let cursor = self.cursor;
                 if let Some(kind) = filtered.get(self.palette_filter_selection) {
-                    if *kind == ModuleKind::Output && self.patch.output_id().is_some() {
+                    if *kind == ModuleKind::Output && self.patch().output_id().is_some() {
                         self.message = Some("Output exists".into());
-                    } else if self.patch.add_module(*kind, self.cursor).is_some() {
+                    } else if matches!(kind, ModuleKind::SubPatch(_)) {
+                        let color = subpatch_color(self.patches.subpatches.len());
+                        let sub_id = self.patches.create_subpatch("Sub".into(), color);
+                        if self.patch_mut().add_module(ModuleKind::SubPatch(sub_id), cursor).is_some() {
+                            self.message = Some("SubPatch placed".into());
+                            self.commit_patch();
+                        } else {
+                            self.message = Some("Can't place here".into());
+                        }
+                    } else if self.patch_mut().add_module(*kind, cursor).is_some() {
                         self.message = Some(format!("{} placed", kind.name()));
                         self.commit_patch();
                     } else {
@@ -873,7 +978,8 @@ impl App {
                 self.message = Some("Move cancelled".into());
             }
             Action::Confirm => {
-                if self.patch.move_module(module_id, self.cursor) {
+                let cursor = self.cursor;
+                if self.patch_mut().move_module(module_id, cursor) {
                     self.mode = Mode::Normal;
                     self.message = Some("Moved".into());
                     self.commit_patch();
@@ -903,7 +1009,8 @@ impl App {
                 self.message = Some("Copy cancelled".into());
             }
             Action::Confirm => {
-                if let Some(_new_id) = self.patch.add_module_clone(&module, self.cursor) {
+                let cursor = self.cursor;
+                if let Some(_new_id) = self.patch_mut().add_module_clone(&module, cursor) {
                     self.mode = Mode::Normal;
                     self.message = Some("Placed".into());
                     self.commit_patch();
@@ -945,7 +1052,7 @@ impl App {
                     let new_x = (pos.x as i16 + dx).max(0) as u16;
                     let new_y = (pos.y as i16 + dy).max(0) as u16;
                     let new_pos = GridPos::new(new_x, new_y);
-                    if self.patch.add_module_clone(module, new_pos).is_some() {
+                    if self.patch_mut().add_module_clone(module, new_pos).is_some() {
                         placed += 1;
                     }
                 }
@@ -994,7 +1101,7 @@ impl App {
                 let ids = self.modules_in_rect(anchor, self.cursor);
                 let count = ids.len();
                 for id in ids {
-                    self.patch.remove_module(id);
+                    self.patch_mut().remove_module(id);
                 }
                 self.mode = Mode::Normal;
                 self.message = Some(format!("Deleted {} modules", count));
@@ -1009,8 +1116,8 @@ impl App {
                 let modules: Vec<(Module, GridPos)> = ids
                     .iter()
                     .filter_map(|id| {
-                        let m = self.patch.module(*id)?.clone();
-                        let pos = self.patch.module_position(*id)?;
+                        let m = self.patch().module(*id)?.clone();
+                        let pos = self.patch().module_position(*id)?;
                         Some((m, pos))
                     })
                     .collect();
@@ -1021,6 +1128,9 @@ impl App {
                     };
                     self.message = Some("Place copies with space/enter".into());
                 }
+            }
+            Action::MakeSubpatch => {
+                self.create_subpatch_from_selection(anchor);
             }
             _ => {}
         }
@@ -1057,13 +1167,13 @@ impl App {
                 let moves: Vec<_> = ids
                     .iter()
                     .filter_map(|id| {
-                        let pos = self.patch.module_position(*id)?;
+                        let pos = self.patch().module_position(*id)?;
                         let new_x = (pos.x as i16 + dx).max(0) as u16;
                         let new_y = (pos.y as i16 + dy).max(0) as u16;
                         Some((*id, GridPos::new(new_x, new_y)))
                     })
                     .collect();
-                let moved = self.patch.move_modules(&moves);
+                let moved = self.patch_mut().move_modules(&moves);
                 self.mode = Mode::Normal;
                 self.message = Some(format!("Moved {} modules", moved));
                 self.commit_patch();
@@ -1071,16 +1181,85 @@ impl App {
             _ => {}
         }
     }
+    fn create_subpatch_from_selection(&mut self, anchor: GridPos) {
+        let ids = self.modules_in_rect(anchor, self.cursor);
+        if ids.is_empty() {
+            self.message = Some("No modules selected".into());
+            return;
+        }
+
+        let modules: Vec<(Module, GridPos)> = ids
+            .iter()
+            .filter_map(|id| {
+                let m = self.patch().module(*id)?.clone();
+                let pos = self.patch().module_position(*id)?;
+                Some((m, pos))
+            })
+            .collect();
+
+        let min_x = modules.iter().map(|(_, p)| p.x).min().unwrap_or(0);
+        let min_y = modules.iter().map(|(_, p)| p.y).min().unwrap_or(0);
+
+        let name = format!("Sub{}", self.patches.subpatches.len());
+        let color = subpatch_color(self.patches.subpatches.len());
+        let sub_id = self.patches.create_subpatch(name.clone(), color);
+
+        if let Some(subpatch) = self.patches.subpatch_mut(sub_id) {
+            for (module, pos) in &modules {
+                let new_pos = GridPos::new(pos.x - min_x, pos.y - min_y);
+                subpatch.patch.add_module_clone(module, new_pos);
+            }
+        }
+
+        for id in &ids {
+            self.patch_mut().remove_module(*id);
+        }
+
+        let place_pos = GridPos::new(min_x, min_y);
+        self.patch_mut().add_module(ModuleKind::SubPatch(sub_id), place_pos);
+
+        self.sync_subpatch_ports(sub_id);
+        self.mode = Mode::Normal;
+        self.message = Some(format!("Created subpatch '{}'", name));
+        self.commit_patch();
+    }
+
+    fn sync_subpatch_ports(&mut self, sub_id: SubPatchId) {
+        let (inputs, outputs) = if let Some(sub) = self.patches.subpatch(sub_id) {
+            (sub.input_count() as u8, sub.output_count() as u8)
+        } else {
+            return;
+        };
+
+        let ids: Vec<ModuleId> = self
+            .patches
+            .root
+            .all_modules()
+            .filter(|m| m.kind == ModuleKind::SubPatch(sub_id))
+            .map(|m| m.id)
+            .collect();
+
+        for id in ids {
+            if let Some(m) = self.patches.root.module_mut(id) {
+                m.params = ModuleParams::SubPatch {
+                    inputs: inputs.max(1),
+                    outputs: outputs.max(1),
+                };
+            }
+            self.patches.root.refit_module(id);
+        }
+    }
+
     fn modules_in_rect(&self, a: GridPos, b: GridPos) -> Vec<ModuleId> {
         let sel_min_x = a.x.min(b.x);
         let sel_max_x = a.x.max(b.x);
         let sel_min_y = a.y.min(b.y);
         let sel_max_y = a.y.max(b.y);
 
-        self.patch
+        self.patch()
             .all_modules()
             .filter_map(|m| {
-                let pos = self.patch.module_position(m.id)?;
+                let pos = self.patch().module_position(m.id)?;
                 let mod_min_x = pos.x;
                 let mod_min_y = pos.y;
                 let mod_max_x = pos.x + m.width() as u16 - 1;
@@ -1097,7 +1276,7 @@ impl App {
     }
 
     fn handle_edit_key(&mut self, code: KeyCode, module_id: ModuleId, param_idx: usize) {
-        let Some(module) = self.patch.module(module_id) else {
+        let Some(module) = self.patch().module(module_id) else {
             self.mode = Mode::Normal;
             return;
         };
@@ -1133,7 +1312,7 @@ impl App {
             Action::ValueDown => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
-                    if let Some(m) = self.patch.module_mut(module_id) {
+                    if let Some(m) = self.patch_mut().module_mut(module_id) {
                         match &def.kind {
                             ParamKind::Float { min, step, .. } => {
                                 let cur = m.params.get_float(param_idx).unwrap_or(0.0);
@@ -1155,7 +1334,7 @@ impl App {
             Action::ValueUp => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
-                    if let Some(m) = self.patch.module_mut(module_id) {
+                    if let Some(m) = self.patch_mut().module_mut(module_id) {
                         match &def.kind {
                             ParamKind::Float { max, step, .. } => {
                                 let cur = m.params.get_float(param_idx).unwrap_or(0.0);
@@ -1177,7 +1356,7 @@ impl App {
             Action::ValueDownFast => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
-                    if let Some(m) = self.patch.module_mut(module_id) {
+                    if let Some(m) = self.patch_mut().module_mut(module_id) {
                         if let ParamKind::Float { min, step, .. } = &def.kind {
                             let cur = m.params.get_float(param_idx).unwrap_or(0.0);
                             m.params.set_float(param_idx, (cur - step * 10.0).max(*min));
@@ -1190,7 +1369,7 @@ impl App {
             Action::ValueUpFast => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
-                    if let Some(m) = self.patch.module_mut(module_id) {
+                    if let Some(m) = self.patch_mut().module_mut(module_id) {
                         if let ParamKind::Float { max, step, .. } = &def.kind {
                             let cur = m.params.get_float(param_idx).unwrap_or(0.0);
                             m.params.set_float(param_idx, (cur + step * 10.0).min(*max));
@@ -1204,7 +1383,7 @@ impl App {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
                     if !matches!(def.kind, ParamKind::Input) {
-                        if let Some(m) = self.patch.module_mut(module_id) {
+                        if let Some(m) = self.patch_mut().module_mut(module_id) {
                             m.params.toggle_connected(param_idx);
                         }
                         self.commit_patch();
@@ -1269,7 +1448,7 @@ impl App {
         let bars = state.clock.current_bars();
         drop(state);
 
-        match persist::save_patch(&path, &self.patch, bpm, bars, track) {
+        match persist::save_patchset(&path, &self.patches, bpm, bars, track) {
             Ok(()) => {
                 self.file_path = Some(path.clone());
                 self.dirty = false;
@@ -1282,9 +1461,9 @@ impl App {
     }
 
     fn load_from_file(&mut self, path: PathBuf) {
-        match persist::load_patch(&path) {
-            Ok((patch, bpm, bars, track)) => {
-                self.patch = patch;
+        match persist::load_patchset(&path) {
+            Ok((patches, bpm, bars, track)) => {
+                self.patches = patches;
                 self.file_path = Some(path.clone());
 
                 {
@@ -1307,7 +1486,7 @@ impl App {
     }
 
     fn handle_adsr_edit_key(&mut self, code: KeyCode, module_id: ModuleId, param_idx: usize) {
-        let Some(_) = self.patch.module(module_id) else {
+        let Some(_) = self.patch().module(module_id) else {
             self.mode = Mode::Normal;
             return;
         };
@@ -1334,7 +1513,7 @@ impl App {
                 };
             }
             Action::ValueUp => {
-                if let Some(m) = self.patch.module_mut(module_id) {
+                if let Some(m) = self.patch_mut().module_mut(module_id) {
                     if let super::module::ModuleParams::Adsr {
                         attack_ratio,
                         sustain,
@@ -1351,7 +1530,7 @@ impl App {
                 self.commit_patch();
             }
             Action::ValueDown => {
-                if let Some(m) = self.patch.module_mut(module_id) {
+                if let Some(m) = self.patch_mut().module_mut(module_id) {
                     if let super::module::ModuleParams::Adsr {
                         attack_ratio,
                         sustain,
@@ -1368,7 +1547,7 @@ impl App {
                 self.commit_patch();
             }
             Action::ValueUpFast => {
-                if let Some(m) = self.patch.module_mut(module_id) {
+                if let Some(m) = self.patch_mut().module_mut(module_id) {
                     if let super::module::ModuleParams::Adsr {
                         attack_ratio,
                         sustain,
@@ -1385,7 +1564,7 @@ impl App {
                 self.commit_patch();
             }
             Action::ValueDownFast => {
-                if let Some(m) = self.patch.module_mut(module_id) {
+                if let Some(m) = self.patch_mut().module_mut(module_id) {
                     if let super::module::ModuleParams::Adsr {
                         attack_ratio,
                         sustain,
@@ -1412,7 +1591,7 @@ impl App {
         point_idx: usize,
         editing: bool,
     ) {
-        let Some(module) = self.patch.module(module_id) else {
+        let Some(module) = self.patch().module(module_id) else {
             self.mode = Mode::Normal;
             return;
         };
@@ -1472,7 +1651,7 @@ impl App {
                     self.commit_patch();
                 }
                 Action::Up => {
-                    if let Some(m) = self.patch.module_mut(module_id) {
+                    if let Some(m) = self.patch_mut().module_mut(module_id) {
                         if let Some(points) = m.params.env_points_mut() {
                             if let Some(p) = points.get_mut(point_idx) {
                                 p.value = (p.value + 0.05).min(1.0);
@@ -1482,7 +1661,7 @@ impl App {
                     self.commit_patch();
                 }
                 Action::Down => {
-                    if let Some(m) = self.patch.module_mut(module_id) {
+                    if let Some(m) = self.patch_mut().module_mut(module_id) {
                         if let Some(points) = m.params.env_points_mut() {
                             if let Some(p) = points.get_mut(point_idx) {
                                 p.value = (p.value - 0.05).max(0.0);
@@ -1492,7 +1671,7 @@ impl App {
                     self.commit_patch();
                 }
                 Action::UpFast => {
-                    if let Some(m) = self.patch.module_mut(module_id) {
+                    if let Some(m) = self.patch_mut().module_mut(module_id) {
                         if let Some(points) = m.params.env_points_mut() {
                             if let Some(p) = points.get_mut(point_idx) {
                                 p.value = 1.0;
@@ -1502,7 +1681,7 @@ impl App {
                     self.commit_patch();
                 }
                 Action::DownFast => {
-                    if let Some(m) = self.patch.module_mut(module_id) {
+                    if let Some(m) = self.patch_mut().module_mut(module_id) {
                         if let Some(points) = m.params.env_points_mut() {
                             if let Some(p) = points.get_mut(point_idx) {
                                 p.value = 0.0;
@@ -1549,7 +1728,7 @@ impl App {
                     };
                 }
                 Action::ToggleCurve => {
-                    if let Some(m) = self.patch.module_mut(module_id) {
+                    if let Some(m) = self.patch_mut().module_mut(module_id) {
                         if let Some(points) = m.params.env_points_mut() {
                             if let Some(p) = points.get_mut(point_idx) {
                                 p.curve = !p.curve;
@@ -1559,7 +1738,7 @@ impl App {
                     self.commit_patch();
                 }
                 Action::AddPoint => {
-                    if let Some(m) = self.patch.module_mut(module_id) {
+                    if let Some(m) = self.patch_mut().module_mut(module_id) {
                         if let Some(points) = m.params.env_points_mut() {
                             let new_time = if points.is_empty() {
                                 0.5
@@ -1589,7 +1768,7 @@ impl App {
                     self.commit_patch();
                 }
                 Action::DeletePoint => {
-                    if let Some(m) = self.patch.module_mut(module_id) {
+                    if let Some(m) = self.patch_mut().module_mut(module_id) {
                         if let Some(points) = m.params.env_points_mut() {
                             if points.len() > 2 {
                                 points.remove(point_idx);
@@ -1617,7 +1796,7 @@ impl App {
         point_idx: usize,
         delta: f32,
     ) -> usize {
-        let Some(m) = self.patch.module_mut(module_id) else {
+        let Some(m) = self.patch_mut().module_mut(module_id) else {
             return point_idx;
         };
         let Some(points) = m.params.env_points_mut() else {
@@ -1639,7 +1818,7 @@ impl App {
     }
 
     fn handle_probe_edit_key(&mut self, code: KeyCode, module_id: ModuleId, param_idx: usize) {
-        let Some(_) = self.patch.module(module_id) else {
+        let Some(_) = self.patch().module(module_id) else {
             self.mode = Mode::Normal;
             return;
         };
@@ -1696,7 +1875,7 @@ impl App {
             }
             Action::ToggleCurve => {
                 let probe_idx = self
-                    .patch
+                    .patch()
                     .all_modules()
                     .filter(|m| m.kind == ModuleKind::Probe)
                     .position(|m| m.id == module_id);
@@ -1794,11 +1973,16 @@ impl App {
 
         let (moving_id, copy_previews, move_previews): (
             Option<ModuleId>,
-            Vec<(&Module, GridPos)>,
-            Vec<(&Module, GridPos)>,
+            Vec<(Module, GridPos)>,
+            Vec<(Module, GridPos)>,
         ) = match &self.mode {
-            Mode::Move { module_id, .. } => (Some(*module_id), vec![], vec![]),
-            Mode::Copy { module } => (None, vec![(module, self.cursor)], vec![]),
+            Mode::Move { module_id, .. } => {
+                let preview = self.patch().module(*module_id).cloned()
+                    .map(|m| vec![(m, self.cursor)])
+                    .unwrap_or_default();
+                (Some(*module_id), vec![], preview)
+            }
+            Mode::Copy { module } => (None, vec![(module.clone(), self.cursor)], vec![]),
             Mode::CopySelection { modules, origin } => {
                 let dx = self.cursor.x as i16 - origin.x as i16;
                 let dy = self.cursor.y as i16 - origin.y as i16;
@@ -1807,7 +1991,7 @@ impl App {
                     .map(|(m, pos)| {
                         let new_x = (pos.x as i16 + dx).max(0) as u16;
                         let new_y = (pos.y as i16 + dy).max(0) as u16;
-                        (m, GridPos::new(new_x, new_y))
+                        (m.clone(), GridPos::new(new_x, new_y))
                     })
                     .collect();
                 (None, previews, vec![])
@@ -1820,11 +2004,11 @@ impl App {
                 let dx = self.cursor.x as i16 - move_origin.x as i16;
                 let dy = self.cursor.y as i16 - move_origin.y as i16;
                 let ids = self.modules_in_rect(*anchor, *extent);
-                let previews: Vec<(&Module, GridPos)> = ids
+                let previews: Vec<(Module, GridPos)> = ids
                     .iter()
                     .filter_map(|id| {
-                        let m = self.patch.module(*id)?;
-                        let pos = self.patch.module_position(*id)?;
+                        let m = self.patch().module(*id)?.clone();
+                        let pos = self.patch().module_position(*id)?;
                         let new_x = (pos.x as i16 + dx).max(0) as u16;
                         let new_y = (pos.y as i16 + dy).max(0) as u16;
                         Some((m, GridPos::new(new_x, new_y)))
@@ -1849,15 +2033,39 @@ impl App {
             .collect();
         drop(audio_patch);
         self.grid_area = grid_area;
-        let grid_widget = GridWidget::new(&self.patch)
-            .cursor(self.cursor)
-            .view_center(self.view_center)
-            .moving(moving_id)
-            .copy_previews(copy_previews)
-            .move_previews(move_previews)
-            .selection(selection)
-            .probe_values(&probe_values);
-        f.render_widget(grid_widget, grid_area);
+
+        let display_patch = self.patch();
+        let subpatch_border = self.editing_subpatch.and_then(|id| {
+            self.patches.subpatch(id).map(|s| s.color)
+        });
+
+        if let Some(border_color) = subpatch_border {
+            let border = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color));
+            let inner = border.inner(grid_area);
+            f.render_widget(border, grid_area);
+
+            let grid_widget = GridWidget::new(display_patch)
+                .cursor(self.cursor)
+                .view_center(self.view_center)
+                .moving(moving_id)
+                .copy_previews(copy_previews)
+                .move_previews(move_previews)
+                .selection(selection)
+                .probe_values(&probe_values);
+            f.render_widget(grid_widget, inner);
+        } else {
+            let grid_widget = GridWidget::new(display_patch)
+                .cursor(self.cursor)
+                .view_center(self.view_center)
+                .moving(moving_id)
+                .copy_previews(copy_previews)
+                .move_previews(move_previews)
+                .selection(selection)
+                .probe_values(&probe_values);
+            f.render_widget(grid_widget, grid_area);
+        }
 
         let help_block = Block::default()
             .borders(Borders::LEFT)
@@ -1950,7 +2158,7 @@ impl App {
             param_idx,
         } = self.mode
         {
-            if let Some(module) = self.patch.module(module_id) {
+            if let Some(module) = self.patch().module(module_id) {
                 let edit_width = 36;
                 let edit_height = (module.kind.param_defs().len() + 6) as u16;
                 let edit_x = (f.area().width.saturating_sub(edit_width)) / 2;
@@ -1981,7 +2189,7 @@ impl App {
             param_idx,
         } = self.mode
         {
-            if let Some(module) = self.patch.module(module_id) {
+            if let Some(module) = self.patch().module(module_id) {
                 let env_width = grid_area.width.saturating_sub(4);
                 let env_height = grid_area.height.saturating_sub(4);
                 let env_x = grid_area.x + 2;
@@ -2013,7 +2221,7 @@ impl App {
             editing,
         } = self.mode
         {
-            if let Some(module) = self.patch.module(module_id) {
+            if let Some(module) = self.patch().module(module_id) {
                 let env_width = grid_area.width.saturating_sub(4);
                 let env_height = grid_area.height.saturating_sub(4);
                 let env_x = grid_area.x + 2;
@@ -2045,9 +2253,9 @@ impl App {
             param_idx,
         } = self.mode
         {
-            if let Some(module) = self.patch.module(module_id) {
+            if let Some(module) = self.patch().module(module_id) {
                 let probe_idx = self
-                    .patch
+                    .patch()
                     .all_modules()
                     .filter(|m| m.kind == ModuleKind::Probe)
                     .position(|m| m.id == module_id);
