@@ -2,6 +2,7 @@ use super::grid::{Cell, Grid, GridPos};
 use super::module::{Module, ModuleId, ModuleKind};
 use std::collections::HashMap;
 
+#[derive(Clone)]
 pub struct Patch {
     grid: Grid,
     modules: HashMap<ModuleId, Module>,
@@ -78,6 +79,33 @@ impl Patch {
         self.next_module_id += 1;
 
         if kind == ModuleKind::Output {
+            self.output_id = Some(id);
+        }
+
+        self.rebuild_channels();
+        Some(id)
+    }
+
+    pub fn add_module_clone(&mut self, source: &Module, pos: GridPos) -> Option<ModuleId> {
+        if source.kind == ModuleKind::Output && self.output_id.is_some() {
+            return None;
+        }
+
+        let id = ModuleId(self.next_module_id);
+        let mut module = source.clone();
+        module.id = id;
+        let width = module.width();
+        let height = module.height();
+
+        if !self.grid.place_module(id, pos, width, height) {
+            return None;
+        }
+
+        self.modules.insert(id, module);
+        self.positions.insert(id, pos);
+        self.next_module_id += 1;
+
+        if source.kind == ModuleKind::Output {
             self.output_id = Some(id);
         }
 

@@ -67,6 +67,7 @@ impl Cell {
     }
 }
 
+#[derive(Clone)]
 pub struct Grid {
     width: u16,
     height: u16,

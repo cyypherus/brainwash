@@ -30,6 +30,7 @@ pub struct GridWidget<'a> {
     cursor: GridPos,
     view_center: GridPos,
     moving: Option<ModuleId>,
+    copy_preview: Option<&'a Module>,
     probe_values: &'a [f32],
     selection: Option<(GridPos, GridPos)>,
 }
@@ -41,6 +42,7 @@ impl<'a> GridWidget<'a> {
             cursor: GridPos::new(0, 0),
             view_center: GridPos::new(0, 0),
             moving: None,
+            copy_preview: None,
             probe_values: &[],
             selection: None,
         }
@@ -59,6 +61,11 @@ impl<'a> GridWidget<'a> {
 
     pub fn moving(mut self, id: Option<ModuleId>) -> Self {
         self.moving = id;
+        self
+    }
+
+    pub fn copy_preview(mut self, module: Option<&'a Module>) -> Self {
+        self.copy_preview = module;
         self
     }
 
@@ -537,6 +544,23 @@ impl Widget for GridWidget<'_> {
             }
         }
 
+        if let Some(module) = self.copy_preview {
+            let width = module.width();
+            let height = module.height();
+            for ly in 0..height {
+                for lx in 0..width {
+                    let gx = self.cursor.x + lx as u16;
+                    let gy = self.cursor.y + ly as u16;
+                    if gx >= origin_x && gy >= origin_y {
+                        let (sx, sy) = self.screen_pos(GridPos::new(gx, gy), viewport_origin, grid_area);
+                        if sx < grid_area.x + grid_area.width && sy < grid_area.y + grid_area.height {
+                            self.render_module(buf, sx, sy, module, lx, ly, lx == 0 && ly == 0, true, None);
+                        }
+                    }
+                }
+            }
+        }
+
         let num_style = Style::default().fg(Color::Rgb(60, 60, 70));
 
         for vx in 0..visible_cols {
@@ -838,6 +862,7 @@ impl Widget for HelpWidget {
                 (Self::key_for(binds, Action::Select), "select"),
             ],
             &[
+                ("u/U", "undo/redo"),
                 ("t/T", "track"),
                 (Self::key_for(binds, Action::TogglePlay), "play"),
             ],

@@ -36,6 +36,8 @@ pub enum Action {
     DeletePoint,
     ToggleCurve,
     TrackSettings,
+    Undo,
+    Redo,
 }
 
 pub struct Binding {
@@ -147,14 +149,24 @@ pub fn normal_bindings() -> &'static [Binding] {
             hint: "move",
         },
         Binding {
-            key: KeyCode::Char('u'),
+            key: KeyCode::Char('y'),
             action: Action::Edit,
             hint: "edit",
         },
         Binding {
+            key: KeyCode::Char('u'),
+            action: Action::Undo,
+            hint: "undo",
+        },
+        Binding {
+            key: KeyCode::Char('U'),
+            action: Action::Redo,
+            hint: "redo",
+        },
+        Binding {
             key: KeyCode::Char('i'),
             action: Action::Inspect,
-            hint: "inspect",
+            hint: "copy",
         },
         Binding {
             key: KeyCode::Char('p'),
@@ -317,7 +329,7 @@ pub fn edit_bindings() -> &'static [Binding] {
             hint: "done",
         },
         Binding {
-            key: KeyCode::Enter,
+            key: KeyCode::Char('y'),
             action: Action::Cancel,
             hint: "done",
         },
@@ -407,7 +419,7 @@ pub fn env_bindings() -> &'static [Binding] {
             hint: "done",
         },
         Binding {
-            key: KeyCode::Char('u'),
+            key: KeyCode::Char('y'),
             action: Action::Cancel,
             hint: "done",
         },
@@ -546,6 +558,11 @@ pub fn select_bindings() -> &'static [Binding] {
             action: Action::Delete,
             hint: "delete",
         },
+        Binding {
+            key: KeyCode::Char('.'),
+            action: Action::Delete,
+            hint: "delete",
+        },
     ]
 }
 
@@ -604,6 +621,8 @@ pub fn key_str(key: KeyCode) -> &'static str {
         KeyCode::Char('L') => "L",
         KeyCode::Char('q') => "q",
         KeyCode::Char('u') => "u",
+        KeyCode::Char('U') => "U",
+        KeyCode::Char('y') => "y",
         KeyCode::Char('i') => "i",
         KeyCode::Char('m') => "m",
         KeyCode::Char('o') => "o",
@@ -614,7 +633,6 @@ pub fn key_str(key: KeyCode) -> &'static str {
         KeyCode::Char('w') => "w",
         KeyCode::Char('W') => "W",
         KeyCode::Char('c') => "c",
-        KeyCode::Char('y') => "y",
         KeyCode::Char('n') => "n",
         KeyCode::Char(' ') => "space",
         KeyCode::Char('.') => ".",

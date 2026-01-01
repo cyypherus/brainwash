@@ -381,7 +381,7 @@ impl ModuleCategory {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Module {
     pub id: ModuleId,
     pub kind: ModuleKind,
@@ -892,14 +892,14 @@ impl ModuleKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EnvPoint {
     pub time: f32,
     pub value: f32,
     pub curve: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ModuleParams {
     None,
     Osc {

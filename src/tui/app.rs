@@ -1,7 +1,7 @@
 use super::bindings::{self, Action, lookup};
 use super::engine::{CompiledPatch, TrackState, compile_patch};
 use super::grid::GridPos;
-use super::module::{ModuleCategory, ModuleId, ModuleKind, ParamKind};
+use super::module::{Module, ModuleCategory, ModuleId, ModuleKind, ParamKind};
 use super::patch::Patch;
 use super::persist;
 use super::render::{
@@ -47,6 +47,9 @@ enum Mode {
         module_id: ModuleId,
         origin: GridPos,
     },
+    Copy {
+        module: Module,
+    },
     Select {
         anchor: GridPos,
     },
@@ -58,11 +61,7 @@ enum Mode {
     MouseSelect {
         anchor: GridPos,
     },
-    MouseSelectMove {
-        anchor: GridPos,
-        extent: GridPos,
-        move_origin: GridPos,
-    },
+
     QuitConfirm,
     Edit {
         module_id: ModuleId,
@@ -93,6 +92,8 @@ enum AppRequest {
 
 struct App {
     patch: Patch,
+    undo_stack: Vec<Patch>,
+    redo_stack: Vec<Patch>,
     cursor: GridPos,
     mode: Mode,
     pending_request: Option<AppRequest>,
@@ -208,6 +209,8 @@ impl App {
 
         Self {
             patch,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
             cursor: GridPos::new(0, 0),
             mode: Mode::Normal,
             pending_request: None,
@@ -250,11 +253,46 @@ impl App {
         }
     }
 
+    fn snapshot(&mut self) {
+        self.undo_stack.push(self.patch.clone());
+        self.redo_stack.clear();
+        if self.undo_stack.len() > 100 {
+            self.undo_stack.remove(0);
+        }
+    }
+
     fn commit_patch(&mut self) {
+        self.snapshot();
+        self.recompile_patch();
+    }
+
+    fn recompile_patch(&mut self) {
         let num_voices = self.track_state.lock().unwrap().num_voices();
         let mut audio = self.audio_patch.lock().unwrap();
         compile_patch(&mut audio, &self.patch, num_voices);
         self.dirty = true;
+    }
+
+    fn undo(&mut self) {
+        if let Some(prev) = self.undo_stack.pop() {
+            self.redo_stack.push(self.patch.clone());
+            self.patch = prev;
+            self.recompile_patch();
+            self.message = Some("Undo".into());
+        } else {
+            self.message = Some("Nothing to undo".into());
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(next) = self.redo_stack.pop() {
+            self.undo_stack.push(self.patch.clone());
+            self.patch = next;
+            self.recompile_patch();
+            self.message = Some("Redo".into());
+        } else {
+            self.message = Some("Nothing to redo".into());
+        }
     }
 
     fn move_cursor(&mut self, dx: i16, dy: i16) {
@@ -317,7 +355,11 @@ impl App {
                 let anchor = *anchor;
                 self.handle_mouse_select(kind, col, row, anchor);
             }
-            Mode::MouseSelectMove {
+            Mode::Select { anchor } => {
+                let anchor = *anchor;
+                self.handle_mouse_in_select(kind, col, row, anchor);
+            }
+            Mode::SelectMove {
                 anchor,
                 extent,
                 move_origin,
@@ -367,19 +409,39 @@ impl App {
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 self.view_center = self.cursor;
-                let (min_x, max_x) = (anchor.x.min(self.cursor.x), anchor.x.max(self.cursor.x));
-                let (min_y, max_y) = (anchor.y.min(self.cursor.y), anchor.y.max(self.cursor.y));
-                let has_modules = (min_x..=max_x).any(|x| {
-                    (min_y..=max_y).any(|y| self.patch.module_at(GridPos::new(x, y)).is_some())
-                });
-                if has_modules {
-                    self.mode = Mode::MouseSelectMove {
-                        anchor: GridPos::new(min_x, min_y),
-                        extent: GridPos::new(max_x, max_y),
-                        move_origin: self.cursor,
-                    };
-                } else {
-                    self.mode = Mode::Normal;
+                self.mode = Mode::Select { anchor };
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_mouse_in_select(
+        &mut self,
+        kind: MouseEventKind,
+        col: u16,
+        row: u16,
+        anchor: GridPos,
+    ) {
+        let extent = self.cursor;
+        let (min_x, max_x) = (anchor.x.min(extent.x), anchor.x.max(extent.x));
+        let (min_y, max_y) = (anchor.y.min(extent.y), anchor.y.max(extent.y));
+
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(pos) = self.screen_to_grid(col, row) {
+                    let in_selection =
+                        pos.x >= min_x && pos.x <= max_x && pos.y >= min_y && pos.y <= max_y;
+                    if in_selection {
+                        self.mode = Mode::SelectMove {
+                            anchor: GridPos::new(min_x, min_y),
+                            extent: GridPos::new(max_x, max_y),
+                            move_origin: pos,
+                        };
+                        self.cursor = pos;
+                    } else {
+                        self.mode = Mode::Normal;
+                        self.cursor = pos;
+                    }
                 }
             }
             _ => {}
@@ -403,7 +465,7 @@ impl App {
                         && pos.y >= anchor.y
                         && pos.y <= extent.y;
                     if in_selection {
-                        self.mode = Mode::MouseSelectMove {
+                        self.mode = Mode::SelectMove {
                             anchor,
                             extent,
                             move_origin: pos,
@@ -449,7 +511,7 @@ impl App {
                                 (extent.x as i16 + dx).max(0) as u16,
                                 (extent.y as i16 + dy).max(0) as u16,
                             );
-                            self.mode = Mode::MouseSelectMove {
+                            self.mode = Mode::SelectMove {
                                 anchor: new_anchor,
                                 extent: new_extent,
                                 move_origin: pos,
@@ -473,17 +535,14 @@ impl App {
             Mode::Normal => self.handle_normal_key(code),
             Mode::Palette => self.handle_palette_key(code),
             Mode::Move { module_id, origin } => self.handle_move_key(code, module_id, origin),
+            Mode::Copy { module } => self.handle_copy_key(code, module),
             Mode::Select { anchor } => self.handle_select_key(code, anchor),
             Mode::SelectMove {
                 anchor,
                 extent,
                 move_origin,
             } => self.handle_select_move_key(code, anchor, extent, move_origin),
-            Mode::MouseSelect { .. } | Mode::MouseSelectMove { .. } => {
-                if code == KeyCode::Esc {
-                    self.mode = Mode::Normal;
-                }
-            }
+            Mode::MouseSelect { anchor } => self.handle_select_key(code, anchor),
             Mode::Edit {
                 module_id,
                 param_idx,
@@ -622,8 +681,9 @@ impl App {
             }
             Action::Inspect => {
                 if let Some(id) = self.patch.module_id_at(self.cursor) {
-                    if let Some(m) = self.patch.module(id) {
-                        self.open_palette_for_module(m.kind);
+                    if let Some(m) = self.patch.module(id).cloned() {
+                        self.mode = Mode::Copy { module: m };
+                        self.message = Some("Place copy with space/enter".into());
                     }
                 }
             }
@@ -660,6 +720,8 @@ impl App {
                     .unwrap_or_else(|| "patch.bw".into());
                 self.mode = Mode::SavePrompt;
             }
+            Action::Undo => self.undo(),
+            Action::Redo => self.redo(),
             Action::TrackSettings => {
                 self.mode = Mode::TrackSettings { param_idx: 0 };
             }
@@ -670,19 +732,6 @@ impl App {
     fn open_palette_category(&mut self, cat: usize) {
         self.palette_category = cat;
         self.mode = Mode::Palette;
-    }
-
-    fn open_palette_for_module(&mut self, kind: ModuleKind) {
-        let cat = kind.category();
-        let cats = ModuleCategory::all();
-        if let Some(cat_idx) = cats.iter().position(|&c| c == cat) {
-            let modules_in_cat = ModuleKind::by_category(cat);
-            if let Some(sel_idx) = modules_in_cat.iter().position(|&k| k == kind) {
-                self.palette_category = cat_idx;
-                self.palette_selections[cat_idx] = sel_idx;
-                self.mode = Mode::Palette;
-            }
-        }
     }
 
     fn filtered_modules(&self) -> Vec<ModuleKind> {
@@ -840,6 +889,36 @@ impl App {
         }
     }
 
+    fn handle_copy_key(&mut self, code: KeyCode, module: Module) {
+        let Some(action) = lookup(bindings::move_bindings(), code) else {
+            return;
+        };
+        match action {
+            Action::Cancel => {
+                self.mode = Mode::Normal;
+                self.message = Some("Copy cancelled".into());
+            }
+            Action::Confirm => {
+                if let Some(_new_id) = self.patch.add_module_clone(&module, self.cursor) {
+                    self.mode = Mode::Normal;
+                    self.message = Some("Placed".into());
+                    self.commit_patch();
+                } else {
+                    self.message = Some("Can't place here".into());
+                }
+            }
+            Action::Left => self.move_cursor(-1, 0),
+            Action::Down => self.move_cursor(0, 1),
+            Action::Up => self.move_cursor(0, -1),
+            Action::Right => self.move_cursor(1, 0),
+            Action::LeftFast => self.move_cursor(-4, 0),
+            Action::DownFast => self.move_cursor(0, 4),
+            Action::UpFast => self.move_cursor(0, -4),
+            Action::RightFast => self.move_cursor(4, 0),
+            _ => {}
+        }
+    }
+
     fn handle_select_key(&mut self, code: KeyCode, anchor: GridPos) {
         let Some(action) = lookup(bindings::select_bindings(), code) else {
             return;
@@ -922,7 +1001,6 @@ impl App {
             _ => {}
         }
     }
-
     fn modules_in_rect(&self, a: GridPos, b: GridPos) -> Vec<ModuleId> {
         let sel_min_x = a.x.min(b.x);
         let sel_max_x = a.x.max(b.x);
@@ -1607,17 +1685,17 @@ impl App {
         let help_area = main_chunks[1];
         let status_area = chunks[1];
 
-        let moving_id = if let Mode::Move { module_id, .. } = self.mode {
-            Some(module_id)
-        } else {
-            None
+        let (moving_id, copy_preview) = match &self.mode {
+            Mode::Move { module_id, .. } => (Some(*module_id), None),
+            Mode::Copy { module } => (None, Some(module.clone())),
+            _ => (None, None),
         };
 
         let selection = match self.mode {
-            Mode::Select { anchor } => Some((anchor, self.cursor)),
+            Mode::Select { anchor } | Mode::MouseSelect { anchor } => {
+                Some((anchor, self.cursor))
+            }
             Mode::SelectMove { anchor, extent, .. } => Some((anchor, extent)),
-            Mode::MouseSelect { anchor } => Some((anchor, self.cursor)),
-            Mode::MouseSelectMove { anchor, extent, .. } => Some((anchor, extent)),
             _ => None,
         };
 
@@ -1631,6 +1709,7 @@ impl App {
             .cursor(self.cursor)
             .view_center(self.view_center)
             .moving(moving_id)
+            .copy_preview(copy_preview.as_ref())
             .selection(selection)
             .probe_values(&probe_values);
         f.render_widget(grid_widget, grid_area);
@@ -1652,8 +1731,9 @@ impl App {
             Mode::Normal => "NORMAL",
             Mode::Palette => "PALETTE",
             Mode::Move { .. } => "MOVE",
+            Mode::Copy { .. } => "COPY",
             Mode::Select { .. } | Mode::MouseSelect { .. } => "SELECT",
-            Mode::SelectMove { .. } | Mode::MouseSelectMove { .. } => "SEL-MOVE",
+            Mode::SelectMove { .. } => "SEL-MOVE",
             Mode::Edit { .. } => "EDIT",
             Mode::AdsrEdit { .. } => "ADSR",
             Mode::EnvEdit { .. } => "ENV",
