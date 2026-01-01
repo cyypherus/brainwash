@@ -1,25 +1,31 @@
 bpm 20
 
-module 3 Env 6 0
-module 7 Freq 2 0
-module 0 Probe 5 0
-module 2 Osc 4 0
-module 5 Mul 7 0
-module 4 Out 9 0
-module 6 Gate 0 2
-module 1 Probe 1 2
+module 0 HPF 5 0
+module 2 Out 12 0
+module 6 Osc 2 0
+module 8 Mul 11 0
+module 4 Gate 0 2
+module 1 Probe 6 0
+module 5 Delay 7 2
+module 3 Env 3 3
+module 7 Freq 1 0
 
-param 2 3 0.2
-param 5 1 0.19999993
+param 0 1 0.83000016
+param 6 3 0.2
+param 8 1 0.19999993
+param 5 1 44100
 
+port 0 0xFD
+port 8 0xFD
 port 5 0xFD
 
 env 3 0 0
-env 3 0.10000066 1 curve
+env 3 0.16000067 0.74999994
 env 3 0.34000063 0.25
 env 3 1 1
 
 track
+#
 {
 {0&4&7}/{2&5&9}/{4&7&11}/{5&9&12}
 &
@@ -40,4 +46,6 @@ track
 &
 ((9/11/12/14)/(16/14/12/11)/(14/16/18/19)/(16/14/12/11))
 }
+#
+(1/2/4)
 end

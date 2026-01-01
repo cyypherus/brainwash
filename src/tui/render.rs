@@ -1,4 +1,4 @@
-use super::bindings::{self, Action};
+use super::bindings;
 use super::grid::{Cell, GridPos};
 use super::module::{Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind};
 use super::patch::Patch;
@@ -12,6 +12,107 @@ use ratatui::{
 
 const CELL_WIDTH: u16 = 5;
 const CELL_HEIGHT: u16 = 3;
+
+struct ChartConfig {
+    color: Color,
+    min: f32,
+    max: f32,
+    show_axes: bool,
+    show_zero: bool,
+    show_fill: bool,
+}
+
+impl Default for ChartConfig {
+    fn default() -> Self {
+        Self {
+            color: Color::Rgb(100, 220, 220),
+            min: 0.0,
+            max: 1.0,
+            show_axes: true,
+            show_zero: false,
+            show_fill: true,
+        }
+    }
+}
+
+fn render_chart<F>(buf: &mut Buffer, area: Rect, config: &ChartConfig, sample_fn: F)
+where
+    F: Fn(f32) -> f32,
+{
+    if area.width < 5 || area.height < 3 {
+        return;
+    }
+
+    let h = (area.height - 1) as f32;
+    let range = config.max - config.min;
+    let axis_style = Style::default().fg(Color::DarkGray);
+
+    if config.show_axes {
+        for y in 0..area.height {
+            set_cell(buf, area.x, area.y + y, '│', axis_style);
+        }
+        for x in 0..area.width {
+            set_cell(buf, area.x + x, area.y + area.height - 1, '─', axis_style);
+        }
+        set_cell(buf, area.x, area.y + area.height - 1, '└', axis_style);
+    }
+
+    if config.show_zero && config.min <= 0.0 && config.max >= 0.0 && range > 0.0 {
+        let zero_y = ((config.max / range) * h) as u16;
+        if zero_y < area.height - 1 {
+            let zero_style = Style::default().fg(Color::Rgb(60, 60, 60));
+            for x in 1..area.width {
+                set_cell(buf, area.x + x, area.y + zero_y, '·', zero_style);
+            }
+        }
+    }
+
+    let curve_style = Style::default().fg(config.color);
+    let fill_color = match config.color {
+        Color::Rgb(r, g, b) => Color::Rgb(r / 3, g / 3, b / 3),
+        _ => Color::Rgb(40, 80, 80),
+    };
+    let fill_style = Style::default().fg(fill_color);
+
+    let chart_start = if config.show_axes { 1 } else { 0 };
+    let chart_w = (area.width - chart_start) as usize;
+
+    for screen_i in 0..chart_w {
+        let x = chart_start + screen_i as u16;
+        let t = screen_i as f32 / chart_w.max(1) as f32;
+        let val = sample_fn(t);
+
+        let normalized = if range > 0.0 {
+            ((config.max - val) / range).clamp(0.0, 1.0)
+        } else {
+            0.5
+        };
+        let y = (normalized * h) as u16;
+        let screen_x = area.x + x;
+        let line_y = y.min(area.height - 2);
+
+        if config.show_fill {
+            for fill_y in (line_y + 1)..(area.height - 1) {
+                set_cell(buf, screen_x, area.y + fill_y, '·', fill_style);
+            }
+        }
+
+        set_cell(buf, screen_x, area.y + line_y, '·', curve_style);
+    }
+
+    if config.show_axes {
+        let max_str = format!("{:.1}", config.max);
+        let min_str = format!("{:.1}", config.min);
+        set_str(buf, area.x + 1, area.y, &max_str, axis_style);
+        set_str(
+            buf,
+            area.x + 1,
+            area.y + area.height - 2,
+            &min_str,
+            axis_style,
+        );
+    }
+}
 
 fn set_cell(buf: &mut Buffer, x: u16, y: u16, ch: char, style: Style) {
     if let Some(cell) = buf.cell_mut((x, y)) {
@@ -30,7 +131,8 @@ pub struct GridWidget<'a> {
     cursor: GridPos,
     view_center: GridPos,
     moving: Option<ModuleId>,
-    copy_preview: Option<&'a Module>,
+    copy_previews: Vec<(&'a Module, GridPos)>,
+    move_previews: Vec<(&'a Module, GridPos)>,
     probe_values: &'a [f32],
     selection: Option<(GridPos, GridPos)>,
 }
@@ -42,7 +144,8 @@ impl<'a> GridWidget<'a> {
             cursor: GridPos::new(0, 0),
             view_center: GridPos::new(0, 0),
             moving: None,
-            copy_preview: None,
+            copy_previews: Vec::new(),
+            move_previews: Vec::new(),
             probe_values: &[],
             selection: None,
         }
@@ -64,8 +167,13 @@ impl<'a> GridWidget<'a> {
         self
     }
 
-    pub fn copy_preview(mut self, module: Option<&'a Module>) -> Self {
-        self.copy_preview = module;
+    pub fn copy_previews(mut self, previews: Vec<(&'a Module, GridPos)>) -> Self {
+        self.copy_previews = previews;
+        self
+    }
+
+    pub fn move_previews(mut self, previews: Vec<(&'a Module, GridPos)>) -> Self {
+        self.move_previews = previews;
         self
     }
 
@@ -544,17 +652,36 @@ impl Widget for GridWidget<'_> {
             }
         }
 
-        if let Some(module) = self.copy_preview {
+        for (module, pos) in &self.copy_previews {
             let width = module.width();
             let height = module.height();
             for ly in 0..height {
                 for lx in 0..width {
-                    let gx = self.cursor.x + lx as u16;
-                    let gy = self.cursor.y + ly as u16;
+                    let gx = pos.x + lx as u16;
+                    let gy = pos.y + ly as u16;
                     if gx >= origin_x && gy >= origin_y {
                         let (sx, sy) = self.screen_pos(GridPos::new(gx, gy), viewport_origin, grid_area);
                         if sx < grid_area.x + grid_area.width && sy < grid_area.y + grid_area.height {
-                            self.render_module(buf, sx, sy, module, lx, ly, lx == 0 && ly == 0, true, None);
+                            let is_cursor = gx == self.cursor.x && gy == self.cursor.y;
+                            self.render_module(buf, sx, sy, module, lx, ly, is_cursor, true, None);
+                        }
+                    }
+                }
+            }
+        }
+
+        for (module, pos) in &self.move_previews {
+            let width = module.width();
+            let height = module.height();
+            for ly in 0..height {
+                for lx in 0..width {
+                    let gx = pos.x + lx as u16;
+                    let gy = pos.y + ly as u16;
+                    if gx >= origin_x && gy >= origin_y {
+                        let (sx, sy) = self.screen_pos(GridPos::new(gx, gy), viewport_origin, grid_area);
+                        if sx < grid_area.x + grid_area.width && sy < grid_area.y + grid_area.height {
+                            let is_cursor = gx == self.cursor.x && gy == self.cursor.y;
+                            self.render_module(buf, sx, sy, module, lx, ly, is_cursor, true, None);
                         }
                     }
                 }
@@ -677,10 +804,8 @@ impl<'a> PaletteWidget<'a> {
 
 impl Widget for PaletteWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let hint_style = Style::default().fg(Color::White).bg(Color::DarkGray);
         let desc_style = Style::default().fg(Color::Gray).bg(Color::Rgb(40, 40, 40));
-        let hint_y = area.y + area.height.saturating_sub(1);
-        let desc_y = hint_y.saturating_sub(1);
+        let desc_y = area.y + area.height.saturating_sub(1);
         let max_w = area.width as usize;
 
         if self.searching {
@@ -713,10 +838,6 @@ impl Widget for PaletteWidget<'_> {
                 set_str(buf, area.x, desc_y, &desc, desc_style);
             }
 
-            for x in 0..area.width {
-                set_cell(buf, area.x + x, hint_y, ' ', hint_style);
-            }
-            set_str(buf, area.x, hint_y, " esc clear", hint_style);
             return;
         }
 
@@ -765,10 +886,6 @@ impl Widget for PaletteWidget<'_> {
             }
         }
 
-        for x in 0..area.width {
-            set_cell(buf, area.x + x, hint_y, ' ', hint_style);
-        }
-        set_str(buf, area.x, hint_y, " hjkl nav  i/ret ins  spc close", hint_style);
     }
 }
 
@@ -834,60 +951,30 @@ impl Widget for StatusWidget<'_> {
     }
 }
 
-pub struct HelpWidget;
+pub struct HelpWidget {
+    bindings: &'static [bindings::Binding],
+}
 
 impl HelpWidget {
-    fn key_for(bindings: &[bindings::Binding], action: Action) -> &'static str {
-        bindings
-            .iter()
-            .find(|b| b.action == action)
-            .map(|b| bindings::key_str(b.key))
-            .unwrap_or("?")
+    pub fn new(bindings: &'static [bindings::Binding]) -> Self {
+        Self { bindings }
     }
 }
 
 impl Widget for HelpWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let binds = bindings::normal_bindings();
-
-        let groups: &[&[(&str, &str)]] = &[
-            &[
-                ("hjkl", "move"),
-                (Self::key_for(binds, Action::Place), "add"),
-                (Self::key_for(binds, Action::Inspect), "copy"),
-                (Self::key_for(binds, Action::Delete), "delete"),
-                (Self::key_for(binds, Action::Move), "move"),
-                (Self::key_for(binds, Action::Edit), "edit"),
-                (Self::key_for(binds, Action::Rotate), "rotate"),
-                (Self::key_for(binds, Action::Select), "select"),
-            ],
-            &[
-                ("u/U", "undo/redo"),
-                ("t/T", "track"),
-                (Self::key_for(binds, Action::TogglePlay), "play"),
-            ],
-            &[
-                ("w/W", "save"),
-                (Self::key_for(binds, Action::Quit), "quit"),
-            ],
-        ];
+        let hints = bindings::hints(self.bindings);
 
         let key_style = Style::default().fg(Color::Cyan);
         let desc_style = Style::default().fg(Color::DarkGray);
 
-        let mut y = area.y;
-        for (group_idx, group) in groups.iter().enumerate() {
-            if group_idx > 0 {
-                y += 1;
+        for (i, (key, desc)) in hints.iter().enumerate() {
+            let y = area.y + i as u16;
+            if y >= area.y + area.height {
+                return;
             }
-            for (key, desc) in *group {
-                if y >= area.y + area.height {
-                    return;
-                }
-                set_str(buf, area.x, y, key, key_style);
-                set_str(buf, area.x + key.len() as u16 + 1, y, desc, desc_style);
-                y += 1;
-            }
+            set_str(buf, area.x, y, key, key_style);
+            set_str(buf, area.x + key.chars().count() as u16 + 1, y, desc, desc_style);
         }
     }
 }
@@ -1031,24 +1118,17 @@ impl<'a> AdsrWidget<'a> {
     }
 
     fn draw_curve(&self, buf: &mut Buffer, area: Rect, attack_ratio: f32, sustain: f32) {
-        if area.width < 10 || area.height < 5 {
-            return;
-        }
+        let config = ChartConfig {
+            color: Color::Rgb(255, 200, 100),
+            min: 0.0,
+            max: 1.0,
+            show_axes: true,
+            show_zero: false,
+            show_fill: true,
+        };
 
-        let w = area.width as f32;
-        let h = (area.height - 1) as f32;
-
-        let attack_x = (attack_ratio * w) as u16;
-
-        let curve_style = Style::default().fg(Color::Rgb(255, 200, 100));
-        let selected_style = Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD);
-        let label_style = Style::default().fg(Color::DarkGray);
-
-        for x in 0..area.width {
-            let t = x as f32 / w;
-            let y_val = if t < attack_ratio {
+        render_chart(buf, area, &config, |t| {
+            if t < attack_ratio {
                 if attack_ratio == 0.0 {
                     sustain
                 } else {
@@ -1061,29 +1141,8 @@ impl<'a> AdsrWidget<'a> {
                     (t - attack_ratio) / (1.0 - attack_ratio)
                 };
                 1.0 - decay_progress * (1.0 - sustain)
-            };
-
-            let y = ((1.0 - y_val) * h) as u16;
-            let screen_x = area.x + x;
-            let screen_y = area.y + y;
-
-            if screen_y < area.y + area.height {
-                set_cell(buf, screen_x, screen_y, '█', curve_style);
             }
-        }
-
-        let labels = ["A", "S"];
-        let positions = [attack_x / 2, attack_x + (area.width - attack_x) / 2];
-
-        for (i, (label, pos)) in labels.iter().zip(positions.iter()).enumerate() {
-            let style = if i == self.selected_param {
-                selected_style
-            } else {
-                label_style
-            };
-            let x = area.x + (*pos).min(area.width.saturating_sub(1));
-            set_str(buf, x, area.y + area.height - 1, label, style);
-        }
+        });
     }
 }
 
@@ -1233,22 +1292,6 @@ impl Widget for EnvelopeWidget<'_> {
             }
         }
 
-        if curve_area.width < 5 || curve_area.height < 3 {
-            return;
-        }
-
-        let w = (curve_area.width - 1) as f32;
-        let h = (curve_area.height - 1) as f32;
-
-        let curve_style = Style::default().fg(Color::Rgb(255, 200, 100));
-        let point_style = Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD);
-        let selected_point_style = Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD);
-        let editing_point_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
-
         let env = Envelope::new(
             points
                 .iter()
@@ -1264,22 +1307,31 @@ impl Widget for EnvelopeWidget<'_> {
                 .collect(),
         );
 
-        for x in 0..curve_area.width {
-            let t = x as f32 / w;
-            let val = env.output(t);
-            let y = ((1.0 - val) * h) as u16;
-            let screen_x = curve_area.x + x;
-            let screen_y = curve_area.y + y;
-            if screen_y < curve_area.y + curve_area.height {
-                set_cell(buf, screen_x, screen_y, '·', curve_style);
-            }
-        }
+        let config = ChartConfig {
+            color: Color::Rgb(255, 200, 100),
+            min: 0.0,
+            max: 1.0,
+            show_axes: true,
+            show_zero: false,
+            show_fill: true,
+        };
+        render_chart(buf, curve_area, &config, |t| env.output(t));
 
+        let point_style = Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
+        let selected_point_style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+        let editing_point_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+
+        let w = (curve_area.width - 2) as f32;
+        let h = (curve_area.height - 2) as f32;
         for (i, p) in points.iter().enumerate() {
-            let px = (p.time * w) as u16;
+            let px = 1 + (p.time * w) as u16;
             let py = ((1.0 - p.value) * h) as u16;
             let screen_x = curve_area.x + px.min(curve_area.width - 1);
-            let screen_y = curve_area.y + py.min(curve_area.height - 1);
+            let screen_y = curve_area.y + py.min(curve_area.height - 2);
             let is_sel = i == self.selected_point;
             let style = if is_sel {
                 if self.editing {
@@ -1391,52 +1443,6 @@ impl Widget for ProbeWidget<'_> {
             label_style,
         );
 
-        if chart_area.width < 5 || chart_area.height < 3 {
-            return;
-        }
-
-        let h = (chart_area.height - 1) as f32;
-        let range = self.max - self.min;
-
-        let axis_style = Style::default().fg(Color::DarkGray);
-        for y in 0..chart_area.height {
-            set_cell(buf, chart_area.x, chart_area.y + y, '│', axis_style);
-        }
-        for x in 0..chart_area.width {
-            set_cell(
-                buf,
-                chart_area.x + x,
-                chart_area.y + chart_area.height - 1,
-                '─',
-                axis_style,
-            );
-        }
-        set_cell(
-            buf,
-            chart_area.x,
-            chart_area.y + chart_area.height - 1,
-            '└',
-            axis_style,
-        );
-
-        if self.min <= 0.0 && self.max >= 0.0 && range > 0.0 {
-            let zero_y = ((self.max / range) * h) as u16;
-            if zero_y < chart_area.height - 1 {
-                let zero_style = Style::default().fg(Color::Rgb(60, 60, 60));
-                for x in 1..chart_area.width {
-                    set_cell(
-                        buf,
-                        chart_area.x + x,
-                        chart_area.y + zero_y,
-                        '·',
-                        zero_style,
-                    );
-                }
-            }
-        }
-
-        let curve_style = Style::default().fg(Color::Rgb(100, 220, 220));
-        let fill_style = Style::default().fg(Color::Rgb(40, 80, 80));
         let start = self.history.len().saturating_sub(self.len);
         let samples: &[f32] = &self.history[start..];
 
@@ -1444,40 +1450,19 @@ impl Widget for ProbeWidget<'_> {
             return;
         }
 
-        let chart_w = (chart_area.width - 1) as usize;
-        for screen_i in 0..chart_w {
-            let x = (screen_i + 1) as u16;
+        let config = ChartConfig {
+            color: Color::Rgb(100, 220, 220),
+            min: self.min,
+            max: self.max,
+            show_axes: true,
+            show_zero: true,
+            show_fill: true,
+        };
 
-            let t = screen_i as f32 / chart_w.max(1) as f32;
-            let sample_idx =
-                ((t * samples.len() as f32) as usize).min(samples.len().saturating_sub(1));
-            let val = samples[sample_idx];
-
-            let normalized = if range > 0.0 {
-                ((self.max - val) / range).clamp(0.0, 1.0)
-            } else {
-                0.5
-            };
-            let y = (normalized * h) as u16;
-            let screen_x = chart_area.x + x;
-            let line_y = y.min(chart_area.height - 2);
-
-            for fill_y in (line_y + 1)..(chart_area.height - 1) {
-                set_cell(buf, screen_x, chart_area.y + fill_y, '·', fill_style);
-            }
-
-            set_cell(buf, screen_x, chart_area.y + line_y, '·', curve_style);
-        }
-
-        let max_str = format!("{:.1}", self.max);
-        let min_str = format!("{:.1}", self.min);
-        set_str(buf, chart_area.x + 1, chart_area.y, &max_str, label_style);
-        set_str(
-            buf,
-            chart_area.x + 1,
-            chart_area.y + chart_area.height - 2,
-            &min_str,
-            label_style,
-        );
+        let samples_len = samples.len();
+        render_chart(buf, chart_area, &config, |t| {
+            let sample_idx = ((t * samples_len as f32) as usize).min(samples_len.saturating_sub(1));
+            samples[sample_idx]
+        });
     }
 }

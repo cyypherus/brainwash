@@ -1,9 +1,10 @@
 use ratatui::style::Color;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ModuleId(pub u32);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Orientation {
     #[default]
     Horizontal,
@@ -19,7 +20,7 @@ impl Orientation {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum WaveType {
     #[default]
     Sin,
@@ -63,9 +64,31 @@ impl WaveType {
             WaveType::Noise => WaveType::RSaw,
         }
     }
+
+    pub fn to_index(self) -> u8 {
+        match self {
+            WaveType::Sin => 0,
+            WaveType::Squ => 1,
+            WaveType::Tri => 2,
+            WaveType::Saw => 3,
+            WaveType::RSaw => 4,
+            WaveType::Noise => 5,
+        }
+    }
+
+    pub fn from_index(idx: u8) -> Self {
+        match idx {
+            0 => WaveType::Sin,
+            1 => WaveType::Squ,
+            2 => WaveType::Tri,
+            3 => WaveType::Saw,
+            4 => WaveType::RSaw,
+            _ => WaveType::Noise,
+        }
+    }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ModuleKind {
     Freq,
     Gate,
@@ -167,8 +190,8 @@ impl ModuleKind {
     pub fn description(&self) -> &'static str {
         match self {
             ModuleKind::Freq => "Note frequency from track",
-            ModuleKind::Gate => "Note gate (1=on, 0=off)",
-            ModuleKind::Osc => "Oscillator with waveform selection",
+            ModuleKind::Gate => "Note gate - on / off",
+            ModuleKind::Osc => "Oscillator - makes noise!",
             ModuleKind::Rise => "Ramps 0->1 while gate high",
             ModuleKind::Fall => "Ramps 0->1 while gate low",
             ModuleKind::Ramp => "Smoothly ramps to target value",
@@ -326,12 +349,12 @@ impl ModuleKind {
             ModuleKind::Switch,
             ModuleKind::Probe,
             ModuleKind::Output,
+            ModuleKind::TurnRD,
+            ModuleKind::TurnDR,
             ModuleKind::LSplit,
             ModuleKind::TSplit,
             ModuleKind::RJoin,
             ModuleKind::DJoin,
-            ModuleKind::TurnRD,
-            ModuleKind::TurnDR,
         ]
     }
 
@@ -629,7 +652,7 @@ impl ModuleKind {
                     step: 0.01,
                 },
             }],
-            ModuleKind::Lpf | ModuleKind::Hpf => &[
+            ModuleKind::Lpf => &[
                 ParamDef {
                     name: "In",
                     kind: ParamKind::Float {
@@ -643,6 +666,32 @@ impl ModuleKind {
                     kind: ParamKind::Float {
                         min: 0.001,
                         max: 0.99,
+                        step: 0.01,
+                    },
+                },
+                ParamDef {
+                    name: "Q",
+                    kind: ParamKind::Float {
+                        min: 0.1,
+                        max: 10.0,
+                        step: 0.1,
+                    },
+                },
+            ],
+            ModuleKind::Hpf => &[
+                ParamDef {
+                    name: "In",
+                    kind: ParamKind::Float {
+                        min: -1.0,
+                        max: 1.0,
+                        step: 0.01,
+                    },
+                },
+                ParamDef {
+                    name: "Freq",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 1.0,
                         step: 0.01,
                     },
                 },
@@ -892,14 +941,14 @@ impl ModuleKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct EnvPoint {
     pub time: f32,
     pub value: f32,
     pub curve: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ModuleParams {
     None,
     Osc {
@@ -1039,7 +1088,12 @@ impl ModuleParams {
                 ],
                 connected: 0xFF,
             },
-            ModuleKind::Lpf | ModuleKind::Hpf => ModuleParams::Filter {
+            ModuleKind::Lpf => ModuleParams::Filter {
+                freq: 0.5,
+                q: 0.707,
+                connected: 0xFF,
+            },
+            ModuleKind::Hpf => ModuleParams::Filter {
                 freq: 0.5,
                 q: 0.707,
                 connected: 0xFF,

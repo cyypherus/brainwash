@@ -11,8 +11,6 @@ pub enum Action {
     DownFast,
     UpFast,
     RightFast,
-    Home,
-    End,
     Place,
     Delete,
     Edit,
@@ -23,7 +21,7 @@ pub enum Action {
     Select,
     Save,
     SaveAs,
-    Inspect,
+    Copy,
     Palette(usize),
     Confirm,
     Cancel,
@@ -38,561 +36,200 @@ pub enum Action {
     TrackSettings,
     Undo,
     Redo,
+    Search,
 }
 
 pub struct Binding {
     pub key: KeyCode,
     pub action: Action,
     pub hint: &'static str,
+    pub group: Option<&'static str>,
 }
 
 pub fn normal_bindings() -> &'static [Binding] {
     &[
-        Binding {
-            key: KeyCode::Char('q'),
-            action: Action::Quit,
-            hint: "quit",
-        },
-        Binding {
-            key: KeyCode::Esc,
-            action: Action::Quit,
-            hint: "quit",
-        },
-        Binding {
-            key: KeyCode::Char('h'),
-            action: Action::Left,
-            hint: "left",
-        },
-        Binding {
-            key: KeyCode::Left,
-            action: Action::Left,
-            hint: "left",
-        },
-        Binding {
-            key: KeyCode::Char('j'),
-            action: Action::Down,
-            hint: "down",
-        },
-        Binding {
-            key: KeyCode::Down,
-            action: Action::Down,
-            hint: "down",
-        },
-        Binding {
-            key: KeyCode::Char('k'),
-            action: Action::Up,
-            hint: "up",
-        },
-        Binding {
-            key: KeyCode::Up,
-            action: Action::Up,
-            hint: "up",
-        },
-        Binding {
-            key: KeyCode::Char('l'),
-            action: Action::Right,
-            hint: "right",
-        },
-        Binding {
-            key: KeyCode::Right,
-            action: Action::Right,
-            hint: "right",
-        },
-        Binding {
-            key: KeyCode::Char('H'),
-            action: Action::LeftFast,
-            hint: "left x4",
-        },
-        Binding {
-            key: KeyCode::Char('J'),
-            action: Action::DownFast,
-            hint: "down x4",
-        },
-        Binding {
-            key: KeyCode::Char('K'),
-            action: Action::UpFast,
-            hint: "up x4",
-        },
-        Binding {
-            key: KeyCode::Char('L'),
-            action: Action::RightFast,
-            hint: "right x4",
-        },
-        Binding {
-            key: KeyCode::Char('['),
-            action: Action::Home,
-            hint: "home",
-        },
-        Binding {
-            key: KeyCode::Char(']'),
-            action: Action::End,
-            hint: "end",
-        },
-        Binding {
-            key: KeyCode::Char(' '),
-            action: Action::Place,
-            hint: "place",
-        },
-        Binding {
-            key: KeyCode::Char('.'),
-            action: Action::Delete,
-            hint: "delete",
-        },
-        Binding {
-            key: KeyCode::Char('o'),
-            action: Action::Rotate,
-            hint: "rotate",
-        },
-        Binding {
-            key: KeyCode::Char('m'),
-            action: Action::Move,
-            hint: "move",
-        },
-        Binding {
-            key: KeyCode::Char('y'),
-            action: Action::Edit,
-            hint: "edit",
-        },
-        Binding {
-            key: KeyCode::Char('u'),
-            action: Action::Undo,
-            hint: "undo",
-        },
-        Binding {
-            key: KeyCode::Char('U'),
-            action: Action::Redo,
-            hint: "redo",
-        },
-        Binding {
-            key: KeyCode::Char('i'),
-            action: Action::Inspect,
-            hint: "copy",
-        },
-        Binding {
-            key: KeyCode::Char('p'),
-            action: Action::TogglePlay,
-            hint: "play",
-        },
-        Binding {
-            key: KeyCode::Char('t'),
-            action: Action::TrackEdit,
-            hint: "edit trk",
-        },
-        Binding {
-            key: KeyCode::Char('v'),
-            action: Action::Select,
-            hint: "select",
-        },
-        Binding {
-            key: KeyCode::Char('w'),
-            action: Action::Save,
-            hint: "save",
-        },
-        Binding {
-            key: KeyCode::Char('W'),
-            action: Action::SaveAs,
-            hint: "save as",
-        },
-        Binding {
-            key: KeyCode::Char('7'),
-            action: Action::Palette(0),
-            hint: "track",
-        },
-        Binding {
-            key: KeyCode::Char('8'),
-            action: Action::Palette(1),
-            hint: "gen",
-        },
-        Binding {
-            key: KeyCode::Char('9'),
-            action: Action::Palette(2),
-            hint: "env",
-        },
-        Binding {
-            key: KeyCode::Char('0'),
-            action: Action::Palette(3),
-            hint: "fx",
-        },
-        Binding {
-            key: KeyCode::Char('-'),
-            action: Action::Palette(4),
-            hint: "math",
-        },
-        Binding {
-            key: KeyCode::Char('='),
-            action: Action::Palette(5),
-            hint: "route",
-        },
-        Binding {
-            key: KeyCode::Char('T'),
-            action: Action::TrackSettings,
-            hint: "settings",
-        },
+        Binding { key: KeyCode::Char('h'), action: Action::Left, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Char('j'), action: Action::Down, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Char('k'), action: Action::Up, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Char('l'), action: Action::Right, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Left, action: Action::Left, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Down, action: Action::Down, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Up, action: Action::Up, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Right, action: Action::Right, hint: "move", group: Some("arrows") },
+
+        Binding { key: KeyCode::Char('.'), action: Action::Delete, hint: "delete", group: None },
+        Binding { key: KeyCode::Char('o'), action: Action::Rotate, hint: "rotate", group: None },
+        Binding { key: KeyCode::Char('m'), action: Action::Move, hint: "grab", group: None },
+        Binding { key: KeyCode::Char('y'), action: Action::Edit, hint: "edit", group: None },
+        Binding { key: KeyCode::Char('u'), action: Action::Undo, hint: "undo", group: None },
+        Binding { key: KeyCode::Char('U'), action: Action::Redo, hint: "redo", group: None },
+        Binding { key: KeyCode::Char('i'), action: Action::Copy, hint: "copy", group: None },
+        Binding { key: KeyCode::Char('p'), action: Action::TogglePlay, hint: "play", group: None },
+        Binding { key: KeyCode::Char('t'), action: Action::TrackEdit, hint: "track", group: None },
+        Binding { key: KeyCode::Char(','), action: Action::Select, hint: "select", group: None },
+        Binding { key: KeyCode::Char('w'), action: Action::Save, hint: "save", group: None },
+        Binding { key: KeyCode::Char('W'), action: Action::SaveAs, hint: "save as", group: None },
+        Binding { key: KeyCode::Char('s'), action: Action::TrackSettings, hint: "settings", group: None },
+        Binding { key: KeyCode::Char('Q'), action: Action::Quit, hint: "quit", group: None },
+        Binding { key: KeyCode::Char('7'), action: Action::Palette(0), hint: "track", group: None },
+        Binding { key: KeyCode::Char('8'), action: Action::Palette(1), hint: "gen", group: None },
+        Binding { key: KeyCode::Char('9'), action: Action::Palette(2), hint: "env", group: None },
+        Binding { key: KeyCode::Char('0'), action: Action::Palette(3), hint: "fx", group: None },
+        Binding { key: KeyCode::Char('-'), action: Action::Palette(4), hint: "math", group: None },
+        Binding { key: KeyCode::Char('='), action: Action::Palette(5), hint: "route", group: None },
+    ]
+}
+
+pub fn palette_bindings() -> &'static [Binding] {
+    &[
+        Binding { key: KeyCode::Char('h'), action: Action::Left, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Char('j'), action: Action::Down, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Char('k'), action: Action::Up, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Char('l'), action: Action::Right, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Left, action: Action::Left, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Down, action: Action::Down, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Up, action: Action::Up, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Right, action: Action::Right, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Enter, action: Action::Confirm, hint: "place", group: Some("confirm") },
+        Binding { key: KeyCode::Char('i'), action: Action::Confirm, hint: "place", group: Some("confirm") },
+        Binding { key: KeyCode::Char('/'), action: Action::Search, hint: "search", group: None },
+        Binding { key: KeyCode::Esc, action: Action::Cancel, hint: "cancel", group: Some("cancel") },
+        Binding { key: KeyCode::Char('q'), action: Action::Cancel, hint: "cancel", group: Some("cancel") },
+        Binding { key: KeyCode::Char(' '), action: Action::Cancel, hint: "cancel", group: Some("cancel") },
     ]
 }
 
 pub fn move_bindings() -> &'static [Binding] {
     &[
-        Binding {
-            key: KeyCode::Esc,
-            action: Action::Cancel,
-            hint: "cancel",
-        },
-        Binding {
-            key: KeyCode::Char('h'),
-            action: Action::Left,
-            hint: "left",
-        },
-        Binding {
-            key: KeyCode::Left,
-            action: Action::Left,
-            hint: "left",
-        },
-        Binding {
-            key: KeyCode::Char('j'),
-            action: Action::Down,
-            hint: "down",
-        },
-        Binding {
-            key: KeyCode::Down,
-            action: Action::Down,
-            hint: "down",
-        },
-        Binding {
-            key: KeyCode::Char('k'),
-            action: Action::Up,
-            hint: "up",
-        },
-        Binding {
-            key: KeyCode::Up,
-            action: Action::Up,
-            hint: "up",
-        },
-        Binding {
-            key: KeyCode::Char('l'),
-            action: Action::Right,
-            hint: "right",
-        },
-        Binding {
-            key: KeyCode::Right,
-            action: Action::Right,
-            hint: "right",
-        },
-        Binding {
-            key: KeyCode::Char('H'),
-            action: Action::LeftFast,
-            hint: "left x4",
-        },
-        Binding {
-            key: KeyCode::Char('J'),
-            action: Action::DownFast,
-            hint: "down x4",
-        },
-        Binding {
-            key: KeyCode::Char('K'),
-            action: Action::UpFast,
-            hint: "up x4",
-        },
-        Binding {
-            key: KeyCode::Char('L'),
-            action: Action::RightFast,
-            hint: "right x4",
-        },
-        Binding {
-            key: KeyCode::Char('m'),
-            action: Action::Confirm,
-            hint: "place",
-        },
-        Binding {
-            key: KeyCode::Enter,
-            action: Action::Confirm,
-            hint: "place",
-        },
-        Binding {
-            key: KeyCode::Char(' '),
-            action: Action::Confirm,
-            hint: "place",
-        },
+        Binding { key: KeyCode::Char('h'), action: Action::Left, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Char('j'), action: Action::Down, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Char('k'), action: Action::Up, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Char('l'), action: Action::Right, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Left, action: Action::Left, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Down, action: Action::Down, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Up, action: Action::Up, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Right, action: Action::Right, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Char('m'), action: Action::Confirm, hint: "place", group: Some("confirm") },
+        Binding { key: KeyCode::Enter, action: Action::Confirm, hint: "place", group: Some("confirm") },
+        Binding { key: KeyCode::Char('i'), action: Action::Confirm, hint: "place", group: Some("confirm") },
+        Binding { key: KeyCode::Esc, action: Action::Cancel, hint: "cancel", group: None },
     ]
 }
 
 pub fn edit_bindings() -> &'static [Binding] {
     &[
-        Binding {
-            key: KeyCode::Esc,
-            action: Action::Cancel,
-            hint: "done",
-        },
-        Binding {
-            key: KeyCode::Char('q'),
-            action: Action::Cancel,
-            hint: "done",
-        },
-        Binding {
-            key: KeyCode::Char('y'),
-            action: Action::Cancel,
-            hint: "done",
-        },
-        Binding {
-            key: KeyCode::Char('u'),
-            action: Action::Cancel,
-            hint: "done",
-        },
-        Binding {
-            key: KeyCode::Tab,
-            action: Action::Down,
-            hint: "next",
-        },
-        Binding {
-            key: KeyCode::Char('j'),
-            action: Action::Down,
-            hint: "next",
-        },
-        Binding {
-            key: KeyCode::Down,
-            action: Action::Down,
-            hint: "next",
-        },
-        Binding {
-            key: KeyCode::BackTab,
-            action: Action::Up,
-            hint: "prev",
-        },
-        Binding {
-            key: KeyCode::Char('k'),
-            action: Action::Up,
-            hint: "prev",
-        },
-        Binding {
-            key: KeyCode::Up,
-            action: Action::Up,
-            hint: "prev",
-        },
-        Binding {
-            key: KeyCode::Char('h'),
-            action: Action::ValueDown,
-            hint: "-",
-        },
-        Binding {
-            key: KeyCode::Left,
-            action: Action::ValueDown,
-            hint: "-",
-        },
-        Binding {
-            key: KeyCode::Char('l'),
-            action: Action::ValueUp,
-            hint: "+",
-        },
-        Binding {
-            key: KeyCode::Right,
-            action: Action::ValueUp,
-            hint: "+",
-        },
-        Binding {
-            key: KeyCode::Char('H'),
-            action: Action::ValueDownFast,
-            hint: "-x10",
-        },
-        Binding {
-            key: KeyCode::Char('L'),
-            action: Action::ValueUpFast,
-            hint: "+x10",
-        },
-        Binding {
-            key: KeyCode::Char(';'),
-            action: Action::TogglePort,
-            hint: "port",
-        },
+        Binding { key: KeyCode::Char('j'), action: Action::Down, hint: "param", group: Some("jk") },
+        Binding { key: KeyCode::Char('k'), action: Action::Up, hint: "param", group: Some("jk") },
+        Binding { key: KeyCode::Down, action: Action::Down, hint: "param", group: Some("ud") },
+        Binding { key: KeyCode::Up, action: Action::Up, hint: "param", group: Some("ud") },
+        Binding { key: KeyCode::Char('h'), action: Action::ValueDown, hint: "adjust", group: Some("hl") },
+        Binding { key: KeyCode::Char('l'), action: Action::ValueUp, hint: "adjust", group: Some("hl") },
+        Binding { key: KeyCode::Left, action: Action::ValueDown, hint: "adjust", group: Some("lr") },
+        Binding { key: KeyCode::Right, action: Action::ValueUp, hint: "adjust", group: Some("lr") },
+        Binding { key: KeyCode::Char(';'), action: Action::TogglePort, hint: "port", group: None },
+        Binding { key: KeyCode::Esc, action: Action::Cancel, hint: "done", group: Some("done") },
+        Binding { key: KeyCode::Char('y'), action: Action::Cancel, hint: "done", group: Some("done") },
     ]
 }
 
 pub fn env_bindings() -> &'static [Binding] {
     &[
-        Binding {
-            key: KeyCode::Esc,
-            action: Action::Cancel,
-            hint: "done",
-        },
-        Binding {
-            key: KeyCode::Char('q'),
-            action: Action::Cancel,
-            hint: "done",
-        },
-        Binding {
-            key: KeyCode::Char('y'),
-            action: Action::Cancel,
-            hint: "done",
-        },
-        Binding {
-            key: KeyCode::Tab,
-            action: Action::Right,
-            hint: "next",
-        },
-        Binding {
-            key: KeyCode::Char('l'),
-            action: Action::Right,
-            hint: "next",
-        },
-        Binding {
-            key: KeyCode::Right,
-            action: Action::Right,
-            hint: "next",
-        },
-        Binding {
-            key: KeyCode::BackTab,
-            action: Action::Left,
-            hint: "prev",
-        },
-        Binding {
-            key: KeyCode::Char('h'),
-            action: Action::Left,
-            hint: "prev",
-        },
-        Binding {
-            key: KeyCode::Left,
-            action: Action::Left,
-            hint: "prev",
-        },
-        Binding {
-            key: KeyCode::Char('m'),
-            action: Action::Move,
-            hint: "move",
-        },
-        Binding {
-            key: KeyCode::Char(' '),
-            action: Action::AddPoint,
-            hint: "add",
-        },
-        Binding {
-            key: KeyCode::Char('.'),
-            action: Action::DeletePoint,
-            hint: "del",
-        },
-        Binding {
-            key: KeyCode::Char('c'),
-            action: Action::ToggleCurve,
-            hint: "curve",
-        },
+        Binding { key: KeyCode::Char('h'), action: Action::Left, hint: "point", group: Some("hl") },
+        Binding { key: KeyCode::Char('l'), action: Action::Right, hint: "point", group: Some("hl") },
+        Binding { key: KeyCode::Left, action: Action::Left, hint: "point", group: Some("arrows") },
+        Binding { key: KeyCode::Right, action: Action::Right, hint: "point", group: Some("arrows") },
+        Binding { key: KeyCode::Char('m'), action: Action::Move, hint: "move", group: None },
+        Binding { key: KeyCode::Char(' '), action: Action::AddPoint, hint: "add", group: None },
+        Binding { key: KeyCode::Char('.'), action: Action::DeletePoint, hint: "delete", group: None },
+        Binding { key: KeyCode::Char('c'), action: Action::ToggleCurve, hint: "curve", group: None },
+        Binding { key: KeyCode::Esc, action: Action::Cancel, hint: "done", group: Some("done") },
+        Binding { key: KeyCode::Char('y'), action: Action::Cancel, hint: "done", group: Some("done") },
+    ]
+}
+
+pub fn env_move_bindings() -> &'static [Binding] {
+    &[
+        Binding { key: KeyCode::Char('h'), action: Action::Left, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Char('j'), action: Action::Down, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Char('k'), action: Action::Up, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Char('l'), action: Action::Right, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Left, action: Action::Left, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Down, action: Action::Down, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Up, action: Action::Up, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Right, action: Action::Right, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Esc, action: Action::Cancel, hint: "done", group: Some("done") },
+        Binding { key: KeyCode::Enter, action: Action::Confirm, hint: "done", group: Some("done") },
+        Binding { key: KeyCode::Char('m'), action: Action::Confirm, hint: "done", group: Some("done") },
     ]
 }
 
 pub fn select_bindings() -> &'static [Binding] {
     &[
-        Binding {
-            key: KeyCode::Esc,
-            action: Action::Cancel,
-            hint: "cancel",
-        },
-        Binding {
-            key: KeyCode::Char('h'),
-            action: Action::Left,
-            hint: "left",
-        },
-        Binding {
-            key: KeyCode::Left,
-            action: Action::Left,
-            hint: "left",
-        },
-        Binding {
-            key: KeyCode::Char('j'),
-            action: Action::Down,
-            hint: "down",
-        },
-        Binding {
-            key: KeyCode::Down,
-            action: Action::Down,
-            hint: "down",
-        },
-        Binding {
-            key: KeyCode::Char('k'),
-            action: Action::Up,
-            hint: "up",
-        },
-        Binding {
-            key: KeyCode::Up,
-            action: Action::Up,
-            hint: "up",
-        },
-        Binding {
-            key: KeyCode::Char('l'),
-            action: Action::Right,
-            hint: "right",
-        },
-        Binding {
-            key: KeyCode::Right,
-            action: Action::Right,
-            hint: "right",
-        },
-        Binding {
-            key: KeyCode::Char('H'),
-            action: Action::LeftFast,
-            hint: "left x4",
-        },
-        Binding {
-            key: KeyCode::Char('J'),
-            action: Action::DownFast,
-            hint: "down x4",
-        },
-        Binding {
-            key: KeyCode::Char('K'),
-            action: Action::UpFast,
-            hint: "up x4",
-        },
-        Binding {
-            key: KeyCode::Char('L'),
-            action: Action::RightFast,
-            hint: "right x4",
-        },
-        Binding {
-            key: KeyCode::Char('m'),
-            action: Action::Move,
-            hint: "move",
-        },
-        Binding {
-            key: KeyCode::Enter,
-            action: Action::Move,
-            hint: "move",
-        },
-        Binding {
-            key: KeyCode::Char('x'),
-            action: Action::Delete,
-            hint: "delete",
-        },
-        Binding {
-            key: KeyCode::Char('.'),
-            action: Action::Delete,
-            hint: "delete",
-        },
+        Binding { key: KeyCode::Char('h'), action: Action::Left, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Char('j'), action: Action::Down, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Char('k'), action: Action::Up, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Char('l'), action: Action::Right, hint: "move", group: Some("hjkl") },
+        Binding { key: KeyCode::Left, action: Action::Left, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Down, action: Action::Down, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Up, action: Action::Up, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Right, action: Action::Right, hint: "move", group: Some("arrows") },
+        Binding { key: KeyCode::Char('m'), action: Action::Move, hint: "grab", group: Some("grab") },
+        Binding { key: KeyCode::Enter, action: Action::Move, hint: "grab", group: Some("grab") },
+        Binding { key: KeyCode::Char('.'), action: Action::Delete, hint: "delete", group: Some("del") },
+        Binding { key: KeyCode::Char('x'), action: Action::Delete, hint: "delete", group: Some("del") },
+        Binding { key: KeyCode::Char('i'), action: Action::Copy, hint: "copy", group: None },
+        Binding { key: KeyCode::Esc, action: Action::Cancel, hint: "cancel", group: Some("cancel") },
+        Binding { key: KeyCode::Char(','), action: Action::Cancel, hint: "cancel", group: Some("cancel") },
     ]
 }
 
 pub fn quit_confirm_bindings() -> &'static [Binding] {
     &[
-        Binding {
-            key: KeyCode::Char('y'),
-            action: Action::Confirm,
-            hint: "yes",
-        },
-        Binding {
-            key: KeyCode::Char('Y'),
-            action: Action::Confirm,
-            hint: "yes",
-        },
-        Binding {
-            key: KeyCode::Char('n'),
-            action: Action::Cancel,
-            hint: "no",
-        },
-        Binding {
-            key: KeyCode::Char('N'),
-            action: Action::Cancel,
-            hint: "no",
-        },
-        Binding {
-            key: KeyCode::Esc,
-            action: Action::Cancel,
-            hint: "no",
-        },
+        Binding { key: KeyCode::Char('y'), action: Action::Confirm, hint: "yes", group: Some("yes") },
+        Binding { key: KeyCode::Char('Y'), action: Action::Confirm, hint: "yes", group: Some("yes") },
+        Binding { key: KeyCode::Char('n'), action: Action::Cancel, hint: "no", group: Some("no") },
+        Binding { key: KeyCode::Char('N'), action: Action::Cancel, hint: "no", group: Some("no") },
+        Binding { key: KeyCode::Esc, action: Action::Cancel, hint: "no", group: Some("no") },
+    ]
+}
+
+pub fn settings_bindings() -> &'static [Binding] {
+    &[
+        Binding { key: KeyCode::Char('j'), action: Action::Down, hint: "param", group: Some("jk") },
+        Binding { key: KeyCode::Char('k'), action: Action::Up, hint: "param", group: Some("jk") },
+        Binding { key: KeyCode::Down, action: Action::Down, hint: "param", group: Some("ud") },
+        Binding { key: KeyCode::Up, action: Action::Up, hint: "param", group: Some("ud") },
+        Binding { key: KeyCode::Char('h'), action: Action::ValueDown, hint: "adjust", group: Some("hl") },
+        Binding { key: KeyCode::Char('l'), action: Action::ValueUp, hint: "adjust", group: Some("hl") },
+        Binding { key: KeyCode::Left, action: Action::ValueDown, hint: "adjust", group: Some("lr") },
+        Binding { key: KeyCode::Right, action: Action::ValueUp, hint: "adjust", group: Some("lr") },
+        Binding { key: KeyCode::Esc, action: Action::Cancel, hint: "done", group: Some("done") },
+        Binding { key: KeyCode::Char('s'), action: Action::Cancel, hint: "done", group: Some("done") },
+        Binding { key: KeyCode::Enter, action: Action::Cancel, hint: "done", group: Some("done") },
+    ]
+}
+
+pub fn text_input_bindings() -> &'static [Binding] {
+    &[
+        Binding { key: KeyCode::Enter, action: Action::Confirm, hint: "confirm", group: None },
+        Binding { key: KeyCode::Esc, action: Action::Cancel, hint: "cancel", group: None },
+    ]
+}
+
+pub fn probe_bindings() -> &'static [Binding] {
+    &[
+        Binding { key: KeyCode::Char('h'), action: Action::Left, hint: "param", group: Some("hl") },
+        Binding { key: KeyCode::Char('l'), action: Action::Right, hint: "param", group: Some("hl") },
+        Binding { key: KeyCode::Left, action: Action::Left, hint: "param", group: Some("lr") },
+        Binding { key: KeyCode::Right, action: Action::Right, hint: "param", group: Some("lr") },
+        Binding { key: KeyCode::Char('j'), action: Action::ValueDown, hint: "adjust", group: Some("jk") },
+        Binding { key: KeyCode::Char('k'), action: Action::ValueUp, hint: "adjust", group: Some("jk") },
+        Binding { key: KeyCode::Down, action: Action::ValueDown, hint: "adjust", group: Some("ud") },
+        Binding { key: KeyCode::Up, action: Action::ValueUp, hint: "adjust", group: Some("ud") },
+        Binding { key: KeyCode::Char('r'), action: Action::Delete, hint: "reset", group: None },
+        Binding { key: KeyCode::Char('c'), action: Action::ToggleCurve, hint: "cycle", group: None },
+        Binding { key: KeyCode::Esc, action: Action::Cancel, hint: "done", group: Some("done") },
+        Binding { key: KeyCode::Char('y'), action: Action::Cancel, hint: "done", group: Some("done") },
     ]
 }
 
@@ -600,59 +237,74 @@ pub fn lookup(bindings: &[Binding], key: KeyCode) -> Option<Action> {
     bindings.iter().find(|b| b.key == key).map(|b| b.action)
 }
 
-pub fn hints(bindings: &[Binding]) -> Vec<(&'static str, &'static str)> {
-    let mut seen = std::collections::HashSet::new();
-    bindings
-        .iter()
-        .filter(|b| seen.insert(b.action))
-        .map(|b| (key_str(b.key), b.hint))
-        .collect()
+pub fn hints(bindings: &[Binding]) -> Vec<(String, &'static str)> {
+    let mut result: Vec<(String, &'static str, Option<&'static str>)> = Vec::new();
+    for b in bindings {
+        if let Some(group) = b.group {
+            if let Some(existing) = result.iter_mut().find(|(_, _, g)| *g == Some(group)) {
+                existing.0.push('/');
+                existing.0.push_str(key_str(b.key));
+                continue;
+            }
+        }
+        if result.iter().any(|(_, h, g)| *h == b.hint && g.is_none() && b.group.is_none()) {
+            continue;
+        }
+        result.push((key_str(b.key).to_string(), b.hint, b.group));
+    }
+    result.into_iter().map(|(k, h, _)| (k, h)).collect()
 }
 
 pub fn key_str(key: KeyCode) -> &'static str {
     match key {
-        KeyCode::Char('h') => "h",
-        KeyCode::Char('j') => "j",
-        KeyCode::Char('k') => "k",
-        KeyCode::Char('l') => "l",
-        KeyCode::Char('H') => "H",
-        KeyCode::Char('J') => "J",
-        KeyCode::Char('K') => "K",
-        KeyCode::Char('L') => "L",
-        KeyCode::Char('q') => "q",
-        KeyCode::Char('u') => "u",
-        KeyCode::Char('U') => "U",
-        KeyCode::Char('y') => "y",
-        KeyCode::Char('i') => "i",
-        KeyCode::Char('m') => "m",
-        KeyCode::Char('o') => "o",
-        KeyCode::Char('p') => "p",
-        KeyCode::Char('t') => "t",
-        KeyCode::Char('T') => "T",
-        KeyCode::Char('v') => "v",
-        KeyCode::Char('w') => "w",
-        KeyCode::Char('W') => "W",
-        KeyCode::Char('c') => "c",
-        KeyCode::Char('n') => "n",
-        KeyCode::Char(' ') => "space",
-        KeyCode::Char('.') => ".",
-        KeyCode::Char(';') => ";",
-        KeyCode::Char('[') => "[",
-        KeyCode::Char(']') => "]",
-        KeyCode::Char('7') => "7",
-        KeyCode::Char('8') => "8",
-        KeyCode::Char('9') => "9",
-        KeyCode::Char('0') => "0",
-        KeyCode::Char('-') => "-",
-        KeyCode::Char('=') => "=",
+        KeyCode::Char(c) => match c {
+            'h' => "h",
+            'j' => "j",
+            'k' => "k",
+            'l' => "l",
+            'H' => "H",
+            'J' => "J",
+            'K' => "K",
+            'L' => "L",
+            'q' => "q",
+            'Q' => "Q",
+            'u' => "u",
+            'U' => "U",
+            'y' => "y",
+            'Y' => "Y",
+            'i' => "i",
+            'm' => "m",
+            'n' => "n",
+            'o' => "o",
+            'p' => "p",
+            'r' => "r",
+            't' => "t",
+            's' => "s",
+            'c' => "c",
+            'x' => "x",
+            ',' => ",",
+            'w' => "w",
+            'W' => "W",
+            ' ' => "space",
+            '.' => ".",
+            ';' => ";",
+            '/' => "/",
+            '7' => "7",
+            '8' => "8",
+            '9' => "9",
+            '0' => "0",
+            '-' => "-",
+            '=' => "=",
+            _ => "?",
+        },
         KeyCode::Enter => "ret",
         KeyCode::Esc => "esc",
         KeyCode::Tab => "tab",
         KeyCode::BackTab => "S-tab",
-        KeyCode::Left => "left",
-        KeyCode::Right => "right",
-        KeyCode::Up => "up",
-        KeyCode::Down => "down",
+        KeyCode::Left => "←",
+        KeyCode::Right => "→",
+        KeyCode::Up => "↑",
+        KeyCode::Down => "↓",
         _ => "?",
     }
 }

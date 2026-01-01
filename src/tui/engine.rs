@@ -64,20 +64,21 @@ impl TrackState {
         for event in events {
             match event {
                 NoteEvent::Press { pitch } => {
-                    if self.voices.iter().any(|v| v.pitch == pitch && v.gate > 0.5) {
-                        continue;
-                    }
-
                     let freq = 440.0 * 2.0f32.powf((pitch as f32 - 69.0) / 12.0);
                     self.age_counter += 1;
 
                     let idx = self
                         .voices
                         .iter()
-                        .enumerate()
-                        .filter(|(_, v)| v.gate < 0.5)
-                        .min_by_key(|(_, v)| v.age)
-                        .map(|(i, _)| i)
+                        .position(|v| v.pitch == pitch && v.gate > 0.5)
+                        .or_else(|| {
+                            self.voices
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, v)| v.gate < 0.5)
+                                .min_by_key(|(_, v)| v.age)
+                                .map(|(i, _)| i)
+                        })
                         .or_else(|| {
                             self.voices
                                 .iter()
@@ -645,7 +646,8 @@ fn create_node_kind(module: &Module) -> NodeKind {
         }
         (ModuleKind::Hpf, ModuleParams::Filter { freq, q, .. }) => {
             let mut filter = HighpassFilter::default();
-            filter.freq(*freq).q(*q);
+            let mapped = 20.0 * (100.0f32).powf(*freq) / 22050.0;
+            filter.freq(mapped).q(*q);
             NodeKind::Hpf(filter)
         }
         (ModuleKind::Delay, ModuleParams::Delay { samples, .. }) => {
