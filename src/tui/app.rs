@@ -1,7 +1,8 @@
 use super::bindings::{self, Action, lookup};
-use super::engine::{CompiledPatch, TrackState, compile_patch};
+use super::engine::{CompiledPatch, MeterReceiver, TrackState, compile_patch, meter_channel};
 use super::grid::GridPos;
 use super::module::{Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind, SubPatchId};
+use std::collections::HashMap;
 use super::patch::{Patch, PatchSet};
 use super::persist;
 use super::render::{
@@ -114,6 +115,10 @@ struct App {
     dirty: bool,
     audio_patch: Arc<Mutex<CompiledPatch>>,
     track_state: Arc<Mutex<TrackState>>,
+    meter_rx: MeterReceiver,
+    meter_values: HashMap<ModuleId, Vec<f32>>,
+    probe_values: Vec<f32>,
+    show_meters: bool,
     playing: bool,
     track_text: String,
     file_path: Option<PathBuf>,
@@ -201,7 +206,11 @@ fn subpatch_color(index: usize) -> Color {
 }
 
 impl App {
-    fn new(audio_patch: Arc<Mutex<CompiledPatch>>, track_state: Arc<Mutex<TrackState>>) -> Self {
+    fn new(
+        audio_patch: Arc<Mutex<CompiledPatch>>,
+        track_state: Arc<Mutex<TrackState>>,
+        meter_rx: MeterReceiver,
+    ) -> Self {
         let mut patches = PatchSet::new(20, 20);
         patches.root.add_module(ModuleKind::Output, GridPos::new(19, 19));
 
@@ -246,6 +255,10 @@ impl App {
             dirty: false,
             audio_patch,
             track_state,
+            meter_rx,
+            meter_values: HashMap::new(),
+            probe_values: Vec::new(),
+            show_meters: false,
             playing: false,
             track_text,
             file_path: None,
@@ -278,6 +291,15 @@ impl App {
                 &mut self.patches.subpatches.get_mut(&sub_id).unwrap().patch
             }
             _ => &mut self.patches.root,
+        }
+    }
+
+    fn drain_meters(&mut self) {
+        while let Ok(frame) = self.meter_rx.try_recv() {
+            for (id, values) in frame.ports {
+                self.meter_values.insert(id, values);
+            }
+            self.probe_values = frame.probes;
         }
     }
 
@@ -814,6 +836,9 @@ impl App {
                     self.message = Some(format!("Exited '{}'", name));
                     self.commit_patch();
                 }
+            }
+            Action::ToggleMeters => {
+                self.show_meters = !self.show_meters;
             }
             _ => {}
         }
@@ -2027,11 +2052,6 @@ impl App {
             _ => None,
         };
 
-        let audio_patch = self.audio_patch.lock().unwrap();
-        let probe_values: Vec<f32> = (0..16)
-            .filter_map(|i| audio_patch.probe_history(i).and_then(|h| h.back().copied()))
-            .collect();
-        drop(audio_patch);
         self.grid_area = grid_area;
 
         let display_patch = self.patch();
@@ -2053,7 +2073,9 @@ impl App {
                 .copy_previews(copy_previews)
                 .move_previews(move_previews)
                 .selection(selection)
-                .probe_values(&probe_values);
+                .probe_values(&self.probe_values)
+                .meter_values(&self.meter_values)
+                .show_meters(self.show_meters);
             f.render_widget(grid_widget, inner);
         } else {
             let grid_widget = GridWidget::new(display_patch)
@@ -2063,7 +2085,9 @@ impl App {
                 .copy_previews(copy_previews)
                 .move_previews(move_previews)
                 .selection(selection)
-                .probe_values(&probe_values);
+                .probe_values(&self.probe_values)
+                .meter_values(&self.meter_values)
+                .show_meters(self.show_meters);
             f.render_widget(grid_widget, grid_area);
         }
 
@@ -2268,6 +2292,15 @@ impl App {
                 let current = history.last().copied().unwrap_or(0.0);
                 drop(audio_patch);
 
+                let (auto_min, auto_max) = if history.is_empty() {
+                    (-1.0, 1.0)
+                } else {
+                    let min = history.iter().copied().fold(f32::INFINITY, f32::min);
+                    let max = history.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                    let padding = (max - min).abs() * 0.1;
+                    (min - padding, max + padding)
+                };
+
                 let probe_width = grid_area.width.saturating_sub(4);
                 let probe_height = grid_area.height.saturating_sub(4);
                 let probe_x = grid_area.x + 2;
@@ -2290,8 +2323,8 @@ impl App {
                 );
                 let probe_widget = ProbeWidget::new(
                     &history,
-                    self.probe_min,
-                    self.probe_max,
+                    auto_min,
+                    auto_max,
                     self.probe_len,
                     current,
                     param_idx,
@@ -2431,7 +2464,10 @@ const NUM_VOICES: usize = 6;
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let file_arg = std::env::args().nth(1).map(PathBuf::from);
 
-    let audio_patch = Arc::new(Mutex::new(CompiledPatch::default()));
+    let (meter_tx, meter_rx) = meter_channel();
+    let mut compiled_patch = CompiledPatch::default();
+    compiled_patch.set_meter_sender(meter_tx);
+    let audio_patch = Arc::new(Mutex::new(compiled_patch));
     let audio_patch_clone = Arc::clone(&audio_patch);
     let track_state = Arc::new(Mutex::new(TrackState::new(NUM_VOICES)));
     let track_state_clone = Arc::clone(&track_state);
@@ -2490,16 +2526,20 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(audio_patch, track_state);
+    let mut app = App::new(audio_patch, track_state, meter_rx);
 
     if let Some(path) = file_arg {
         app.load_from_file(path);
+    } else {
+        app.recompile_patch();
     }
 
     loop {
         *playing.lock().unwrap() = app.playing;
 
         terminal.draw(|f| app.ui(f))?;
+
+        app.drain_meters();
 
         if event::poll(Duration::from_millis(50))? {
             let event = event::read()?;

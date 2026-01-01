@@ -14,6 +14,18 @@ use crate::reverb::Reverb;
 use crate::track::{NoteEvent, Track};
 use std::collections::{HashMap, VecDeque};
 
+pub type MeterSender = flume::Sender<MeterFrame>;
+pub type MeterReceiver = flume::Receiver<MeterFrame>;
+
+pub fn meter_channel() -> (MeterSender, MeterReceiver) {
+    flume::unbounded()
+}
+
+pub struct MeterFrame {
+    pub ports: Vec<(ModuleId, Vec<f32>)>,
+    pub probes: Vec<f32>,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct Voice {
     pitch: u8,
@@ -135,15 +147,17 @@ enum NodeKind {
     Gt,
     Lt,
     Switch,
-    Probe { value: f32 },
+    Probe,
     Pass,
     Output,
 }
 
 struct AudioNode {
     kind: NodeKind,
+    module_id: ModuleId,
     input_sources: Vec<Option<usize>>,
     input_defaults: Vec<f32>,
+    input_values: Vec<f32>,
     output: f32,
 }
 
@@ -163,6 +177,7 @@ impl CompiledVoice {
                 _ => {}
             }
             node.output = 0.0;
+            node.input_values.fill(0.0);
         }
     }
 
@@ -188,6 +203,7 @@ impl CompiledVoice {
                 .collect();
 
             let node = &mut self.nodes[idx];
+            node.input_values.copy_from_slice(&inputs);
             node.output = match &mut node.kind {
                 NodeKind::Freq => freq,
                 NodeKind::Gate => gate,
@@ -250,11 +266,7 @@ impl CompiledVoice {
                     let b = inputs.get(2).copied().unwrap_or(0.0);
                     if sel <= 0.5 { a } else { b }
                 }
-                NodeKind::Probe { value } => {
-                    let v = inputs.first().copied().unwrap_or(0.0);
-                    *value = v;
-                    v
-                }
+                NodeKind::Probe => inputs.first().copied().unwrap_or(0.0),
                 NodeKind::Pass => inputs.first().copied().unwrap_or(0.0),
                 NodeKind::Output => inputs.first().copied().unwrap_or(0.0),
             };
@@ -285,6 +297,7 @@ impl PatchVoices {
 const CROSSFADE_SAMPLES: usize = 441;
 
 const PROBE_HISTORY_LEN: usize = 44100 * 2;
+const METER_INTERVAL: usize = 1024;
 
 pub struct CompiledPatch {
     current: Option<PatchVoices>,
@@ -292,6 +305,8 @@ pub struct CompiledPatch {
     crossfade_pos: usize,
     probe_histories: Vec<VecDeque<f32>>,
     probe_voice: usize,
+    meter_tx: Option<MeterSender>,
+    meter_counter: usize,
 }
 
 impl Default for CompiledPatch {
@@ -302,7 +317,15 @@ impl Default for CompiledPatch {
             crossfade_pos: CROSSFADE_SAMPLES,
             probe_histories: Vec::new(),
             probe_voice: 0,
+            meter_tx: None,
+            meter_counter: 0,
         }
+    }
+}
+
+impl CompiledPatch {
+    pub fn set_meter_sender(&mut self, tx: MeterSender) {
+        self.meter_tx = Some(tx);
     }
 }
 
@@ -346,13 +369,14 @@ impl CompiledPatch {
             if let Some(voice) = current.voices.get(voice_idx) {
                 let mut probe_idx = 0;
                 for node in &voice.nodes {
-                    if let NodeKind::Probe { value } = &node.kind {
+                    if matches!(&node.kind, NodeKind::Probe) {
                         if probe_idx >= self.probe_histories.len() {
                             self.probe_histories
                                 .push(VecDeque::with_capacity(PROBE_HISTORY_LEN));
                         }
                         let history = &mut self.probe_histories[probe_idx];
-                        history.push_back(*value);
+                        let val = node.input_values.first().copied().unwrap_or(0.0);
+                        history.push_back(val);
                         if history.len() > PROBE_HISTORY_LEN {
                             history.pop_front();
                         }
@@ -360,6 +384,28 @@ impl CompiledPatch {
                     }
                 }
                 self.probe_histories.truncate(probe_idx);
+
+                self.meter_counter += 1;
+                if self.meter_counter >= METER_INTERVAL {
+                    self.meter_counter = 0;
+                    if let Some(ref tx) = self.meter_tx {
+                        let ports: Vec<(ModuleId, Vec<f32>)> = voice
+                            .nodes
+                            .iter()
+                            .filter(|n| !n.input_values.is_empty())
+                            .map(|n| (n.module_id, n.input_values.clone()))
+                            .collect();
+                        let probes: Vec<f32> = voice
+                            .nodes
+                            .iter()
+                            .filter_map(|n| match &n.kind {
+                                NodeKind::Probe => n.input_values.first().copied(),
+                                _ => None,
+                            })
+                            .collect();
+                        let _ = tx.try_send(MeterFrame { ports, probes });
+                    }
+                }
             }
         }
 
@@ -416,13 +462,8 @@ fn flatten_patchset(patches: &PatchSet) -> (Vec<Module>, Vec<(ModuleId, ModuleId
                 );
             }
         } else {
-            let new_id = ModuleId(next_id);
-            next_id += 1;
-            id_map.insert((None, module.id), new_id);
-
-            let mut m = module.clone();
-            m.id = new_id;
-            flat_modules.push(m);
+            id_map.insert((None, module.id), module.id);
+            flat_modules.push(module.clone());
         }
     }
 
@@ -654,8 +695,10 @@ fn compile_voice(
 
         voice.nodes.push(AudioNode {
             kind,
+            module_id: module.id,
             input_sources: vec![None; input_count],
             input_defaults,
+            input_values: vec![0.0; input_count],
             output: 0.0,
         });
 
@@ -889,7 +932,7 @@ fn create_node_kind(module: &Module) -> NodeKind {
         (ModuleKind::Gt, _) => NodeKind::Gt,
         (ModuleKind::Lt, _) => NodeKind::Lt,
         (ModuleKind::Switch, _) => NodeKind::Switch,
-        (ModuleKind::Probe, _) => NodeKind::Probe { value: 0.0 },
+        (ModuleKind::Probe, _) => NodeKind::Probe,
         (ModuleKind::Output, _) => NodeKind::Output,
         (ModuleKind::LSplit, _)
         | (ModuleKind::TSplit, _)

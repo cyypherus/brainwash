@@ -40,6 +40,7 @@ pub enum Action {
     MakeSubpatch,
     EditSubpatch,
     ExitSubpatch,
+    ToggleMeters,
 }
 
 pub struct Binding {
@@ -84,6 +85,7 @@ pub fn normal_bindings() -> &'static [Binding] {
         Binding { key: KeyCode::Char('-'), action: Action::Palette(4), hint: "math", group: None },
         Binding { key: KeyCode::Char('='), action: Action::Palette(5), hint: "route", group: None },
         Binding { key: KeyCode::Char('`'), action: Action::Palette(6), hint: "sub", group: None },
+        Binding { key: KeyCode::Char('v'), action: Action::ToggleMeters, hint: "meters", group: None },
     ]
 }
 
@@ -291,6 +293,7 @@ pub fn key_str(key: KeyCode) -> &'static str {
             'e' => "e",
             'c' => "c",
             'x' => "x",
+            'v' => "v",
             '`' => "`",
             ',' => ",",
             'w' => "w",

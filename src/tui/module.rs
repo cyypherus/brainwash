@@ -548,14 +548,14 @@ impl Module {
         if let ModuleParams::SubPatch { inputs, .. } = self.params {
             return inputs.max(1);
         }
-        self.kind.port_count().max(1) as u8
+        self.kind.port_count() as u8
     }
 
     pub fn output_port_count(&self) -> u8 {
         if let ModuleParams::SubPatch { outputs, .. } = self.params {
             return outputs.max(1);
         }
-        self.kind.output_count().max(1) as u8
+        self.kind.output_count() as u8
     }
 
     pub fn width(&self) -> u8 {
@@ -563,8 +563,8 @@ impl Module {
             return 1;
         }
         match self.orientation {
-            Orientation::Horizontal => self.output_port_count(),
-            Orientation::Vertical => self.input_port_count(),
+            Orientation::Horizontal => self.output_port_count().max(1),
+            Orientation::Vertical => self.input_port_count().max(1),
         }
     }
 
@@ -573,8 +573,8 @@ impl Module {
             return 1;
         }
         match self.orientation {
-            Orientation::Horizontal => self.input_port_count(),
-            Orientation::Vertical => self.output_port_count(),
+            Orientation::Horizontal => self.input_port_count().max(1),
+            Orientation::Vertical => self.output_port_count().max(1),
         }
     }
 

@@ -2,6 +2,8 @@ use super::bindings;
 use super::grid::{Cell, GridPos};
 use super::module::{Edge, Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind};
 use super::patch::Patch;
+use std::collections::HashMap;
+use std::sync::LazyLock;
 use crate::envelopes::{Envelope, EnvelopePoint, PointType};
 use ratatui::{
     buffer::Buffer,
@@ -9,6 +11,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::Widget,
 };
+
+static EMPTY_METERS: LazyLock<HashMap<ModuleId, Vec<f32>>> = LazyLock::new(HashMap::new);
 
 const CELL_WIDTH: u16 = 5;
 const CELL_HEIGHT: u16 = 3;
@@ -126,6 +130,20 @@ fn set_str(buf: &mut Buffer, x: u16, y: u16, s: &str, style: Style) {
     }
 }
 
+fn meter_char(val: f32) -> char {
+    let v = val.abs();
+    if v < 0.1 { ' ' }
+    else if v < 0.4 { '▁' }
+    else if v < 0.7 { '▃' }
+    else { '▅' }
+}
+
+fn meter_style(val: f32) -> Style {
+    let v = val.abs();
+    let brightness = (v * 200.0).min(200.0) as u8 + 55;
+    Style::default().fg(Color::Rgb(brightness, brightness, brightness))
+}
+
 pub struct GridWidget<'a> {
     patch: &'a Patch,
     cursor: GridPos,
@@ -134,6 +152,8 @@ pub struct GridWidget<'a> {
     copy_previews: Vec<(Module, GridPos)>,
     move_previews: Vec<(Module, GridPos)>,
     probe_values: &'a [f32],
+    meter_values: &'a HashMap<ModuleId, Vec<f32>>,
+    show_meters: bool,
     selection: Option<(GridPos, GridPos)>,
 }
 
@@ -147,6 +167,8 @@ impl<'a> GridWidget<'a> {
             copy_previews: Vec::new(),
             move_previews: Vec::new(),
             probe_values: &[],
+            meter_values: &EMPTY_METERS,
+            show_meters: false,
             selection: None,
         }
     }
@@ -184,6 +206,16 @@ impl<'a> GridWidget<'a> {
 
     pub fn probe_values(mut self, values: &'a [f32]) -> Self {
         self.probe_values = values;
+        self
+    }
+
+    pub fn meter_values(mut self, values: &'a HashMap<ModuleId, Vec<f32>>) -> Self {
+        self.meter_values = values;
+        self
+    }
+
+    pub fn show_meters(mut self, show: bool) -> Self {
+        self.show_meters = show;
         self
     }
 
@@ -245,6 +277,7 @@ impl<'a> GridWidget<'a> {
         is_cursor: bool,
         is_moving: bool,
         probe_value: Option<f32>,
+        meter_values: Option<&Vec<f32>>,
     ) {
         let kind = module.kind;
         let color = kind.color();
@@ -411,15 +444,26 @@ impl<'a> GridWidget<'a> {
 
         if let Some(port) = info.input_ports.get(input_idx) {
             let port_char = if port.connected { '●' } else { '✕' };
+            let meter_val = meter_values
+                .and_then(|m| m.get(input_idx).copied())
+                .unwrap_or(0.0);
             match info.input_edge {
                 Edge::Top => {
-                    if port.label != ' ' {
+                    if self.show_meters {
+                        let mc = meter_char(meter_val);
+                        let ms = meter_style(meter_val);
+                        set_cell(buf, cx - 1, sy, mc, ms);
+                    } else if port.label != ' ' {
                         set_cell(buf, cx - 1, sy, port.label, port_style);
                     }
                     set_cell(buf, cx, sy, port_char, port_style);
                 }
                 Edge::Left => {
-                    if port.label != ' ' {
+                    if self.show_meters {
+                        let mc = meter_char(meter_val);
+                        let ms = meter_style(meter_val);
+                        set_cell(buf, sx, cy - 1, mc, ms);
+                    } else if port.label != ' ' {
                         set_cell(buf, sx, cy - 1, port.label, port_style);
                     }
                     set_cell(buf, sx, cy, port_char, port_style);
@@ -506,6 +550,7 @@ impl<'a> GridWidget<'a> {
                     } else {
                         None
                     };
+                    let meter = self.meter_values.get(&id);
                     self.render_module(
                         buf,
                         sx,
@@ -516,6 +561,7 @@ impl<'a> GridWidget<'a> {
                         is_cursor,
                         is_moving,
                         probe_value,
+                        meter,
                     );
                 }
             }
@@ -646,7 +692,7 @@ impl Widget for GridWidget<'_> {
                         let (sx, sy) = self.screen_pos(GridPos::new(gx, gy), viewport_origin, grid_area);
                         if sx < grid_area.x + grid_area.width && sy < grid_area.y + grid_area.height {
                             let is_cursor = gx == self.cursor.x && gy == self.cursor.y;
-                            self.render_module(buf, sx, sy, module, lx, ly, is_cursor, true, None);
+                            self.render_module(buf, sx, sy, module, lx, ly, is_cursor, true, None, None);
                         }
                     }
                 }
@@ -664,7 +710,7 @@ impl Widget for GridWidget<'_> {
                         let (sx, sy) = self.screen_pos(GridPos::new(gx, gy), viewport_origin, grid_area);
                         if sx < grid_area.x + grid_area.width && sy < grid_area.y + grid_area.height {
                             let is_cursor = gx == self.cursor.x && gy == self.cursor.y;
-                            self.render_module(buf, sx, sy, module, lx, ly, is_cursor, true, None);
+                            self.render_module(buf, sx, sy, module, lx, ly, is_cursor, true, None, None);
                         }
                     }
                 }
