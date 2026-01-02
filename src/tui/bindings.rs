@@ -42,6 +42,7 @@ pub enum Action {
     ExitSubpatch,
     ToggleMeters,
     OpenPalette,
+    Export,
 }
 
 impl Action {
@@ -78,6 +79,7 @@ impl Action {
             Action::EditSubpatch | Action::ExitSubpatch => "sub",
             Action::ToggleMeters => "meters",
             Action::OpenPalette => "new module",
+            Action::Export => "export wav",
         }
     }
 }
@@ -135,6 +137,7 @@ pub fn normal_bindings() -> &'static [Binding] {
 
         Binding { key: KeyCode::Char('w'), action: Action::Save, hint: None, group: None, section: 6 },
         Binding { key: KeyCode::Char('W'), action: Action::SaveAs, hint: None, group: None, section: 6 },
+        Binding { key: KeyCode::Char('e'), action: Action::Export, hint: None, group: None, section: 6 },
         Binding { key: KeyCode::Char('Q'), action: Action::Quit, hint: None, group: None, section: 6 },
     ]
 }

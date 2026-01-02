@@ -11,7 +11,7 @@ path = "src/lib.rs"
 default = ["live"]
 live = ["cpal"]
 wav = ["hound"]
-tui = ["live", "ratatui", "dep:flume"]
+tui = ["live", "wav", "ratatui", "dep:flume"]
 
 [[example]]
 name = "simple"

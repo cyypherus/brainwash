@@ -90,6 +90,8 @@ enum Mode {
     TrackSettings {
         param_idx: usize,
     },
+    ExportPrompt,
+    ExportConfirm,
 }
 
 enum AppRequest {
@@ -131,6 +133,8 @@ struct App {
     view_center: GridPos,
     bpm: f32,
     scale_idx: usize,
+    export_filename: String,
+    export_loops: usize,
 }
 
 const SCALE_NAMES: &[&str] = &[
@@ -271,6 +275,8 @@ impl App {
             view_center: GridPos::new(0, 0),
             bpm,
             scale_idx: 2,
+            export_filename: "output.wav".to_string(),
+            export_loops: 1,
         }
     }
 
@@ -637,6 +643,8 @@ impl App {
             Mode::SaveConfirm => self.handle_save_confirm_key(code),
             Mode::QuitConfirm => self.handle_quit_confirm_key(code),
             Mode::TrackSettings { param_idx } => self.handle_track_settings_key(code, param_idx),
+            Mode::ExportPrompt => self.handle_export_prompt_key(code),
+            Mode::ExportConfirm => self.handle_export_confirm_key(code),
         }
     }
 
@@ -788,6 +796,14 @@ impl App {
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| "patch.bw".into());
                 self.mode = Mode::SavePrompt;
+            }
+            Action::Export => {
+                self.export_filename = self
+                    .file_path
+                    .as_ref()
+                    .map(|p| p.with_extension("wav").to_string_lossy().to_string())
+                    .unwrap_or_else(|| "output.wav".into());
+                self.mode = Mode::ExportPrompt;
             }
             Action::Undo => self.undo(),
             Action::Redo => self.redo(),
@@ -1528,6 +1544,117 @@ impl App {
         }
     }
 
+    fn handle_export_prompt_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.message = Some("Export cancelled".into());
+            }
+            KeyCode::Enter => {
+                let path = PathBuf::from(&self.export_filename);
+                if path.exists() {
+                    self.mode = Mode::ExportConfirm;
+                } else {
+                    self.export_to_wav();
+                    self.mode = Mode::Normal;
+                }
+            }
+            KeyCode::Backspace => {
+                self.export_filename.pop();
+            }
+            KeyCode::Up => {
+                self.export_loops = self.export_loops.saturating_add(1).min(100);
+            }
+            KeyCode::Down => {
+                self.export_loops = self.export_loops.saturating_sub(1).max(1);
+            }
+            KeyCode::Char(c) => {
+                self.export_filename.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_export_confirm_key(&mut self, code: KeyCode) {
+        let Some(action) = lookup(bindings::quit_confirm_bindings(), code) else {
+            return;
+        };
+        match action {
+            Action::Confirm => {
+                self.export_to_wav();
+                self.mode = Mode::Normal;
+            }
+            Action::Cancel => {
+                self.mode = Mode::ExportPrompt;
+            }
+            _ => {}
+        }
+    }
+
+    fn export_to_wav(&mut self) {
+        use crate::Signal;
+        
+        let sample_rate = 44100usize;
+        let state = self.track_state.lock().unwrap();
+        let bpm = state.clock.current_bpm();
+        let bars = state.clock.current_bars();
+        let num_voices = state.num_voices();
+        drop(state);
+
+        let seconds_per_beat = 60.0 / bpm;
+        let beats_per_bar = 4.0;
+        let duration = seconds_per_beat * beats_per_bar * bars * self.export_loops as f32;
+        let total_samples = (duration * sample_rate as f32) as usize;
+
+        let mut compiled = CompiledPatch::default();
+        compile_patch(&mut compiled, &self.patches, num_voices);
+
+        let mut track_state = TrackState::new(num_voices);
+        track_state.clock.bpm(bpm).bars(bars);
+        
+        let scale = crate::scale::cmin();
+        if let Ok(track) = crate::track::Track::parse(&self.track_text, &scale) {
+            track_state.set_track(Some(track));
+        }
+
+        let mut signal = Signal::new(sample_rate);
+        let mut samples = Vec::with_capacity(total_samples);
+
+        for _ in 0..total_samples {
+            track_state.update(&mut signal);
+            let sample = compiled.process(&mut signal, &track_state).clamp(-1.0, 1.0);
+            samples.push(sample);
+            signal.advance();
+        }
+
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: sample_rate as u32,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+
+        match hound::WavWriter::create(&self.export_filename, spec) {
+            Ok(mut writer) => {
+                for sample in samples {
+                    let _ = writer.write_sample(sample);
+                    let _ = writer.write_sample(sample);
+                }
+                if writer.finalize().is_ok() {
+                    self.message = Some(format!(
+                        "Exported {} ({:.1}s, {} loops)",
+                        self.export_filename, duration, self.export_loops
+                    ));
+                } else {
+                    self.message = Some("Export failed: finalize error".into());
+                }
+            }
+            Err(e) => {
+                self.message = Some(format!("Export failed: {}", e));
+            }
+        }
+    }
+
     fn save_to_file(&mut self, path: PathBuf) {
         let track = if self.track_text.trim().is_empty() {
             None
@@ -2182,8 +2309,8 @@ impl App {
             Mode::ProbeEdit { .. } => bindings::probe_bindings(),
             Mode::EnvEdit { editing: true, .. } => bindings::env_move_bindings(),
             Mode::EnvEdit { .. } => bindings::env_bindings(),
-            Mode::QuitConfirm | Mode::SaveConfirm => bindings::quit_confirm_bindings(),
-            Mode::SavePrompt => bindings::text_input_bindings(),
+            Mode::QuitConfirm | Mode::SaveConfirm | Mode::ExportConfirm => bindings::quit_confirm_bindings(),
+            Mode::SavePrompt | Mode::ExportPrompt => bindings::text_input_bindings(),
             Mode::TrackSettings { .. } => bindings::settings_bindings(),
         };
         f.render_widget(HelpWidget::new(bindings), help_inner);
@@ -2203,6 +2330,8 @@ impl App {
             Mode::SaveConfirm => "OVERWRITE?",
             Mode::QuitConfirm => "QUIT?",
             Mode::TrackSettings { .. } => "TRACK",
+            Mode::ExportPrompt => "EXPORT",
+            Mode::ExportConfirm => "OVERWRITE?",
         };
         let mut status = StatusWidget::new(self.cursor, mode_str).playing(self.playing);
         if let Some(ref msg) = self.message {
@@ -2427,6 +2556,42 @@ impl App {
             );
             let text = ratatui::widgets::Paragraph::new(self.save_filename.as_str());
             f.render_widget(text, inner);
+        }
+
+        if matches!(self.mode, Mode::ExportPrompt | Mode::ExportConfirm) {
+            let prompt_width = 50u16.min(f.area().width.saturating_sub(4));
+            let prompt_height = 5u16;
+            let prompt_x = (f.area().width.saturating_sub(prompt_width)) / 2;
+            let prompt_y = (f.area().height.saturating_sub(prompt_height)) / 2;
+            let prompt_area = Rect::new(prompt_x, prompt_y, prompt_width, prompt_height);
+
+            f.render_widget(Clear, prompt_area);
+
+            let title = if matches!(self.mode, Mode::ExportConfirm) {
+                " Overwrite? (y/n) "
+            } else {
+                " Export WAV (Enter confirm, Esc cancel) "
+            };
+            let prompt_block = Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan));
+            f.render_widget(prompt_block, prompt_area);
+
+            let inner = Rect::new(
+                prompt_area.x + 1,
+                prompt_area.y + 1,
+                prompt_area.width.saturating_sub(2),
+                prompt_height.saturating_sub(2),
+            );
+            
+            let loops_text = format!("Loops: {} (up/down)", self.export_loops);
+            let file_line = ratatui::widgets::Paragraph::new(self.export_filename.as_str());
+            let loops_line = ratatui::widgets::Paragraph::new(loops_text)
+                .style(Style::default().fg(Color::DarkGray));
+            
+            f.render_widget(file_line, Rect::new(inner.x, inner.y, inner.width, 1));
+            f.render_widget(loops_line, Rect::new(inner.x, inner.y + 1, inner.width, 1));
         }
 
         if let Mode::TrackSettings { param_idx } = self.mode {
