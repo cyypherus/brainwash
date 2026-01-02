@@ -138,10 +138,19 @@ fn meter_char(val: f32) -> char {
     else { '▅' }
 }
 
-fn meter_style(val: f32) -> Style {
+fn meter_style(val: f32, base_color: Color) -> Style {
     let v = val.abs();
-    let brightness = (v * 200.0).min(200.0) as u8 + 55;
-    Style::default().fg(Color::Rgb(brightness, brightness, brightness))
+    let brightness = (v * 0.8).min(0.8) + 0.2;
+    let (r, g, b) = match base_color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        Color::White => (255, 255, 255),
+        Color::Gray => (128, 128, 128),
+        _ => (200, 200, 200),
+    };
+    let r = (r as f32 * brightness) as u8;
+    let g = (g as f32 * brightness) as u8;
+    let b = (b as f32 * brightness) as u8;
+    Style::default().fg(Color::Rgb(r, g, b))
 }
 
 pub struct GridWidget<'a> {
@@ -451,7 +460,7 @@ impl<'a> GridWidget<'a> {
                 Edge::Top => {
                     if self.show_meters {
                         let mc = meter_char(meter_val);
-                        let ms = meter_style(meter_val);
+                        let ms = meter_style(meter_val, color);
                         set_cell(buf, cx - 1, sy, mc, ms);
                     } else if port.label != ' ' {
                         set_cell(buf, cx - 1, sy, port.label, port_style);
@@ -461,7 +470,7 @@ impl<'a> GridWidget<'a> {
                 Edge::Left => {
                     if self.show_meters {
                         let mc = meter_char(meter_val);
-                        let ms = meter_style(meter_val);
+                        let ms = meter_style(meter_val, color);
                         set_cell(buf, sx, cy - 1, mc, ms);
                     } else if port.label != ' ' {
                         set_cell(buf, sx, cy - 1, port.label, port_style);
@@ -997,13 +1006,19 @@ impl Widget for HelpWidget {
         let key_style = Style::default().fg(Color::Cyan);
         let desc_style = Style::default().fg(Color::DarkGray);
 
-        for (i, (key, desc)) in hints.iter().enumerate() {
-            let y = area.y + i as u16;
+        let mut y = area.y;
+        let mut last_section = None;
+        for (key, desc, section) in hints.iter() {
+            if last_section.is_some() && last_section != Some(*section) {
+                y += 1;
+            }
+            last_section = Some(*section);
             if y >= area.y + area.height {
                 return;
             }
             set_str(buf, area.x, y, key, key_style);
             set_str(buf, area.x + key.chars().count() as u16 + 1, y, desc, desc_style);
+            y += 1;
         }
     }
 }

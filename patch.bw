@@ -3,30 +3,7 @@
   bars: 1.0,
   modules: [
     (
-      id: 1,
-      kind: Freq,
-      x: 0,
-      y: 3,
-      params: None,
-    ),
-    (
-      id: 2,
-      kind: Gate,
-      x: 0,
-      y: 5,
-      params: None,
-    ),
-    (
-      id: 0,
-      kind: Output,
-      x: 4,
-      y: 3,
-      params: Output(
-        connected: 255,
-      ),
-    ),
-    (
-      id: 4,
+      id: 3,
       kind: Probe,
       x: 3,
       y: 3,
@@ -35,7 +12,21 @@
       ),
     ),
     (
-      id: 3,
+      id: 0,
+      kind: Freq,
+      x: 0,
+      y: 3,
+      params: None,
+    ),
+    (
+      id: 1,
+      kind: Gate,
+      x: 0,
+      y: 5,
+      params: None,
+    ),
+    (
+      id: 4,
       kind: Osc,
       x: 2,
       y: 3,
@@ -48,7 +39,33 @@
         connected: 255,
       ),
     ),
+    (
+      id: 5,
+      kind: SubPatch((1)),
+      x: 4,
+      y: 5,
+      params: SubPatch(
+        inputs: 1,
+        outputs: 1,
+      ),
+    ),
+    (
+      id: 2,
+      kind: Output,
+      x: 4,
+      y: 3,
+      params: Output(
+        connected: 255,
+      ),
+    ),
   ],
   track: Some("\n#\n  _ = rest\n  0+ = sharp\n  0- = flat\n  0* = 2x weight, 0** = 3x weight\n  (0/_/2) = bar with divisions\n  ((0/1)/(2/3/4)) = nested divisions - first half split in two, second half into a triplet\n  {0&2} = polyphony\n  ({0&2&4}/{1&3&5}) = two chords in sequence, equal length\n  whitespace is ignored\n#\n(0/2/4/7)\n"),
-  subpatches: [],
+  subpatches: [
+    (
+      id: 1,
+      name: "Sub",
+      color: (255, 150, 50),
+      modules: [],
+    ),
+  ],
 )
