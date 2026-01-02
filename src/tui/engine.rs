@@ -60,9 +60,8 @@ impl TrackState {
     pub fn set_track(&mut self, track: Option<Track>) {
         self.track = track;
         for v in &mut self.voices {
-            *v = Voice::default();
+            v.gate = 0.0;
         }
-        self.age_counter = 0;
     }
 }
 
@@ -295,6 +294,7 @@ impl PatchVoices {
 }
 
 const CROSSFADE_SAMPLES: usize = 441;
+const MIN_CROSSFADE_SAMPLES: usize = 10;
 
 const PROBE_HISTORY_LEN: usize = 44100 * 2;
 const METER_INTERVAL: usize = 1024;
@@ -303,6 +303,8 @@ pub struct CompiledPatch {
     current: Option<PatchVoices>,
     old: Option<PatchVoices>,
     crossfade_pos: usize,
+    crossfade_total: usize,
+    silence_ramp: f32,
     probe_histories: Vec<VecDeque<f32>>,
     probe_voice: usize,
     meter_tx: Option<MeterSender>,
@@ -315,6 +317,8 @@ impl Default for CompiledPatch {
             current: None,
             old: None,
             crossfade_pos: CROSSFADE_SAMPLES,
+            crossfade_total: CROSSFADE_SAMPLES,
+            silence_ramp: 1.0,
             probe_histories: Vec::new(),
             probe_voice: 0,
             meter_tx: None,
@@ -331,6 +335,17 @@ impl CompiledPatch {
 
 impl CompiledPatch {
     fn set_voices(&mut self, voices: Vec<CompiledVoice>) {
+        let remaining = self.crossfade_total.saturating_sub(self.crossfade_pos);
+        
+        if remaining > MIN_CROSSFADE_SAMPLES {
+            self.silence_ramp = (self.silence_ramp * 0.5).max(0.1);
+        } else {
+            self.silence_ramp = (self.silence_ramp + 0.1).min(1.0);
+        }
+        
+        self.crossfade_total = ((CROSSFADE_SAMPLES as f32) * self.silence_ramp) as usize;
+        self.crossfade_total = self.crossfade_total.max(MIN_CROSSFADE_SAMPLES);
+        
         self.old = self.current.take();
         self.current = Some(PatchVoices { voices });
         self.crossfade_pos = 0;
@@ -343,23 +358,24 @@ impl CompiledPatch {
             .map(|p| p.process(signal, track))
             .unwrap_or(0.0);
 
-        let sample = if self.crossfade_pos < CROSSFADE_SAMPLES {
+        let sample = if self.crossfade_pos < self.crossfade_total {
             let old_sample = self
                 .old
                 .as_mut()
                 .map(|p| p.process(signal, track))
                 .unwrap_or(0.0);
 
-            let t = self.crossfade_pos as f32 / CROSSFADE_SAMPLES as f32;
+            let t = self.crossfade_pos as f32 / self.crossfade_total as f32;
             self.crossfade_pos += 1;
 
-            if self.crossfade_pos >= CROSSFADE_SAMPLES {
+            if self.crossfade_pos >= self.crossfade_total {
                 self.old = None;
+                self.silence_ramp = (self.silence_ramp + 0.05).min(1.0);
             }
 
-            old_sample * (1.0 - t) + new_sample * t
+            (old_sample * (1.0 - t) + new_sample * t) * self.silence_ramp
         } else {
-            new_sample
+            new_sample * self.silence_ramp
         };
 
         let sample = sample.clamp(-1.0, 1.0);
@@ -894,8 +910,9 @@ fn create_node_kind(module: &Module) -> NodeKind {
         }
         (ModuleKind::Hpf, ModuleParams::Filter { freq, q, .. }) => {
             let mut filter = HighpassFilter::default();
-            let mapped = 20.0 * (100.0f32).powf(*freq) / 22050.0;
-            filter.freq(mapped).q(*q);
+            let freq_hz = 20.0 * (1000.0f32).powf(*freq);
+            let normalized = freq_hz / 22050.0;
+            filter.freq(normalized).q(*q);
             NodeKind::Hpf(filter)
         }
         (ModuleKind::Delay, ModuleParams::Delay { samples, .. }) => {

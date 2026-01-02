@@ -307,7 +307,9 @@ impl App {
         let scale = scale_from_idx(self.scale_idx);
         match Track::parse(&self.track_text, &scale) {
             Ok(track) => {
+                let bar_count = track.bar_count();
                 let mut state = self.track_state.lock().unwrap();
+                state.clock.bars(bar_count as f32);
                 state.set_track(Some(track));
                 self.message = Some("Track updated".into());
             }

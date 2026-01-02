@@ -150,8 +150,8 @@ pub fn palette_bindings() -> &'static [Binding] {
         Binding { key: KeyCode::Enter, action: Action::Confirm, hint: Some("place"), group: Some("place"), section: 0 },
         Binding { key: KeyCode::Char('n'), action: Action::Confirm, hint: Some("place"), group: Some("place"), section: 0 },
         Binding { key: KeyCode::Char('/'), action: Action::Search, hint: None, group: None, section: 0 },
-        Binding { key: KeyCode::Esc, action: Action::Cancel, hint: None, group: Some("cancel"), section: 0 },
-        Binding { key: KeyCode::Char(' '), action: Action::Cancel, hint: None, group: Some("cancel"), section: 0 },
+        Binding { key: KeyCode::Char(' '), action: Action::TogglePlay, hint: None, group: None, section: 0 },
+        Binding { key: KeyCode::Esc, action: Action::Cancel, hint: None, group: None, section: 0 },
     ]
 }
 
@@ -183,6 +183,7 @@ pub fn edit_bindings() -> &'static [Binding] {
         Binding { key: KeyCode::Left, action: Action::ValueDown, hint: None, group: Some("lr"), section: 0 },
         Binding { key: KeyCode::Right, action: Action::ValueUp, hint: None, group: Some("lr"), section: 0 },
         Binding { key: KeyCode::Char(';'), action: Action::TogglePort, hint: None, group: None, section: 0 },
+        Binding { key: KeyCode::Char(' '), action: Action::TogglePlay, hint: None, group: None, section: 0 },
         Binding { key: KeyCode::Esc, action: Action::Cancel, hint: Some("done"), group: Some("done"), section: 0 },
         Binding { key: KeyCode::Char('i'), action: Action::Cancel, hint: Some("done"), group: Some("done"), section: 0 },
     ]
@@ -258,6 +259,7 @@ pub fn settings_bindings() -> &'static [Binding] {
         Binding { key: KeyCode::Char('l'), action: Action::ValueUp, hint: None, group: Some("hl"), section: 0 },
         Binding { key: KeyCode::Left, action: Action::ValueDown, hint: None, group: Some("lr"), section: 0 },
         Binding { key: KeyCode::Right, action: Action::ValueUp, hint: None, group: Some("lr"), section: 0 },
+        Binding { key: KeyCode::Char(' '), action: Action::TogglePlay, hint: None, group: None, section: 0 },
         Binding { key: KeyCode::Esc, action: Action::Cancel, hint: Some("done"), group: Some("done"), section: 0 },
         Binding { key: KeyCode::Char('s'), action: Action::Cancel, hint: Some("done"), group: Some("done"), section: 0 },
         Binding { key: KeyCode::Enter, action: Action::Cancel, hint: Some("done"), group: Some("done"), section: 0 },
@@ -283,6 +285,7 @@ pub fn probe_bindings() -> &'static [Binding] {
         Binding { key: KeyCode::Up, action: Action::ValueUp, hint: None, group: Some("ud"), section: 0 },
         Binding { key: KeyCode::Char('r'), action: Action::Delete, hint: Some("reset"), group: None, section: 0 },
         Binding { key: KeyCode::Char('c'), action: Action::ToggleCurve, hint: Some("cycle"), group: None, section: 0 },
+        Binding { key: KeyCode::Char(' '), action: Action::TogglePlay, hint: None, group: None, section: 0 },
         Binding { key: KeyCode::Esc, action: Action::Cancel, hint: Some("done"), group: Some("done"), section: 0 },
         Binding { key: KeyCode::Char('i'), action: Action::Cancel, hint: Some("done"), group: Some("done"), section: 0 },
     ]

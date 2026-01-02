@@ -242,6 +242,7 @@ pub enum NoteEvent {
 pub struct Track {
     playhead: f32,
     note_timeline: Vec<TimelineNote>,
+    bar_count: usize,
 }
 
 impl Track {
@@ -249,22 +250,27 @@ impl Track {
         let ast = parse_notation(notation)?;
         let mut events = Vec::new();
 
+        let bar_count = ast.layers.iter().map(|l| l.bars.len()).max().unwrap_or(1);
+
         for layer in &ast.layers {
-            let total_weight: usize = layer
-                .bars
-                .iter()
-                .flat_map(|b| b.divisions.iter())
-                .map(|d| d.weight)
-                .sum();
-            let mut weight_idx = 0;
+            let num_bars = layer.bars.len();
+            let mut bar_idx = 0;
 
             for bar in &layer.bars {
+                let bar_start = bar_idx as f32 / num_bars as f32;
+                let bar_end = (bar_idx + 1) as f32 / num_bars as f32;
+                let bar_span = bar_end - bar_start;
+
+                let total_weight: usize = bar.divisions.iter().map(|d| d.weight).sum();
+                let mut weight_idx = 0;
+
                 for division in &bar.divisions {
-                    let div_start = weight_idx as f32 / total_weight as f32;
-                    let div_end = (weight_idx + division.weight) as f32 / total_weight as f32;
+                    let div_start = bar_start + (weight_idx as f32 / total_weight as f32) * bar_span;
+                    let div_end = bar_start + ((weight_idx + division.weight) as f32 / total_weight as f32) * bar_span;
                     extract_notes(&division.item, div_start, div_end, &mut events, scale);
                     weight_idx += division.weight;
                 }
+                bar_idx += 1;
             }
         }
 
@@ -273,7 +279,12 @@ impl Track {
         Ok(Track {
             playhead: 0.0,
             note_timeline: events,
+            bar_count,
         })
+    }
+
+    pub fn bar_count(&self) -> usize {
+        self.bar_count
     }
 
     pub fn play(&mut self, to: f32) -> Vec<NoteEvent> {
