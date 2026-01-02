@@ -160,16 +160,16 @@ fn parse_track(input: &str) -> nom::IResult<&str, ParsedTrackAST> {
 }
 
 fn strip_comments(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut in_comment = false;
-    for c in s.chars() {
-        if c == '#' {
-            in_comment = !in_comment;
-        } else if !in_comment {
-            result.push(c);
-        }
-    }
-    result
+    s.lines()
+        .map(|line| {
+            if let Some(idx) = line.find('#') {
+                &line[..idx]
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn parse_notation(input: &str) -> Result<ParsedTrackAST, String> {

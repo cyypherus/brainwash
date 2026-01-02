@@ -1496,7 +1496,7 @@ impl ModuleParams {
                 _ => None,
             },
             ModuleParams::DelayTap { gain } => match idx {
-                0 => Some(*gain),
+                1 => Some(*gain),
                 _ => None,
             },
             _ => None,
@@ -1591,7 +1591,7 @@ impl ModuleParams {
                 _ => {}
             },
             ModuleParams::DelayTap { gain } => match idx {
-                0 => *gain = val,
+                1 => *gain = val,
                 _ => {}
             },
             _ => {}

@@ -15,6 +15,8 @@ pub struct PatchFile {
     #[serde(default = "default_bars")]
     pub bars: f32,
     #[serde(default)]
+    pub scale_idx: usize,
+    #[serde(default)]
     pub modules: Vec<ModuleDef>,
     #[serde(default)]
     pub track: Option<String>,
@@ -57,6 +59,7 @@ impl PatchFile {
         Self {
             bpm: 120.0,
             bars: 1.0,
+            scale_idx: 0,
             modules: Vec::new(),
             track: None,
             subpatches: Vec::new(),
@@ -134,10 +137,11 @@ fn color_to_rgb(c: Color) -> (u8, u8, u8) {
     }
 }
 
-pub fn patchset_to_file(patches: &PatchSet, bpm: f32, bars: f32, track: Option<&str>) -> PatchFile {
+pub fn patchset_to_file(patches: &PatchSet, bpm: f32, bars: f32, scale_idx: usize, track: Option<&str>) -> PatchFile {
     let mut pf = PatchFile::new();
     pf.bpm = bpm;
     pf.bars = bars;
+    pf.scale_idx = scale_idx;
     pf.track = track.map(|s| s.to_string());
     pf.modules = patch_to_modules(&patches.root);
 
@@ -153,7 +157,7 @@ pub fn patchset_to_file(patches: &PatchSet, bpm: f32, bars: f32, track: Option<&
     pf
 }
 
-pub fn file_to_patchset(pf: &PatchFile) -> (PatchSet, f32, f32, Option<String>) {
+pub fn file_to_patchset(pf: &PatchFile) -> (PatchSet, f32, f32, usize, Option<String>) {
     let root = modules_to_patch(&pf.modules, 32, 32);
 
     let mut subpatches = HashMap::new();
@@ -175,7 +179,7 @@ pub fn file_to_patchset(pf: &PatchFile) -> (PatchSet, f32, f32, Option<String>) 
         next_subpatch_id: max_id + 1,
     };
 
-    (patches, pf.bpm, pf.bars, pf.track.clone())
+    (patches, pf.bpm, pf.bars, pf.scale_idx, pf.track.clone())
 }
 
 pub fn save_patchset(
@@ -183,9 +187,10 @@ pub fn save_patchset(
     patches: &PatchSet,
     bpm: f32,
     bars: f32,
+    scale_idx: usize,
     track: Option<&str>,
 ) -> io::Result<()> {
-    let pf = patchset_to_file(patches, bpm, bars, track);
+    let pf = patchset_to_file(patches, bpm, bars, scale_idx, track);
     let config = ron::ser::PrettyConfig::new()
         .depth_limit(4)
         .indentor("  ".to_string());
@@ -194,7 +199,7 @@ pub fn save_patchset(
     fs::write(path, content)
 }
 
-pub fn load_patchset(path: &Path) -> io::Result<(PatchSet, f32, f32, Option<String>)> {
+pub fn load_patchset(path: &Path) -> io::Result<(PatchSet, f32, f32, usize, Option<String>)> {
     let content = fs::read_to_string(path)?;
     let pf: PatchFile =
         ron::from_str(&content).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -224,7 +229,7 @@ mod tests {
             };
         }
 
-        let pf = patchset_to_file(&patches, 120.0, 1.0, Some("C4 D4 E4"));
+        let pf = patchset_to_file(&patches, 120.0, 1.0, 0, Some("C4 D4 E4"));
         let config = ron::ser::PrettyConfig::new().depth_limit(4).indentor("  ".to_string());
         println!("{}", ron::ser::to_string_pretty(&pf, config).unwrap());
     }
@@ -280,17 +285,19 @@ mod tests {
             }
         }
 
-        let pf = patchset_to_file(&patches, 90.0, 4.0, Some("C4 E4 G4\n# comment\nD4"));
+        let pf = patchset_to_file(&patches, 90.0, 4.0, 5, Some("C4 E4 G4\n# comment\nD4"));
 
         let serialized = ron::ser::to_string_pretty(&pf, ron::ser::PrettyConfig::default()).unwrap();
         let pf2: PatchFile = ron::from_str(&serialized).unwrap();
 
         assert!((pf2.bpm - 90.0).abs() < 0.01);
         assert!((pf2.bars - 4.0).abs() < 0.01);
+        assert_eq!(pf2.scale_idx, 5);
         assert_eq!(pf2.modules.len(), 4);
         assert!(pf2.track.as_ref().unwrap().contains("# comment"));
 
-        let (patches2, bpm2, bars2, track2) = file_to_patchset(&pf2);
+        let (patches2, bpm2, bars2, scale_idx2, track2) = file_to_patchset(&pf2);
+        assert_eq!(scale_idx2, 5);
 
         assert!((bpm2 - 90.0).abs() < 0.01);
         assert!((bars2 - 4.0).abs() < 0.01);

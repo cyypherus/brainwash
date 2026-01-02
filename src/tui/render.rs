@@ -13,6 +13,7 @@ use ratatui::{
 };
 
 static EMPTY_METERS: LazyLock<HashMap<ModuleId, Vec<f32>>> = LazyLock::new(HashMap::new);
+static EMPTY_PROBES: LazyLock<HashMap<ModuleId, f32>> = LazyLock::new(HashMap::new);
 
 const CELL_WIDTH: u16 = 5;
 const CELL_HEIGHT: u16 = 3;
@@ -93,7 +94,7 @@ where
         };
         let y = (normalized * h) as u16;
         let screen_x = area.x + x;
-        let line_y = y.min(area.height - 2);
+        let line_y = y.min(area.height.saturating_sub(1));
 
         if config.show_fill {
             for fill_y in (line_y + 1)..(area.height - 1) {
@@ -160,7 +161,7 @@ pub struct GridWidget<'a> {
     moving: Option<ModuleId>,
     copy_previews: Vec<(Module, GridPos)>,
     move_previews: Vec<(Module, GridPos)>,
-    probe_values: &'a [f32],
+    probe_values: &'a HashMap<ModuleId, f32>,
     meter_values: &'a HashMap<ModuleId, Vec<f32>>,
     show_meters: bool,
     selection: Option<(GridPos, GridPos)>,
@@ -175,7 +176,7 @@ impl<'a> GridWidget<'a> {
             moving: None,
             copy_previews: Vec::new(),
             move_previews: Vec::new(),
-            probe_values: &[],
+            probe_values: &EMPTY_PROBES,
             meter_values: &EMPTY_METERS,
             show_meters: false,
             selection: None,
@@ -213,7 +214,7 @@ impl<'a> GridWidget<'a> {
         self
     }
 
-    pub fn probe_values(mut self, values: &'a [f32]) -> Self {
+    pub fn probe_values(mut self, values: &'a HashMap<ModuleId, f32>) -> Self {
         self.probe_values = values;
         self
     }
@@ -595,12 +596,7 @@ impl<'a> GridWidget<'a> {
                 if let Some(module) = self.patch.module(id) {
                     let is_moving = self.moving == Some(id);
                     let probe_value = if module.kind == ModuleKind::Probe {
-                        let probe_idx = self
-                            .patch
-                            .all_modules()
-                            .filter(|m| m.kind == ModuleKind::Probe)
-                            .position(|m| m.id == id);
-                        probe_idx.and_then(|i| self.probe_values.get(i).copied())
+                        self.probe_values.get(&id).copied()
                     } else {
                         None
                     };
@@ -977,6 +973,7 @@ pub struct StatusWidget<'a> {
     mode: &'a str,
     message: Option<&'a str>,
     playing: bool,
+    output_history: &'a [f32],
 }
 
 impl<'a> StatusWidget<'a> {
@@ -986,6 +983,7 @@ impl<'a> StatusWidget<'a> {
             mode,
             message: None,
             playing: false,
+            output_history: &[],
         }
     }
 
@@ -996,6 +994,11 @@ impl<'a> StatusWidget<'a> {
 
     pub fn playing(mut self, playing: bool) -> Self {
         self.playing = playing;
+        self
+    }
+
+    pub fn output_history(mut self, history: &'a [f32]) -> Self {
+        self.output_history = history;
         self
     }
 }
@@ -1019,12 +1022,31 @@ impl Widget for StatusWidget<'_> {
             pos_style,
         );
 
-        let play_x = area.x + self.mode.len() as u16 + 2 + pos_str.len() as u16 + 1;
+        let mut wave_start = area.x + self.mode.len() as u16 + 2 + pos_str.len() as u16 + 1;
         if self.playing {
             let play_style = Style::default()
                 .fg(Color::Green)
                 .add_modifier(Modifier::BOLD);
-            set_str(buf, play_x, area.y, "▶", play_style);
+            set_str(buf, wave_start, area.y, "▶", play_style);
+            wave_start += 2;
+        }
+
+        let msg_len = self.message.map(|m| m.len() as u16 + 2).unwrap_or(0);
+        let wave_end = area.x + area.width.saturating_sub(msg_len);
+        
+        if wave_end > wave_start && !self.output_history.is_empty() {
+            let wave_width = (wave_end - wave_start) as usize;
+            for i in 0..wave_width {
+                let t = i as f32 / wave_width as f32;
+                let idx = ((t * self.output_history.len() as f32) as usize)
+                    .min(self.output_history.len().saturating_sub(1));
+                let val = self.output_history[idx].abs();
+                if val < 0.02 {
+                    continue;
+                }
+                let color = if val > 0.15 { Color::Yellow } else { Color::Rgb(60, 60, 60) };
+                set_cell(buf, wave_start + i as u16, area.y, '•', Style::default().fg(color));
+            }
         }
 
         if let Some(msg) = self.message {

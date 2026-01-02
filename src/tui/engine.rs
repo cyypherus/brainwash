@@ -16,14 +16,20 @@ use std::collections::{HashMap, VecDeque};
 
 pub type MeterSender = flume::Sender<MeterFrame>;
 pub type MeterReceiver = flume::Receiver<MeterFrame>;
+pub type OutputSender = flume::Sender<f32>;
+pub type OutputReceiver = flume::Receiver<f32>;
 
 pub fn meter_channel() -> (MeterSender, MeterReceiver) {
     flume::unbounded()
 }
 
+pub fn output_channel() -> (OutputSender, OutputReceiver) {
+    flume::unbounded()
+}
+
 pub struct MeterFrame {
     pub ports: Vec<(ModuleId, Vec<f32>)>,
-    pub probes: Vec<f32>,
+    pub probes: Vec<(ModuleId, f32)>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -318,6 +324,7 @@ const MIN_CROSSFADE_SAMPLES: usize = 10;
 
 const PROBE_HISTORY_LEN: usize = 44100 * 2;
 const METER_INTERVAL: usize = 1024;
+pub const OUTPUT_INTERVAL: usize = 1200;
 
 pub struct CompiledPatch {
     current: Option<PatchVoices>,
@@ -431,11 +438,11 @@ impl CompiledPatch {
                             .filter(|n| !n.input_values.is_empty())
                             .map(|n| (n.module_id, n.input_values.clone()))
                             .collect();
-                        let probes: Vec<f32> = voice
+                        let probes: Vec<(ModuleId, f32)> = voice
                             .nodes
                             .iter()
                             .filter_map(|n| match &n.kind {
-                                NodeKind::Probe => n.input_values.first().copied(),
+                                NodeKind::Probe => Some((n.module_id, n.input_values.first().copied().unwrap_or(0.0))),
                                 _ => None,
                             })
                             .collect();

@@ -1,5 +1,5 @@
 use super::bindings::{self, Action, lookup};
-use super::engine::{CompiledPatch, MeterReceiver, TrackState, compile_patch, meter_channel};
+use super::engine::{CompiledPatch, MeterReceiver, OutputReceiver, TrackState, OUTPUT_INTERVAL, compile_patch, meter_channel, output_channel};
 use super::grid::GridPos;
 use super::module::{Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind, SubPatchId};
 use std::collections::HashMap;
@@ -34,6 +34,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear},
 };
 
+use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -118,8 +119,9 @@ struct App {
     audio_patch: Arc<Mutex<CompiledPatch>>,
     track_state: Arc<Mutex<TrackState>>,
     meter_rx: MeterReceiver,
+    output_rx: OutputReceiver,
     meter_values: HashMap<ModuleId, Vec<f32>>,
-    probe_values: Vec<f32>,
+    probe_values: HashMap<ModuleId, f32>,
     show_meters: bool,
     playing: bool,
     track_text: String,
@@ -135,6 +137,7 @@ struct App {
     scale_idx: usize,
     export_filename: String,
     export_loops: usize,
+    output_history: VecDeque<f32>,
 }
 
 const SCALE_NAMES: &[&str] = &[
@@ -214,22 +217,19 @@ impl App {
         audio_patch: Arc<Mutex<CompiledPatch>>,
         track_state: Arc<Mutex<TrackState>>,
         meter_rx: MeterReceiver,
+        output_rx: OutputReceiver,
     ) -> Self {
         let mut patches = PatchSet::new(20, 20);
         patches.root.add_module(ModuleKind::Output, GridPos::new(19, 19));
 
         let track_text = r#"
-#
-  _ = rest
-  0+ = sharp
-  0- = flat
-  0* = 2x weight, 0** = 3x weight
-  (0/_/2) = bar with divisions
-  ((0/1)/(2/3/4)) = nested divisions - first half split in two, second half into a triplet
-  {0&2} = polyphony
-  ({0&2&4}/{1&3&5}) = two chords in sequence, equal length
-  whitespace is ignored
-#
+# _ = rest
+# 0+ = sharp, 0- = flat
+# 0* = 2x weight, 0** = 3x weight
+# (0/_/2) = bar with divisions
+# ((0/1)/(2/3/4)) = nested divisions
+# {0&2} = polyphony
+# ({0&2&4}/{1&3&5}) = two chords in sequence
 (0/2/4/7)
 "#
         .to_string();
@@ -260,8 +260,9 @@ impl App {
             audio_patch,
             track_state,
             meter_rx,
+            output_rx,
             meter_values: HashMap::new(),
-            probe_values: Vec::new(),
+            probe_values: HashMap::new(),
             show_meters: true,
             playing: false,
             track_text,
@@ -277,6 +278,7 @@ impl App {
             scale_idx: 2,
             export_filename: "output.wav".to_string(),
             export_loops: 1,
+            output_history: VecDeque::with_capacity(128),
         }
     }
 
@@ -305,7 +307,15 @@ impl App {
             for (id, values) in frame.ports {
                 self.meter_values.insert(id, values);
             }
-            self.probe_values = frame.probes;
+            for (id, val) in frame.probes {
+                self.probe_values.insert(id, val);
+            }
+        }
+        while let Ok(level) = self.output_rx.try_recv() {
+            self.output_history.push_back(level);
+            if self.output_history.len() > 34 {
+                self.output_history.pop_front();
+            }
         }
     }
 
@@ -1666,7 +1676,7 @@ impl App {
         let bars = state.clock.current_bars();
         drop(state);
 
-        match persist::save_patchset(&path, &self.patches, bpm, bars, track) {
+        match persist::save_patchset(&path, &self.patches, bpm, bars, self.scale_idx, track) {
             Ok(()) => {
                 self.file_path = Some(path.clone());
                 self.dirty = false;
@@ -1680,9 +1690,11 @@ impl App {
 
     fn load_from_file(&mut self, path: PathBuf) {
         match persist::load_patchset(&path) {
-            Ok((patches, bpm, bars, track)) => {
+            Ok((patches, bpm, bars, scale_idx, track)) => {
                 self.patches = patches;
                 self.file_path = Some(path.clone());
+                self.bpm = bpm;
+                self.scale_idx = scale_idx;
 
                 {
                     let mut state = self.track_state.lock().unwrap();
@@ -2333,7 +2345,10 @@ impl App {
             Mode::ExportPrompt => "EXPORT",
             Mode::ExportConfirm => "OVERWRITE?",
         };
-        let mut status = StatusWidget::new(self.cursor, mode_str).playing(self.playing);
+        let history: Vec<f32> = self.output_history.iter().copied().collect();
+        let mut status = StatusWidget::new(self.cursor, mode_str)
+            .playing(self.playing)
+            .output_history(&history);
         if let Some(ref msg) = self.message {
             status = status.message(msg);
         }
@@ -2696,6 +2711,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let file_arg = std::env::args().nth(1).map(PathBuf::from);
 
     let (meter_tx, meter_rx) = meter_channel();
+    let (output_tx, output_rx) = output_channel();
     let mut compiled_patch = CompiledPatch::default();
     compiled_patch.set_meter_sender(meter_tx);
     let audio_patch = Arc::new(Mutex::new(compiled_patch));
@@ -2716,6 +2732,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         )));
         let channels = player.config.channels as usize;
 
+        let mut output_counter = 0usize;
         player.device.build_output_stream(
             &player.config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
@@ -2723,6 +2740,11 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if !is_playing {
                     for sample in data.iter_mut() {
                         *sample = 0.0;
+                    }
+                    output_counter += data.len() / channels;
+                    while output_counter >= OUTPUT_INTERVAL {
+                        output_counter -= OUTPUT_INTERVAL;
+                        let _ = output_tx.try_send(0.0);
                     }
                     return;
                 }
@@ -2738,6 +2760,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
                     for channel_sample in frame.iter_mut() {
                         *channel_sample = sample;
+                    }
+
+                    output_counter += 1;
+                    if output_counter >= OUTPUT_INTERVAL {
+                        output_counter = 0;
+                        let _ = output_tx.try_send(sample);
                     }
 
                     signal_lock.advance();
@@ -2757,7 +2785,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(audio_patch, track_state, meter_rx);
+    let mut app = App::new(audio_patch, track_state, meter_rx, output_rx);
 
     if let Some(path) = file_arg {
         app.load_from_file(path);
