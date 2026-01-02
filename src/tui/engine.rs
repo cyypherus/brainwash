@@ -137,6 +137,7 @@ enum NodeKind {
     Lpf(LowpassFilter),
     Hpf(HighpassFilter),
     Delay(Delay),
+    DelayTap { delay_node: usize, gain: f32 },
     Reverb(Reverb),
     Distortion(Distortion),
     Flanger(Flanger),
@@ -201,6 +202,20 @@ impl CompiledVoice {
                 })
                 .collect();
 
+            let delay_tap_value = if let NodeKind::DelayTap { delay_node, gain } = &self.nodes[idx].kind {
+                if let Some(delay_node_ref) = self.nodes.get(*delay_node) {
+                    if let NodeKind::Delay(delay) = &delay_node_ref.kind {
+                        Some(delay.tap() * *gain)
+                    } else {
+                        Some(0.0)
+                    }
+                } else {
+                    Some(0.0)
+                }
+            } else {
+                None
+            };
+
             let node = &mut self.nodes[idx];
             node.input_values.copy_from_slice(&inputs);
             node.output = match &mut node.kind {
@@ -236,7 +251,12 @@ impl CompiledVoice {
                 NodeKind::Hpf(filter) => {
                     filter.output(inputs.first().copied().unwrap_or(0.0), signal)
                 }
-                NodeKind::Delay(delay) => delay.output(inputs.first().copied().unwrap_or(0.0)),
+                NodeKind::Delay(delay) => {
+                    let samples = inputs.get(1).copied().unwrap_or(0.0);
+                    delay.delay(samples);
+                    delay.output(inputs.first().copied().unwrap_or(0.0))
+                }
+                NodeKind::DelayTap { .. } => delay_tap_value.unwrap_or(0.0),
                 NodeKind::Reverb(reverb) => reverb.output(inputs.first().copied().unwrap_or(0.0)),
                 NodeKind::Distortion(dist) => dist.output(inputs.first().copied().unwrap_or(0.0)),
                 NodeKind::Flanger(flanger) => {
@@ -461,7 +481,8 @@ pub fn compile_patch(patch: &mut CompiledPatch, patches: &PatchSet, num_voices: 
 fn flatten_patchset(patches: &PatchSet) -> (Vec<Module>, Vec<(ModuleId, ModuleId, usize)>) {
     let mut flat_modules: Vec<Module> = Vec::new();
     let mut id_map: HashMap<(Option<SubPatchId>, ModuleId), ModuleId> = HashMap::new();
-    let mut next_id = 0u32;
+    let max_root_id = patches.root.all_modules().map(|m| m.id.0).max().unwrap_or(0);
+    let mut next_id = max_root_id + 1;
 
     for module in patches.root.all_modules() {
         if let ModuleKind::SubPatch(sub_id) = module.kind {
@@ -623,10 +644,11 @@ fn trace_subpatch_connections(
             }
         }
 
-        if module.has_output_bottom() {
+        let has_sub_outputs = !sub_outputs.is_empty();
+        if has_sub_outputs && module.orientation == super::module::Orientation::Vertical {
             for (out_idx, sub_out_id) in &sub_outputs {
                 let out_x = parent_pos.x + *out_idx as u16;
-                let out_y = parent_pos.y + module.height() as u16;
+                let out_y = parent_pos.y + sub_outputs.len().max(1) as u16;
 
                 if let Some((target_id, port_idx)) =
                     trace_down(patches.root.grid(), &patches.root, out_x, out_y)
@@ -640,9 +662,9 @@ fn trace_subpatch_connections(
             }
         }
 
-        if module.has_output_right() {
+        if has_sub_outputs && module.orientation == super::module::Orientation::Horizontal {
             for (out_idx, sub_out_id) in &sub_outputs {
-                let out_x = parent_pos.x + module.width() as u16;
+                let out_x = parent_pos.x + sub_outputs.len().max(1) as u16;
                 let out_y = parent_pos.y + *out_idx as u16;
 
                 if let Some((target_id, port_idx)) =
@@ -720,6 +742,18 @@ fn compile_voice(
 
         if module.kind == ModuleKind::Output {
             voice.output_node = Some(node_idx);
+        }
+    }
+
+    for module in modules {
+        if let ModuleKind::DelayTap(delay_module_id) = module.kind {
+            if let Some(&tap_node_idx) = module_to_node.get(&module.id) {
+                if let Some(&delay_node_idx) = module_to_node.get(&delay_module_id) {
+                    if let NodeKind::DelayTap { delay_node, .. } = &mut voice.nodes[tap_node_idx].kind {
+                        *delay_node = delay_node_idx;
+                    }
+                }
+            }
         }
     }
 
@@ -960,6 +994,9 @@ fn create_node_kind(module: &Module) -> NodeKind {
         | (ModuleKind::SubIn, _)
         | (ModuleKind::SubOut, _) => NodeKind::Pass,
         (ModuleKind::SubPatch(_), _) => NodeKind::Pass,
+        (ModuleKind::DelayTap(_), ModuleParams::DelayTap { gain }) => {
+            NodeKind::DelayTap { delay_node: usize::MAX, gain: *gain }
+        }
         _ => NodeKind::Pass,
     }
 }
@@ -976,6 +1013,7 @@ fn get_input_defaults(module: &Module) -> Vec<f32> {
     match module.kind {
         ModuleKind::SubIn => return Vec::new(),
         ModuleKind::SubOut => return vec![0.0],
+        ModuleKind::DelayTap(_) => return Vec::new(),
         _ => {}
     }
 
@@ -1057,6 +1095,7 @@ mod tests {
         }
 
         patches.root.add_module(ModuleKind::SubPatch(sub_id), GridPos::new(1, 0));
+        sync_subpatch_params(&mut patches, sub_id);
         patches.root.add_module(ModuleKind::Output, GridPos::new(2, 0));
         patches.root.rebuild_channels();
 
@@ -1075,5 +1114,155 @@ mod tests {
 
         assert!(connections.iter().any(|(src, dst, _)| Some(*src) == sub_out_id && Some(*dst) == output_id),
             "SubOut->Output connection missing. Connections: {:?}", connections);
+    }
+
+    fn sync_subpatch_params(patches: &mut PatchSet, sub_id: SubPatchId) {
+        let (inputs, outputs) = if let Some(sub) = patches.subpatch(sub_id) {
+            (sub.input_count() as u8, sub.output_count() as u8)
+        } else {
+            return;
+        };
+
+        let ids: Vec<ModuleId> = patches.root.all_modules()
+            .filter(|m| m.kind == ModuleKind::SubPatch(sub_id))
+            .map(|m| m.id)
+            .collect();
+
+        for id in ids {
+            if let Some(m) = patches.root.module_mut(id) {
+                m.params = crate::tui::module::ModuleParams::SubPatch { inputs, outputs };
+            }
+            patches.root.refit_module(id);
+        }
+    }
+
+    #[test]
+    fn test_gate_inside_subpatch() {
+        use crate::Signal;
+        let mut patches = PatchSet::new(20, 20);
+
+        let sub_id = patches.create_subpatch("Test".into(), Color::Red);
+
+        if let Some(sub) = patches.subpatch_mut(sub_id) {
+            sub.patch.add_module(ModuleKind::Gate, GridPos::new(0, 0));
+            sub.patch.add_module(ModuleKind::SubOut, GridPos::new(2, 0));
+            sub.patch.rebuild_channels();
+        }
+
+        patches.root.add_module(ModuleKind::SubPatch(sub_id), GridPos::new(0, 0));
+        sync_subpatch_params(&mut patches, sub_id);
+        patches.root.add_module(ModuleKind::Output, GridPos::new(2, 0));
+        patches.root.rebuild_channels();
+
+        let (modules, connections) = flatten_patchset(&patches);
+
+        let gate_id = modules.iter().find(|m| m.kind == ModuleKind::Gate).map(|m| m.id);
+        let sub_out_id = modules.iter().find(|m| m.kind == ModuleKind::SubOut).map(|m| m.id);
+        let output_id = modules.iter().find(|m| m.kind == ModuleKind::Output).map(|m| m.id);
+
+        assert!(gate_id.is_some(), "Gate module not found in flattened modules");
+        assert!(connections.iter().any(|(src, dst, _)| Some(*src) == gate_id && Some(*dst) == sub_out_id),
+            "Gate->SubOut connection missing. Connections: {:?}", connections);
+        assert!(connections.iter().any(|(src, dst, _)| Some(*src) == sub_out_id && Some(*dst) == output_id),
+            "SubOut->Output connection missing. Connections: {:?}", connections);
+
+        let module_refs: Vec<&Module> = modules.iter().collect();
+        let mut voice = compile_voice(&module_refs, &connections);
+        let mut signal = Signal::new(44100);
+
+        let output = voice.process(&mut signal, 440.0, 1.0);
+        assert!((output - 1.0).abs() < 0.001, "Output should be 1.0 (gate), got {}", output);
+
+        let output = voice.process(&mut signal, 440.0, 0.0);
+        assert!(output.abs() < 0.001, "Output should be 0.0 (gate off), got {}", output);
+    }
+
+    #[test]
+    fn test_freq_inside_subpatch() {
+        use crate::Signal;
+        let mut patches = PatchSet::new(20, 20);
+
+        let sub_id = patches.create_subpatch("Test".into(), Color::Red);
+
+        if let Some(sub) = patches.subpatch_mut(sub_id) {
+            sub.patch.add_module(ModuleKind::Freq, GridPos::new(0, 0));
+            sub.patch.add_module(ModuleKind::SubOut, GridPos::new(2, 0));
+            sub.patch.rebuild_channels();
+        }
+
+        patches.root.add_module(ModuleKind::SubPatch(sub_id), GridPos::new(0, 0));
+        sync_subpatch_params(&mut patches, sub_id);
+        patches.root.add_module(ModuleKind::Output, GridPos::new(2, 0));
+        patches.root.rebuild_channels();
+
+        let (modules, connections) = flatten_patchset(&patches);
+        let module_refs: Vec<&Module> = modules.iter().collect();
+        let mut voice = compile_voice(&module_refs, &connections);
+        let mut signal = Signal::new(44100);
+
+        let output = voice.process(&mut signal, 440.0, 1.0);
+        assert!((output - 440.0).abs() < 0.001, "Output should be 440.0 (freq), got {}", output);
+
+        let output = voice.process(&mut signal, 880.0, 1.0);
+        assert!((output - 880.0).abs() < 0.001, "Output should be 880.0 (freq), got {}", output);
+    }
+
+    #[test]
+    fn test_delay_tap_linking() {
+        let mut patches = PatchSet::new(20, 20);
+
+        let delay_id = patches.root.add_module(ModuleKind::Delay, GridPos::new(0, 0)).unwrap();
+        patches.root.add_module(ModuleKind::DelayTap(delay_id), GridPos::new(3, 0));
+        patches.root.add_module(ModuleKind::Output, GridPos::new(5, 0));
+
+        let (modules, connections) = flatten_patchset(&patches);
+        let module_refs: Vec<&Module> = modules.iter().collect();
+
+        let voice = compile_voice(&module_refs, &connections);
+
+        let tap_node_idx = voice.nodes.iter().position(|n| matches!(n.kind, NodeKind::DelayTap { .. }));
+        let delay_node_idx = voice.nodes.iter().position(|n| matches!(n.kind, NodeKind::Delay(_)));
+
+        assert!(tap_node_idx.is_some(), "DelayTap node not found");
+        assert!(delay_node_idx.is_some(), "Delay node not found");
+
+        if let NodeKind::DelayTap { delay_node, .. } = &voice.nodes[tap_node_idx.unwrap()].kind {
+            assert_eq!(*delay_node, delay_node_idx.unwrap(), 
+                "DelayTap delay_node {} doesn't match Delay node index {}", 
+                delay_node, delay_node_idx.unwrap());
+        } else {
+            panic!("Expected DelayTap node kind");
+        }
+    }
+
+    #[test]
+    fn test_delay_tap_produces_output() {
+        use crate::Signal;
+        let mut patches = PatchSet::new(20, 20);
+
+        patches.root.add_module(ModuleKind::Osc, GridPos::new(0, 0));
+        let delay_id = patches.root.add_module(ModuleKind::Delay, GridPos::new(2, 0)).unwrap();
+        if let Some(m) = patches.root.module_mut(delay_id) {
+            m.params = crate::tui::module::ModuleParams::Delay { samples: 100.0, connected: 0xFF };
+        }
+        patches.root.add_module(ModuleKind::DelayTap(delay_id), GridPos::new(4, 0));
+        patches.root.add_module(ModuleKind::Output, GridPos::new(6, 0));
+        patches.root.rebuild_channels();
+
+        let (modules, connections) = flatten_patchset(&patches);
+        let module_refs: Vec<&Module> = modules.iter().collect();
+
+        let mut voice = compile_voice(&module_refs, &connections);
+        let mut signal = Signal::new(44100);
+
+        for _ in 0..1000 {
+            voice.process(&mut signal, 440.0, 1.0);
+        }
+
+        let tap_node_idx = voice.nodes.iter().position(|n| matches!(n.kind, NodeKind::DelayTap { .. })).unwrap();
+        let delay_node_idx = voice.nodes.iter().position(|n| matches!(n.kind, NodeKind::Delay(_))).unwrap();
+
+        assert!(voice.nodes[delay_node_idx].output.abs() > 0.001, "Delay should have output");
+        assert!(voice.nodes[tap_node_idx].output.abs() > 0.001, "DelayTap should have output");
     }
 }

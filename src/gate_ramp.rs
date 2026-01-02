@@ -66,38 +66,55 @@ impl GateRamp {
         let current_time = signal.position;
         let sample_rate = signal.sample_rate as f32;
 
-        let active = match self.mode {
-            GateRampMode::Rise => pressed,
-            GateRampMode::Fall => !pressed,
-        };
+        match self.mode {
+            GateRampMode::Rise => {
+                let trigger = pressed && !self.last_gate;
+                if trigger {
+                    self.value = 0.0;
+                    self.start_time = Some(current_time);
+                }
+                self.last_gate = pressed;
 
-        if !active {
-            self.last_gate = pressed;
-            return 0.0;
-        }
+                if pressed {
+                    if let Some(start_time) = self.start_time {
+                        let elapsed = (current_time - start_time) as f32 / sample_rate;
+                        if elapsed >= self.time {
+                            self.value = 1.0;
+                        } else {
+                            self.value = elapsed / self.time;
+                        }
+                    }
+                }
 
-        let trigger = match self.mode {
-            GateRampMode::Rise => pressed && !self.last_gate,
-            GateRampMode::Fall => !pressed && self.last_gate,
-        };
+                self.value
+            }
+            GateRampMode::Fall => {
+                if pressed {
+                    self.last_gate = pressed;
+                    self.value = 0.0;
+                    self.start_time = None;
+                    return 0.0;
+                }
 
-        if trigger {
-            self.value = 0.0;
-            self.start_time = Some(current_time);
-        }
-        self.last_gate = pressed;
+                let trigger = !pressed && self.last_gate;
+                if trigger {
+                    self.value = 0.0;
+                    self.start_time = Some(current_time);
+                }
+                self.last_gate = pressed;
 
-        if let Some(start_time) = self.start_time {
-            let elapsed = (current_time - start_time) as f32 / sample_rate;
+                if let Some(start_time) = self.start_time {
+                    let elapsed = (current_time - start_time) as f32 / sample_rate;
+                    if elapsed >= self.time {
+                        self.value = 1.0;
+                    } else {
+                        self.value = elapsed / self.time;
+                    }
+                }
 
-            if elapsed >= self.time {
-                self.value = 1.0;
-            } else {
-                self.value = elapsed / self.time;
+                self.value
             }
         }
-
-        self.value
     }
 }
 
@@ -130,10 +147,10 @@ mod tests {
         assert!((v - 1.0).abs() < 0.01);
 
         let v = ramp.output(0.0, &make_signal(sr, 102));
-        assert!((v - 0.0).abs() < 0.01);
+        assert!((v - 1.0).abs() < 0.01, "Rise holds value after release");
 
         let v = ramp.output(0.0, &make_signal(sr, 200));
-        assert!((v - 0.0).abs() < 0.01);
+        assert!((v - 1.0).abs() < 0.01, "Rise continues to hold");
     }
 
     #[test]
@@ -143,23 +160,22 @@ mod tests {
 
         let sr = 1000;
 
-        let v = ramp.output(0.0, &make_signal(sr, 0));
-        assert!((v - 0.0).abs() < 0.01);
+        let v = ramp.output(1.0, &make_signal(sr, 0));
+        assert!((v - 0.0).abs() < 0.01, "While gate HIGH, should output 0.0");
 
-        ramp.output(1.0, &make_signal(sr, 1));
         let v = ramp.output(1.0, &make_signal(sr, 50));
-        assert!((v - 0.0).abs() < 0.01);
+        assert!((v - 0.0).abs() < 0.01, "While gate HIGH, should stay at 0.0");
 
         ramp.output(0.0, &make_signal(sr, 51));
 
         let v = ramp.output(0.0, &make_signal(sr, 101));
-        assert!((v - 0.5).abs() < 0.1);
+        assert!((v - 0.5).abs() < 0.1, "Halfway through release, should be ~0.5");
 
         let v = ramp.output(0.0, &make_signal(sr, 151));
-        assert!((v - 1.0).abs() < 0.01);
+        assert!((v - 1.0).abs() < 0.01, "After release time, should be 1.0");
 
         let v = ramp.output(1.0, &make_signal(sr, 152));
-        assert!((v - 0.0).abs() < 0.01);
+        assert!((v - 0.0).abs() < 0.01, "Gate HIGH again, should reset to 0.0");
     }
 
     #[test]
@@ -174,11 +190,11 @@ mod tests {
         assert!((v - 0.5).abs() < 0.1);
 
         let v = ramp.output(0.0, &make_signal(sr, 51));
-        assert!((v - 0.0).abs() < 0.1);
+        assert!((v - 0.5).abs() < 0.1, "Rise holds value after release");
 
         ramp.output(1.0, &make_signal(sr, 61));
         let v = ramp.output(1.0, &make_signal(sr, 111));
-        assert!((v - 0.5).abs() < 0.1);
+        assert!((v - 0.5).abs() < 0.1, "Retrigger restarts from 0");
 
         let v = ramp.output(1.0, &make_signal(sr, 161));
         assert!((v - 1.0).abs() < 0.1);
@@ -198,6 +214,6 @@ mod tests {
         assert!((v - 1.0).abs() < 0.01);
 
         let v = ramp.output(0.0, &make_signal(sr, 501));
-        assert!((v - 0.0).abs() < 0.01);
+        assert!((v - 1.0).abs() < 0.01, "Rise holds at 1.0 after release");
     }
 }

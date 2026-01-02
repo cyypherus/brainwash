@@ -258,7 +258,7 @@ impl App {
             meter_rx,
             meter_values: HashMap::new(),
             probe_values: Vec::new(),
-            show_meters: false,
+            show_meters: true,
             playing: false,
             track_text,
             file_path: None,
@@ -754,6 +754,9 @@ impl App {
                 }
             }
             Action::Palette(cat) => self.open_palette_category(cat),
+            Action::OpenPalette => {
+                self.mode = Mode::Palette;
+            }
             Action::TogglePlay => {
                 self.playing = !self.playing;
                 self.message = Some(if self.playing {
@@ -925,6 +928,20 @@ impl App {
                         } else {
                             self.message = Some("Can't place here".into());
                         }
+                    } else if matches!(kind, ModuleKind::DelayTap(_)) {
+                        let delay_id = self.patch().all_modules()
+                            .find(|m| m.kind == ModuleKind::Delay)
+                            .map(|m| m.id);
+                        if let Some(delay_id) = delay_id {
+                            if self.patch_mut().add_module(ModuleKind::DelayTap(delay_id), cursor).is_some() {
+                                self.message = Some("DelayTap placed".into());
+                                self.commit_patch();
+                            } else {
+                                self.message = Some("Can't place here".into());
+                            }
+                        } else {
+                            self.message = Some("No Delay module found".into());
+                        }
                     } else if self.patch_mut().add_module(*kind, cursor).is_some() {
                         self.message = Some(format!("{} placed", kind.name()));
                         self.commit_patch();
@@ -973,6 +990,20 @@ impl App {
                             self.commit_patch();
                         } else {
                             self.message = Some("Can't place here".into());
+                        }
+                    } else if matches!(kind, ModuleKind::DelayTap(_)) {
+                        let delay_id = self.patch().all_modules()
+                            .find(|m| m.kind == ModuleKind::Delay)
+                            .map(|m| m.id);
+                        if let Some(delay_id) = delay_id {
+                            if self.patch_mut().add_module(ModuleKind::DelayTap(delay_id), cursor).is_some() {
+                                self.message = Some("DelayTap placed".into());
+                                self.commit_patch();
+                            } else {
+                                self.message = Some("Can't place here".into());
+                            }
+                        } else {
+                            self.message = Some("No Delay module found".into());
                         }
                     } else if self.patch_mut().add_module(*kind, cursor).is_some() {
                         self.message = Some(format!("{} placed", kind.name()));
@@ -1268,10 +1299,7 @@ impl App {
 
         for id in ids {
             if let Some(m) = self.patches.root.module_mut(id) {
-                m.params = ModuleParams::SubPatch {
-                    inputs: inputs.max(1),
-                    outputs: outputs.max(1),
-                };
+                m.params = ModuleParams::SubPatch { inputs, outputs };
             }
             self.patches.root.refit_module(id);
         }
@@ -1339,7 +1367,9 @@ impl App {
             Action::ValueDown => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
-                    if let Some(m) = self.patch_mut().module_mut(module_id) {
+                    if matches!(module.kind, ModuleKind::DelayTap(_)) && param_idx == 0 {
+                        self.cycle_delay_tap_source(module_id, false);
+                    } else if let Some(m) = self.patch_mut().module_mut(module_id) {
                         match &def.kind {
                             ParamKind::Float { min, step, .. } => {
                                 let cur = m.params.get_float(param_idx).unwrap_or(0.0);
@@ -1361,7 +1391,9 @@ impl App {
             Action::ValueUp => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
-                    if let Some(m) = self.patch_mut().module_mut(module_id) {
+                    if matches!(module.kind, ModuleKind::DelayTap(_)) && param_idx == 0 {
+                        self.cycle_delay_tap_source(module_id, true);
+                    } else if let Some(m) = self.patch_mut().module_mut(module_id) {
                         match &def.kind {
                             ParamKind::Float { max, step, .. } => {
                                 let cur = m.params.get_float(param_idx).unwrap_or(0.0);
@@ -1418,6 +1450,38 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn cycle_delay_tap_source(&mut self, tap_id: ModuleId, forward: bool) {
+        let delays: Vec<ModuleId> = self.patch()
+            .all_modules()
+            .filter(|m| m.kind == ModuleKind::Delay)
+            .map(|m| m.id)
+            .collect();
+
+        if delays.is_empty() {
+            return;
+        }
+
+        let current_delay = if let Some(m) = self.patch().module(tap_id) {
+            if let ModuleKind::DelayTap(id) = m.kind { Some(id) } else { None }
+        } else {
+            None
+        };
+
+        let current_idx = current_delay
+            .and_then(|id| delays.iter().position(|&d| d == id))
+            .unwrap_or(0);
+
+        let new_idx = if forward {
+            (current_idx + 1) % delays.len()
+        } else {
+            if current_idx == 0 { delays.len() - 1 } else { current_idx - 1 }
+        };
+
+        if let Some(m) = self.patch_mut().module_mut(tap_id) {
+            m.kind = ModuleKind::DelayTap(delays[new_idx]);
         }
     }
 
@@ -2205,7 +2269,7 @@ impl App {
                     edit_area.width.saturating_sub(2),
                     edit_area.height.saturating_sub(2),
                 );
-                let edit_widget = EditWidget::new(module, param_idx);
+                let edit_widget = EditWidget::new(module, param_idx, self.patch());
                 f.render_widget(edit_widget, inner);
             }
         }

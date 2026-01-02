@@ -90,16 +90,39 @@ fn patch_to_modules(patch: &Patch) -> Vec<ModuleDef> {
 }
 
 fn modules_to_patch(modules: &[ModuleDef], width: u16, height: u16) -> Patch {
+    use super::module::ModuleId;
+    
     let mut patch = Patch::new(width, height);
+    let mut id_map: HashMap<u32, ModuleId> = HashMap::new();
+    
     for mdef in modules {
         let pos = GridPos::new(mdef.x, mdef.y);
-        if let Some(id) = patch.add_module(mdef.kind, pos) {
-            if let Some(module) = patch.module_mut(id) {
+        if let Some(new_id) = patch.add_module(mdef.kind, pos) {
+            id_map.insert(mdef.id, new_id);
+            if let Some(module) = patch.module_mut(new_id) {
                 module.orientation = mdef.orientation;
                 module.params = mdef.params.clone();
             }
         }
     }
+    
+    let tap_updates: Vec<_> = patch.all_modules()
+        .filter_map(|m| {
+            if let ModuleKind::DelayTap(old_delay_id) = m.kind {
+                let new_delay_id = id_map.get(&old_delay_id.0).copied()?;
+                Some((m.id, new_delay_id))
+            } else {
+                None
+            }
+        })
+        .collect();
+    
+    for (tap_id, new_delay_id) in tap_updates {
+        if let Some(m) = patch.module_mut(tap_id) {
+            m.kind = ModuleKind::DelayTap(new_delay_id);
+        }
+    }
+    
     patch.rebuild_channels();
     patch
 }

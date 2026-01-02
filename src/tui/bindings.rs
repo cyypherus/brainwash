@@ -41,6 +41,7 @@ pub enum Action {
     EditSubpatch,
     ExitSubpatch,
     ToggleMeters,
+    OpenPalette,
 }
 
 impl Action {
@@ -76,6 +77,7 @@ impl Action {
             Action::MakeSubpatch => "subpatch",
             Action::EditSubpatch | Action::ExitSubpatch => "sub",
             Action::ToggleMeters => "meters",
+            Action::OpenPalette => "new module",
         }
     }
 }
@@ -122,7 +124,7 @@ pub fn normal_bindings() -> &'static [Binding] {
 
         Binding { key: KeyCode::Char('p'), action: Action::EditSubpatch, hint: None, group: None, section: 4 },
 
-        Binding { key: KeyCode::Char('n'), action: Action::Palette(0), hint: Some("new module"), group: None, section: 5 },
+        Binding { key: KeyCode::Char('n'), action: Action::OpenPalette, hint: None, group: None, section: 5 },
         Binding { key: KeyCode::Char('7'), action: Action::Palette(0), hint: None, group: Some("palette"), section: 5 },
         Binding { key: KeyCode::Char('8'), action: Action::Palette(1), hint: None, group: Some("palette"), section: 5 },
         Binding { key: KeyCode::Char('9'), action: Action::Palette(2), hint: None, group: Some("palette"), section: 5 },
@@ -196,9 +198,10 @@ pub fn env_bindings() -> &'static [Binding] {
         Binding { key: KeyCode::Left, action: Action::Left, hint: Some("point"), group: Some("arrows"), section: 0 },
         Binding { key: KeyCode::Right, action: Action::Right, hint: Some("point"), group: Some("arrows"), section: 0 },
         Binding { key: KeyCode::Char('m'), action: Action::Move, hint: Some("move"), group: None, section: 0 },
-        Binding { key: KeyCode::Char(' '), action: Action::AddPoint, hint: None, group: None, section: 0 },
+        Binding { key: KeyCode::Char('n'), action: Action::AddPoint, hint: None, group: None, section: 0 },
         Binding { key: KeyCode::Char('.'), action: Action::DeletePoint, hint: None, group: None, section: 0 },
         Binding { key: KeyCode::Char('c'), action: Action::ToggleCurve, hint: None, group: None, section: 0 },
+        Binding { key: KeyCode::Char(' '), action: Action::TogglePlay, hint: None, group: None, section: 0 },
         Binding { key: KeyCode::Esc, action: Action::Cancel, hint: Some("done"), group: Some("done"), section: 0 },
         Binding { key: KeyCode::Char('i'), action: Action::Cancel, hint: Some("done"), group: Some("done"), section: 0 },
     ]
@@ -214,6 +217,7 @@ pub fn env_move_bindings() -> &'static [Binding] {
         Binding { key: KeyCode::Down, action: Action::Down, hint: None, group: Some("arrows"), section: 0 },
         Binding { key: KeyCode::Up, action: Action::Up, hint: None, group: Some("arrows"), section: 0 },
         Binding { key: KeyCode::Right, action: Action::Right, hint: None, group: Some("arrows"), section: 0 },
+        Binding { key: KeyCode::Char(' '), action: Action::TogglePlay, hint: None, group: None, section: 0 },
         Binding { key: KeyCode::Esc, action: Action::Cancel, hint: Some("done"), group: Some("done"), section: 0 },
         Binding { key: KeyCode::Enter, action: Action::Confirm, hint: Some("done"), group: Some("done"), section: 0 },
         Binding { key: KeyCode::Char('m'), action: Action::Confirm, hint: Some("done"), group: Some("done"), section: 0 },

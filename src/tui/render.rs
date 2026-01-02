@@ -445,53 +445,98 @@ impl<'a> GridWidget<'a> {
             }
         }
 
-        let input_idx = match info.input_edge {
-            Edge::Top => local_x as usize,
-            Edge::Left => local_y as usize,
-            _ => usize::MAX,
-        };
-
-        if let Some(port) = info.input_ports.get(input_idx) {
-            let port_char = if port.connected { '●' } else { '✕' };
-            let meter_val = meter_values
-                .and_then(|m| m.get(input_idx).copied())
-                .unwrap_or(0.0);
-            match info.input_edge {
-                Edge::Top => {
-                    if self.show_meters {
-                        let mc = meter_char(meter_val);
-                        let ms = meter_style(meter_val, color);
-                        set_cell(buf, cx - 1, sy, mc, ms);
-                    } else if port.label != ' ' {
-                        set_cell(buf, cx - 1, sy, port.label, port_style);
+        if info.input_edges.len() == 1 {
+            let edge = info.input_edges[0];
+            let input_idx = match edge {
+                Edge::Top => local_x as usize,
+                Edge::Left => local_y as usize,
+                _ => usize::MAX,
+            };
+            let on_edge = match edge {
+                Edge::Top => local_y == 0,
+                Edge::Left => local_x == 0,
+                _ => false,
+            };
+            if on_edge {
+                if let Some(port) = info.input_ports.get(input_idx) {
+                    let port_char = if port.connected { '●' } else { '✕' };
+                    let meter_val = meter_values
+                        .and_then(|m| m.get(input_idx).copied())
+                        .unwrap_or(0.0);
+                    match edge {
+                        Edge::Top => {
+                            if self.show_meters {
+                                let mc = meter_char(meter_val);
+                                let ms = meter_style(meter_val, color);
+                                set_cell(buf, cx - 1, sy, mc, ms);
+                            } else if port.label != ' ' {
+                                set_cell(buf, cx - 1, sy, port.label, port_style);
+                            }
+                            set_cell(buf, cx, sy, port_char, port_style);
+                        }
+                        Edge::Left => {
+                            if self.show_meters {
+                                let mc = meter_char(meter_val);
+                                let ms = meter_style(meter_val, color);
+                                set_cell(buf, sx, cy - 1, mc, ms);
+                            } else if port.label != ' ' {
+                                set_cell(buf, sx, cy - 1, port.label, port_style);
+                            }
+                            set_cell(buf, sx, cy, port_char, port_style);
+                        }
+                        _ => {}
                     }
-                    set_cell(buf, cx, sy, port_char, port_style);
                 }
-                Edge::Left => {
-                    if self.show_meters {
-                        let mc = meter_char(meter_val);
-                        let ms = meter_style(meter_val, color);
-                        set_cell(buf, sx, cy - 1, mc, ms);
-                    } else if port.label != ' ' {
-                        set_cell(buf, sx, cy - 1, port.label, port_style);
+            }
+        } else {
+            for (input_port_idx, edge) in info.input_edges.iter().enumerate() {
+                if let Some(port) = info.input_ports.get(input_port_idx) {
+                    let port_char = if port.connected { '●' } else { '✕' };
+                    match edge {
+                        Edge::Top if local_y == 0 && local_x == 0 => {
+                            set_cell(buf, cx, sy, port_char, port_style);
+                        }
+                        Edge::Left if local_x == 0 && local_y == 0 => {
+                            set_cell(buf, sx, cy, port_char, port_style);
+                        }
+                        _ => {}
                     }
-                    set_cell(buf, sx, cy, port_char, port_style);
                 }
-                _ => {}
             }
         }
 
-        let output_idx = match info.output_edge {
-            Edge::Bottom => local_x as usize,
-            Edge::Right => local_y as usize,
-            _ => usize::MAX,
-        };
-
-        if output_idx < info.output_ports.len() {
-            match info.output_edge {
-                Edge::Bottom => set_cell(buf, cx, sy + CELL_HEIGHT - 1, '○', port_style),
-                Edge::Right => set_cell(buf, sx + CELL_WIDTH - 1, cy, '○', port_style),
-                _ => {}
+        if info.output_edges.len() == 1 {
+            let edge = info.output_edges[0];
+            let output_idx = match edge {
+                Edge::Bottom => local_x as usize,
+                Edge::Right => local_y as usize,
+                _ => usize::MAX,
+            };
+            let on_edge = match edge {
+                Edge::Bottom => local_y == info.height - 1,
+                Edge::Right => local_x == info.width - 1,
+                _ => false,
+            };
+            if on_edge && output_idx < info.output_ports.len() {
+                match edge {
+                    Edge::Bottom => set_cell(buf, cx, sy + CELL_HEIGHT - 1, '○', port_style),
+                    Edge::Right => set_cell(buf, sx + CELL_WIDTH - 1, cy, '○', port_style),
+                    _ => {}
+                }
+            }
+        } else {
+            for (output_port_idx, edge) in info.output_edges.iter().enumerate() {
+                if output_port_idx < info.output_ports.len() {
+                    match edge {
+                        Edge::Bottom if local_y == info.height - 1 && local_x == 0 => {
+                            set_cell(buf, cx, sy + CELL_HEIGHT - 1, '○', port_style);
+                        }
+                        Edge::Right if local_x == info.width - 1 && local_y == 0 => {
+                            set_cell(buf, sx + CELL_WIDTH - 1, cy, '○', port_style);
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
     }
@@ -1026,13 +1071,15 @@ impl Widget for HelpWidget {
 pub struct EditWidget<'a> {
     module: &'a Module,
     selected_param: usize,
+    patch: &'a Patch,
 }
 
 impl<'a> EditWidget<'a> {
-    pub fn new(module: &'a Module, selected_param: usize) -> Self {
+    pub fn new(module: &'a Module, selected_param: usize, patch: &'a Patch) -> Self {
         Self {
             module,
             selected_param,
+            patch,
         }
     }
 }
@@ -1095,8 +1142,27 @@ impl Widget for EditWidget<'_> {
                     set_str(buf, val_x, y, "(input)", label_style);
                 }
                 ParamKind::Enum => {
-                    let val_str = self.module.params.enum_display().unwrap_or("?");
-                    set_str(buf, val_x, y, val_str, v_style);
+                    let val_str = if let ModuleKind::DelayTap(delay_id) = self.module.kind {
+                        if i == 0 {
+                            let is_valid_delay = self.patch.module(delay_id)
+                                .map(|m| m.kind == ModuleKind::Delay)
+                                .unwrap_or(false);
+                            if is_valid_delay {
+                                if let Some(pos) = self.patch.module_position(delay_id) {
+                                    format!("Delay @{},{}", pos.x, pos.y)
+                                } else {
+                                    "Delay (?)".to_string()
+                                }
+                            } else {
+                                "Invalid".to_string()
+                            }
+                        } else {
+                            self.module.params.enum_display().unwrap_or("?").to_string()
+                        }
+                    } else {
+                        self.module.params.enum_display().unwrap_or("?").to_string()
+                    };
+                    set_str(buf, val_x, y, &val_str, v_style);
                     if is_selected {
                         set_str(
                             buf,

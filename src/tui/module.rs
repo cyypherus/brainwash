@@ -124,6 +124,7 @@ pub enum ModuleKind {
     SubIn,
     SubOut,
     SubPatch(SubPatchId),
+    DelayTap(ModuleId),
 }
 
 impl ModuleKind {
@@ -160,6 +161,7 @@ impl ModuleKind {
             ModuleKind::SubIn => "SubIn",
             ModuleKind::SubOut => "SubOut",
             ModuleKind::SubPatch(_) => "Sub",
+            ModuleKind::DelayTap(_) => "Tap",
         }
     }
 
@@ -196,6 +198,7 @@ impl ModuleKind {
             ModuleKind::SubIn => "SIN",
             ModuleKind::SubOut => "SOT",
             ModuleKind::SubPatch(_) => "SUB",
+            ModuleKind::DelayTap(_) => "TAP",
         }
     }
 
@@ -232,6 +235,7 @@ impl ModuleKind {
             ModuleKind::SubIn => "Subpatch input port",
             ModuleKind::SubOut => "Subpatch output port",
             ModuleKind::SubPatch(_) => "Subpatch instance",
+            ModuleKind::DelayTap(_) => "Read from delay (feedback)",
         }
     }
 
@@ -266,6 +270,7 @@ impl ModuleKind {
             | ModuleKind::TurnDR => Color::Rgb(180, 180, 180),
             ModuleKind::SubIn | ModuleKind::SubOut => Color::Rgb(255, 180, 100),
             ModuleKind::SubPatch(_) => Color::Rgb(255, 150, 50),
+            ModuleKind::DelayTap(_) => Color::Rgb(200, 100, 255),
         }
     }
 
@@ -327,6 +332,7 @@ impl ModuleKind {
             ModuleKind::Lpf
             | ModuleKind::Hpf
             | ModuleKind::Delay
+            | ModuleKind::DelayTap(_)
             | ModuleKind::Reverb
             | ModuleKind::Distortion
             | ModuleKind::Flanger => ModuleCategory::Effect,
@@ -363,6 +369,7 @@ impl ModuleKind {
             ModuleKind::Lpf,
             ModuleKind::Hpf,
             ModuleKind::Delay,
+            ModuleKind::DelayTap(ModuleId(0)),
             ModuleKind::Reverb,
             ModuleKind::Distortion,
             ModuleKind::Flanger,
@@ -455,8 +462,8 @@ pub struct RenderInfo {
     pub height: u8,
     pub name: &'static str,
     pub color: Color,
-    pub input_edge: Edge,
-    pub output_edge: Edge,
+    pub input_edges: Vec<Edge>,
+    pub output_edges: Vec<Edge>,
     pub input_ports: Vec<PortInfo>,
     pub output_ports: Vec<PortInfo>,
 }
@@ -488,24 +495,25 @@ impl Module {
         let input_count = self.input_port_count() as usize;
         let output_count = self.output_port_count() as usize;
 
-        let (input_edge, output_edge) = if self.kind.is_routing() {
+        let (input_edges, output_edges): (Vec<Edge>, Vec<Edge>) = if self.kind.is_routing() {
             match self.kind {
-                ModuleKind::LSplit | ModuleKind::TurnRD => (Edge::Left, Edge::Bottom),
-                ModuleKind::TSplit => (Edge::Top, Edge::Bottom),
-                ModuleKind::RJoin => (Edge::Left, Edge::Right),
-                ModuleKind::DJoin => (Edge::Top, Edge::Bottom),
-                ModuleKind::TurnDR => (Edge::Top, Edge::Right),
-                _ => (Edge::None, Edge::None),
+                ModuleKind::LSplit => (vec![Edge::Left], vec![Edge::Bottom, Edge::Right]),
+                ModuleKind::TSplit => (vec![Edge::Top], vec![Edge::Bottom, Edge::Right]),
+                ModuleKind::RJoin => (vec![Edge::Left, Edge::Top], vec![Edge::Right]),
+                ModuleKind::DJoin => (vec![Edge::Left, Edge::Top], vec![Edge::Bottom]),
+                ModuleKind::TurnRD => (vec![Edge::Left], vec![Edge::Bottom]),
+                ModuleKind::TurnDR => (vec![Edge::Top], vec![Edge::Right]),
+                _ => (vec![], vec![]),
             }
         } else {
             match self.orientation {
-                Orientation::Horizontal => (Edge::Left, Edge::Right),
-                Orientation::Vertical => (Edge::Top, Edge::Bottom),
+                Orientation::Horizontal => (vec![Edge::Left], vec![Edge::Right]),
+                Orientation::Vertical => (vec![Edge::Top], vec![Edge::Bottom]),
             }
         };
 
-        let input_edge = if input_count == 0 { Edge::None } else { input_edge };
-        let output_edge = if output_count == 0 { Edge::None } else { output_edge };
+        let input_edges = if input_count == 0 { vec![] } else { input_edges };
+        let output_edges = if output_count == 0 { vec![] } else { output_edges };
 
         let defs = self.kind.param_defs();
         let port_params: Vec<_> = defs.iter().enumerate().filter(|(_, d)| d.kind.is_port()).collect();
@@ -537,8 +545,8 @@ impl Module {
             height: self.height(),
             name: self.display_name(),
             color: self.kind.color(),
-            input_edge,
-            output_edge,
+            input_edges,
+            output_edges,
             input_ports,
             output_ports,
         }
@@ -546,14 +554,14 @@ impl Module {
 
     pub fn input_port_count(&self) -> u8 {
         if let ModuleParams::SubPatch { inputs, .. } = self.params {
-            return inputs.max(1);
+            return inputs;
         }
         self.kind.port_count() as u8
     }
 
     pub fn output_port_count(&self) -> u8 {
         if let ModuleParams::SubPatch { outputs, .. } = self.params {
-            return outputs.max(1);
+            return outputs;
         }
         self.kind.output_count() as u8
     }
@@ -1077,6 +1085,20 @@ impl ModuleKind {
                 name: "In",
                 kind: ParamKind::Input,
             }],
+            ModuleKind::DelayTap(_) => &[
+                ParamDef {
+                    name: "Src",
+                    kind: ParamKind::Enum,
+                },
+                ParamDef {
+                    name: "Gain",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 0.7,
+                        step: 0.05,
+                    },
+                },
+            ],
             _ => &[],
         }
     }
@@ -1186,6 +1208,9 @@ pub enum ModuleParams {
         inputs: u8,
         outputs: u8,
     },
+    DelayTap {
+        gain: f32,
+    },
 }
 
 impl ModuleParams {
@@ -1244,7 +1269,7 @@ impl ModuleParams {
                 connected: 0xFF,
             },
             ModuleKind::Delay => ModuleParams::Delay {
-                samples: 0.0,
+                samples: 4410.0,
                 connected: 0xFF,
             },
             ModuleKind::Reverb => ModuleParams::Reverb {
@@ -1303,9 +1328,10 @@ impl ModuleParams {
             | ModuleKind::SubIn
             | ModuleKind::SubOut => ModuleParams::None,
             ModuleKind::SubPatch(_) => ModuleParams::SubPatch {
-                inputs: 1,
-                outputs: 1,
+                inputs: 0,
+                outputs: 0,
             },
+            ModuleKind::DelayTap(_) => ModuleParams::DelayTap { gain: 0.3 },
         }
     }
 
@@ -1332,6 +1358,7 @@ impl ModuleParams {
             ModuleParams::Probe { connected, .. } => *connected,
             ModuleParams::Output { connected, .. } => *connected,
             ModuleParams::SubPatch { .. } => 0xFF,
+            ModuleParams::DelayTap { .. } => 0xFF,
         }
     }
 
@@ -1357,6 +1384,7 @@ impl ModuleParams {
             ModuleParams::Switch { connected, .. } => Some(connected),
             ModuleParams::Probe { connected, .. } => Some(connected),
             ModuleParams::Output { connected, .. } => Some(connected),
+            ModuleParams::DelayTap { .. } => None,
         }
     }
 
@@ -1467,6 +1495,10 @@ impl ModuleParams {
                 2 => Some(*b),
                 _ => None,
             },
+            ModuleParams::DelayTap { gain } => match idx {
+                0 => Some(*gain),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -1556,6 +1588,10 @@ impl ModuleParams {
             ModuleParams::Switch { a, b, .. } => match idx {
                 1 => *a = val,
                 2 => *b = val,
+                _ => {}
+            },
+            ModuleParams::DelayTap { gain } => match idx {
+                0 => *gain = val,
                 _ => {}
             },
             _ => {}
