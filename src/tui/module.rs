@@ -91,6 +91,78 @@ impl WaveType {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum DistType {
+    #[default]
+    Tube,
+    Tape,
+    Fuzz,
+    Fold,
+    Clip,
+}
+
+impl DistType {
+    pub fn name(&self) -> &'static str {
+        match self {
+            DistType::Tube => "tube",
+            DistType::Tape => "tape",
+            DistType::Fuzz => "fuzz",
+            DistType::Fold => "fold",
+            DistType::Clip => "clip",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            DistType::Tube => DistType::Tape,
+            DistType::Tape => DistType::Fuzz,
+            DistType::Fuzz => DistType::Fold,
+            DistType::Fold => DistType::Clip,
+            DistType::Clip => DistType::Tube,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            DistType::Tube => DistType::Clip,
+            DistType::Tape => DistType::Tube,
+            DistType::Fuzz => DistType::Tape,
+            DistType::Fold => DistType::Fuzz,
+            DistType::Clip => DistType::Fold,
+        }
+    }
+
+    pub fn to_index(self) -> u8 {
+        match self {
+            DistType::Tube => 0,
+            DistType::Tape => 1,
+            DistType::Fuzz => 2,
+            DistType::Fold => 3,
+            DistType::Clip => 4,
+        }
+    }
+
+    pub fn from_index(idx: u8) -> Self {
+        match idx {
+            0 => DistType::Tube,
+            1 => DistType::Tape,
+            2 => DistType::Fuzz,
+            3 => DistType::Fold,
+            _ => DistType::Clip,
+        }
+    }
+
+    pub fn to_dsp(self) -> crate::distortion::DistortionType {
+        match self {
+            DistType::Tube => crate::distortion::DistortionType::Tube,
+            DistType::Tape => crate::distortion::DistortionType::Tape,
+            DistType::Fuzz => crate::distortion::DistortionType::Fuzz,
+            DistType::Fold => crate::distortion::DistortionType::Fold,
+            DistType::Clip => crate::distortion::DistortionType::Clip,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ModuleKind {
     Freq,
@@ -1134,17 +1206,21 @@ impl ModuleKind {
                     },
                 },
                 ParamDef {
+                    name: "Type",
+                    kind: ParamKind::Enum,
+                },
+                ParamDef {
                     name: "Drive",
                     kind: ParamKind::Float {
                         min: 0.1,
-                        max: 0.5,
-                        step: 0.05,
+                        max: 20.0,
+                        step: 0.1,
                     },
                 },
                 ParamDef {
-                    name: "Gain",
+                    name: "Asym",
                     kind: ParamKind::Float {
-                        min: 0.0,
+                        min: -1.0,
                         max: 1.0,
                         step: 0.05,
                     },
@@ -1388,8 +1464,9 @@ pub enum ModuleParams {
         connected: u8,
     },
     Distortion {
+        dist_type: DistType,
         drive: f32,
-        gain: f32,
+        asymmetry: f32,
         connected: u8,
     },
     Flanger {
@@ -1510,8 +1587,9 @@ impl ModuleParams {
                 connected: 0xFF,
             },
             ModuleKind::Distortion => ModuleParams::Distortion {
-                drive: 0.3,
-                gain: 1.0,
+                dist_type: DistType::Tube,
+                drive: 2.0,
+                asymmetry: 0.0,
                 connected: 0xFF,
             },
             ModuleKind::Flanger => ModuleParams::Flanger {
@@ -1678,9 +1756,11 @@ impl ModuleParams {
                 2 => Some(*damp),
                 _ => None,
             },
-            ModuleParams::Distortion { drive, gain, .. } => match idx {
-                1 => Some(*drive),
-                2 => Some(*gain),
+            ModuleParams::Distortion {
+                drive, asymmetry, ..
+            } => match idx {
+                2 => Some(*drive),
+                3 => Some(*asymmetry),
                 _ => None,
             },
             ModuleParams::Flanger {
@@ -1760,9 +1840,11 @@ impl ModuleParams {
                 2 => *damp = val,
                 _ => {}
             },
-            ModuleParams::Distortion { drive, gain, .. } => match idx {
-                1 => *drive = val,
-                2 => *gain = val,
+            ModuleParams::Distortion {
+                drive, asymmetry, ..
+            } => match idx {
+                2 => *drive = val,
+                3 => *asymmetry = val,
                 _ => {}
             },
             ModuleParams::Flanger {
@@ -1868,16 +1950,18 @@ impl ModuleParams {
         }
     }
 
-    pub fn cycle_enum_next(&mut self) {
+    pub fn cycle_enum_next(&mut self, idx: usize) {
         match self {
-            ModuleParams::Osc { wave, .. } => *wave = wave.next(),
+            ModuleParams::Osc { wave, .. } if idx == 0 => *wave = wave.next(),
+            ModuleParams::Distortion { dist_type, .. } if idx == 1 => *dist_type = dist_type.next(),
             _ => {}
         }
     }
 
-    pub fn cycle_enum_prev(&mut self) {
+    pub fn cycle_enum_prev(&mut self, idx: usize) {
         match self {
-            ModuleParams::Osc { wave, .. } => *wave = wave.prev(),
+            ModuleParams::Osc { wave, .. } if idx == 0 => *wave = wave.prev(),
+            ModuleParams::Distortion { dist_type, .. } if idx == 1 => *dist_type = dist_type.prev(),
             _ => {}
         }
     }
@@ -1906,9 +1990,10 @@ impl ModuleParams {
         matches!(self, ModuleParams::Osc { .. })
     }
 
-    pub fn enum_display(&self) -> Option<&'static str> {
+    pub fn enum_display(&self, idx: usize) -> Option<&'static str> {
         match self {
-            ModuleParams::Osc { wave, .. } => Some(wave.name()),
+            ModuleParams::Osc { wave, .. } if idx == 0 => Some(wave.name()),
+            ModuleParams::Distortion { dist_type, .. } if idx == 1 => Some(dist_type.name()),
             _ => None,
         }
     }

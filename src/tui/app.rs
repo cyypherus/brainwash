@@ -344,14 +344,19 @@ impl App {
         }
     }
 
-    fn step_multiplier(&self) -> f32 {
+    fn step_value(&self) -> f32 {
         const STEPS: [f32; 5] = [1.0, 0.1, 0.01, 0.001, 10.0];
         STEPS[self.step_size % STEPS.len()]
     }
 
     fn step_label(&self) -> &'static str {
-        const LABELS: [&str; 5] = ["1x", "0.1x", "0.01x", "0.001x", "10x"];
+        const LABELS: [&str; 5] = ["1", "0.1", "0.01", "0.001", "10"];
         LABELS[self.step_size % LABELS.len()]
+    }
+
+    fn round_to_step(&self, val: f32) -> f32 {
+        let step = self.step_value();
+        (val / step).round() * step
     }
 
     fn patch(&self) -> &Patch {
@@ -1514,12 +1519,12 @@ impl App {
                     } else if matches!(module.kind, ModuleKind::Sample) && param_idx == 0 {
                         self.cycle_sample_file(module_id, false);
                     } else {
-                        let mult = self.step_multiplier();
+                        let step = self.step_value();
                         if let Some(m) = self.patch_mut().module_mut(module_id) {
                             match &def.kind {
-                                ParamKind::Float { min, step, .. } => {
+                                ParamKind::Float { min, .. } => {
                                     let cur = m.params.get_float(param_idx).unwrap_or(0.0);
-                                    m.params.set_float(param_idx, (cur - step * mult).max(*min));
+                                    m.params.set_float(param_idx, (cur - step).max(*min));
                                     m.params.set_connected(param_idx, false);
                                 }
                                 ParamKind::Time => {
@@ -1529,7 +1534,7 @@ impl App {
                                     m.params.set_connected(param_idx, false);
                                 }
                                 ParamKind::Enum => {
-                                    m.params.cycle_enum_prev();
+                                    m.params.cycle_enum_prev(param_idx);
                                 }
                                 ParamKind::Toggle => {
                                     m.params.toggle(param_idx);
@@ -1549,12 +1554,12 @@ impl App {
                     } else if matches!(module.kind, ModuleKind::Sample) && param_idx == 0 {
                         self.cycle_sample_file(module_id, true);
                     } else {
-                        let mult = self.step_multiplier();
+                        let step = self.step_value();
                         if let Some(m) = self.patch_mut().module_mut(module_id) {
                             match &def.kind {
-                                ParamKind::Float { max, step, .. } => {
+                                ParamKind::Float { max, .. } => {
                                     let cur = m.params.get_float(param_idx).unwrap_or(0.0);
-                                    m.params.set_float(param_idx, (cur + step * mult).min(*max));
+                                    m.params.set_float(param_idx, (cur + step).min(*max));
                                     m.params.set_connected(param_idx, false);
                                 }
                                 ParamKind::Time => {
@@ -1564,7 +1569,7 @@ impl App {
                                     m.params.set_connected(param_idx, false);
                                 }
                                 ParamKind::Enum => {
-                                    m.params.cycle_enum_next();
+                                    m.params.cycle_enum_next(param_idx);
                                 }
                                 ParamKind::Toggle => {
                                     m.params.toggle(param_idx);
@@ -1579,13 +1584,12 @@ impl App {
             Action::ValueDownFast => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
-                    let mult = self.step_multiplier();
+                    let step = self.step_value() * 10.0;
                     if let Some(m) = self.patch_mut().module_mut(module_id) {
                         match &def.kind {
-                            ParamKind::Float { min, step, .. } => {
+                            ParamKind::Float { min, .. } => {
                                 let cur = m.params.get_float(param_idx).unwrap_or(0.0);
-                                m.params
-                                    .set_float(param_idx, (cur - step * mult * 10.0).max(*min));
+                                m.params.set_float(param_idx, (cur - step).max(*min));
                                 m.params.set_connected(param_idx, false);
                             }
                             ParamKind::Time => {
@@ -1603,13 +1607,12 @@ impl App {
             Action::ValueUpFast => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
-                    let mult = self.step_multiplier();
+                    let step = self.step_value() * 10.0;
                     if let Some(m) = self.patch_mut().module_mut(module_id) {
                         match &def.kind {
-                            ParamKind::Float { max, step, .. } => {
+                            ParamKind::Float { max, .. } => {
                                 let cur = m.params.get_float(param_idx).unwrap_or(0.0);
-                                m.params
-                                    .set_float(param_idx, (cur + step * mult * 10.0).min(*max));
+                                m.params.set_float(param_idx, (cur + step).min(*max));
                                 m.params.set_connected(param_idx, false);
                             }
                             ParamKind::Time => {
@@ -1663,7 +1666,24 @@ impl App {
                 }
             }
             Action::CycleStep => {
+                let cur_val = if param_idx < defs.len() {
+                    let def = &defs[param_idx];
+                    if matches!(def.kind, ParamKind::Float { .. }) {
+                        module.params.get_float(param_idx)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
                 self.step_size = (self.step_size + 1) % 5;
+                if let Some(val) = cur_val {
+                    let rounded = self.round_to_step(val);
+                    if let Some(m) = self.patch_mut().module_mut(module_id) {
+                        m.params.set_float(param_idx, rounded);
+                    }
+                    self.commit_patch();
+                }
                 self.message = Some(format!("Step: {}", self.step_label()));
             }
             _ => {}
@@ -2184,7 +2204,7 @@ impl App {
             let Some(action) = lookup(bindings::env_move_bindings(), code) else {
                 return;
             };
-            let step = 0.01 * self.step_multiplier();
+            let step = self.step_value();
             match action {
                 Action::Cancel | Action::Confirm => {
                     self.mode = Mode::EnvEdit {

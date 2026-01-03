@@ -1216,7 +1216,11 @@ impl Widget for EditWidget<'_> {
                                 "Invalid".to_string()
                             }
                         } else {
-                            self.module.params.enum_display().unwrap_or("?").to_string()
+                            self.module
+                                .params
+                                .enum_display(i)
+                                .unwrap_or("?")
+                                .to_string()
                         }
                     } else if self.module.kind == ModuleKind::Sample && i == 0 {
                         if let ModuleParams::Sample {
@@ -1232,7 +1236,11 @@ impl Widget for EditWidget<'_> {
                             "?".to_string()
                         }
                     } else {
-                        self.module.params.enum_display().unwrap_or("?").to_string()
+                        self.module
+                            .params
+                            .enum_display(i)
+                            .unwrap_or("?")
+                            .to_string()
                     };
                     set_str(buf, val_x, y, &val_str, v_style);
                     if is_selected {

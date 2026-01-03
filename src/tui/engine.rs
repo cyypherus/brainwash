@@ -1057,9 +1057,19 @@ fn create_node_kind(module: &Module, ctx: &CompileContext) -> NodeKind {
             reverb.roomsize(*room).damp(*damp);
             NodeKind::Reverb(reverb)
         }
-        (ModuleKind::Distortion, ModuleParams::Distortion { drive, gain, .. }) => {
+        (
+            ModuleKind::Distortion,
+            ModuleParams::Distortion {
+                dist_type,
+                drive,
+                asymmetry,
+                ..
+            },
+        ) => {
             let mut dist = Distortion::default();
-            dist.drive(*drive).gain(*gain);
+            dist.dist_type(dist_type.to_dsp())
+                .drive(*drive)
+                .asymmetry(*asymmetry);
             NodeKind::Distortion(dist)
         }
         (
