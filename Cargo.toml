@@ -52,8 +52,8 @@ name = "generate_wavetables"
 path = "src/bin/generate_wavetables.rs"
 
 [[bin]]
-name = "modular"
-path = "src/bin/modular.rs"
+name = "bwsh"
+path = "src/bin/bwsh.rs"
 required-features = ["tui"]
 
 [[bench]]
