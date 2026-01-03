@@ -18,6 +18,8 @@ pub type MeterSender = flume::Sender<MeterFrame>;
 pub type MeterReceiver = flume::Receiver<MeterFrame>;
 pub type OutputSender = flume::Sender<f32>;
 pub type OutputReceiver = flume::Receiver<f32>;
+pub type CommandSender = flume::Sender<AudioCommand>;
+pub type CommandReceiver = flume::Receiver<AudioCommand>;
 
 pub fn meter_channel() -> (MeterSender, MeterReceiver) {
     flume::unbounded()
@@ -27,7 +29,24 @@ pub fn output_channel() -> (OutputSender, OutputReceiver) {
     flume::unbounded()
 }
 
+pub fn command_channel() -> (CommandSender, CommandReceiver) {
+    flume::unbounded()
+}
+
+pub enum AudioCommand {
+    SetBpm(f32),
+    SetInstrument {
+        idx: usize,
+        voices: Vec<CompiledVoice>,
+        track: Option<Track>,
+        bars: f32,
+    },
+    SetProbeVoice(usize),
+    ClearProbeHistory(usize),
+}
+
 pub struct MeterFrame {
+    pub instrument_idx: usize,
     pub ports: Vec<(ModuleId, Vec<f32>)>,
     pub probes: Vec<(ModuleId, f32)>,
 }
@@ -168,7 +187,7 @@ struct AudioNode {
     output: f32,
 }
 
-struct CompiledVoice {
+pub struct CompiledVoice {
     nodes: Vec<AudioNode>,
     execution_order: Vec<usize>,
     output_node: Option<usize>,
@@ -393,7 +412,12 @@ impl CompiledPatch {
         self.crossfade_pos = 0;
     }
 
-    pub fn process(&mut self, signal: &mut crate::Signal, track: &TrackState) -> f32 {
+    pub fn process(
+        &mut self,
+        signal: &mut crate::Signal,
+        track: &TrackState,
+        instrument_idx: usize,
+    ) -> f32 {
         let new_sample = self
             .current
             .as_mut()
@@ -463,7 +487,11 @@ impl CompiledPatch {
                                 _ => None,
                             })
                             .collect();
-                        let _ = tx.try_send(MeterFrame { ports, probes });
+                        let _ = tx.try_send(MeterFrame {
+                            instrument_idx,
+                            ports,
+                            probes,
+                        });
                     }
                 }
             }
@@ -513,14 +541,124 @@ pub fn compile_patch(
     num_voices: usize,
     ctx: &CompileContext,
 ) {
+    patch.set_voices(compile_voices(patches, num_voices, ctx));
+}
+
+pub fn compile_voices(
+    patches: &PatchSet,
+    num_voices: usize,
+    ctx: &CompileContext,
+) -> Vec<CompiledVoice> {
     let (modules, connections) = flatten_patchset(patches);
     let module_refs: Vec<&Module> = modules.iter().collect();
-
-    let voices = (0..num_voices)
+    (0..num_voices)
         .map(|_| compile_voice(&module_refs, &connections, ctx))
-        .collect();
+        .collect()
+}
 
-    patch.set_voices(voices);
+pub struct InstrumentAudio {
+    pub patch: CompiledPatch,
+    pub track: TrackState,
+}
+
+impl InstrumentAudio {
+    pub fn new(num_voices: usize) -> Self {
+        Self {
+            patch: CompiledPatch::default(),
+            track: TrackState::new(num_voices),
+        }
+    }
+
+    pub fn process(&mut self, signal: &mut crate::Signal, instrument_idx: usize) -> f32 {
+        self.track.update(signal);
+        self.patch.process(signal, &self.track, instrument_idx)
+    }
+}
+
+pub struct AudioEngine {
+    instruments: Vec<InstrumentAudio>,
+    cmd_rx: CommandReceiver,
+    meter_tx: MeterSender,
+    num_voices: usize,
+    bpm: f32,
+    _sample_rate: f32,
+}
+
+impl AudioEngine {
+    pub fn new(
+        num_voices: usize,
+        sample_rate: f32,
+        cmd_rx: CommandReceiver,
+        meter_tx: MeterSender,
+    ) -> Self {
+        let mut inst = InstrumentAudio::new(num_voices);
+        inst.patch.set_meter_sender(meter_tx.clone());
+        Self {
+            instruments: vec![inst],
+            cmd_rx,
+            meter_tx,
+            num_voices,
+            bpm: 120.0,
+            _sample_rate: sample_rate,
+        }
+    }
+
+    pub fn poll_commands(&mut self) {
+        while let Ok(cmd) = self.cmd_rx.try_recv() {
+            self.handle_command(cmd);
+        }
+    }
+
+    fn handle_command(&mut self, cmd: AudioCommand) {
+        match cmd {
+            AudioCommand::SetBpm(bpm) => {
+                self.bpm = bpm;
+                for inst in &mut self.instruments {
+                    inst.track.clock.bpm(bpm);
+                }
+            }
+            AudioCommand::SetInstrument {
+                idx,
+                voices,
+                track,
+                bars,
+            } => {
+                self.ensure_instruments(idx + 1);
+                if let Some(inst) = self.instruments.get_mut(idx) {
+                    inst.patch.set_voices(voices);
+                    inst.track.set_track(track);
+                    inst.track.clock.bars(bars);
+                }
+            }
+            AudioCommand::SetProbeVoice(voice) => {
+                for inst in &mut self.instruments {
+                    inst.patch.set_probe_voice(voice);
+                }
+            }
+            AudioCommand::ClearProbeHistory(idx) => {
+                for inst in &mut self.instruments {
+                    inst.patch.clear_probe_history(idx);
+                }
+            }
+        }
+    }
+
+    fn ensure_instruments(&mut self, count: usize) {
+        while self.instruments.len() < count {
+            let mut inst = InstrumentAudio::new(self.num_voices);
+            inst.patch.set_meter_sender(self.meter_tx.clone());
+            inst.track.clock.bpm(self.bpm);
+            self.instruments.push(inst);
+        }
+    }
+
+    pub fn process(&mut self, signal: &mut crate::Signal) -> f32 {
+        let mut sum = 0.0;
+        for (idx, inst) in self.instruments.iter_mut().enumerate() {
+            sum += inst.process(signal, idx);
+        }
+        sum.clamp(-1.0, 1.0)
+    }
 }
 
 fn flatten_patchset(patches: &PatchSet) -> (Vec<Module>, Vec<(ModuleId, ModuleId, usize)>) {

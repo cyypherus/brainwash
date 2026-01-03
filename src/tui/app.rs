@@ -1,9 +1,11 @@
 use super::bindings::{self, lookup, Action};
 use super::engine::{
-    compile_patch, meter_channel, output_channel, CompileContext, CompiledPatch, MeterReceiver,
-    OutputReceiver, TrackState, OUTPUT_INTERVAL,
+    command_channel, compile_patch, compile_voices, meter_channel, output_channel, AudioCommand,
+    AudioEngine, CommandSender, CompileContext, CompiledPatch, MeterReceiver, OutputReceiver,
+    TrackState, OUTPUT_INTERVAL,
 };
 use super::grid::GridPos;
+use super::instrument::Instrument;
 use super::module::{
     Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind, SubPatchId,
 };
@@ -22,6 +24,7 @@ use crate::scale::{
 use crate::track::Track;
 use crate::Signal;
 use cpal::traits::StreamTrait;
+use lilt::{Animated, Easing};
 use ratatui::crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers, MouseButton,
@@ -43,7 +46,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use std::{io, time::Duration};
+
 use tui_input::{Input, InputRequest};
 
 fn scan_wav_files() -> Vec<String> {
@@ -67,6 +72,82 @@ fn scan_wav_files() -> Vec<String> {
         .unwrap_or_default();
     files.sort();
     files
+}
+
+const BRAND_FONT: &[(&str, [&str; 6])] = &[
+    (
+        "B",
+        [
+            "d8888b.", "88  `8D", "88oooY'", "88~~~b.", "88   8D", "Y8888P'",
+        ],
+    ),
+    (
+        "R",
+        [
+            "d8888b.", "88  `8D", "88oobY'", "88`8b  ", "88 `88.", "88   YD",
+        ],
+    ),
+    (
+        "A",
+        [
+            " .d8b. ", "d8' `8b", "88ooo88", "88~~~88", "88   88", "YP   YP",
+        ],
+    ),
+    (
+        "I",
+        [
+            "d888888b", "  `88'  ", "   88   ", "   88   ", "  .88.  ", "Y888888P",
+        ],
+    ),
+    (
+        "N",
+        [
+            "d8b   db", "888o  88", "88V8o 88", "88 V8o88", "88  V888", "VP   V8P",
+        ],
+    ),
+    (
+        "W",
+        [
+            "db   d8b   db",
+            "88   I8I   88",
+            "88   I8I   88",
+            "Y8   I8I   88",
+            "`8b d8'8b d8'",
+            " `8b8' `8d8' ",
+        ],
+    ),
+    (
+        "S",
+        [
+            ".d8888.", "88'  YP", "`8bo.  ", "  `Y8b.", "db   8D", "`8888Y'",
+        ],
+    ),
+    (
+        "H",
+        [
+            "db   db", "88   88", "88ooo88", "88~~~88", "88   88", "YP   YP",
+        ],
+    ),
+];
+
+fn render_brand(text: &str, gap: usize) -> Vec<String> {
+    let mut rows = vec![String::new(); 6];
+    for (i, c) in text.chars().enumerate() {
+        if let Some((_, glyph)) = BRAND_FONT
+            .iter()
+            .find(|(ch, _)| ch.chars().next() == Some(c))
+        {
+            for (row_idx, row) in glyph.iter().enumerate() {
+                if i > 0 {
+                    for _ in 0..gap {
+                        rows[row_idx].push(' ');
+                    }
+                }
+                rows[row_idx].push_str(row);
+            }
+        }
+    }
+    rows
 }
 
 fn load_wav_samples(path: &str) -> Arc<Vec<f32>> {
@@ -156,12 +237,8 @@ enum AppRequest {
 }
 
 struct App {
-    patches: PatchSet,
-    editing_subpatch: Option<SubPatchId>,
-    subpatch_stack: Vec<(Option<SubPatchId>, GridPos)>,
-    undo_stack: Vec<PatchSet>,
-    redo_stack: Vec<PatchSet>,
-    cursor: GridPos,
+    instruments: Vec<Instrument>,
+    current_instrument: usize,
     mode: Mode,
     pending_request: Option<AppRequest>,
     palette_category: usize,
@@ -172,15 +249,11 @@ struct App {
     message: Option<String>,
     should_quit: bool,
     dirty: bool,
-    audio_patch: Arc<Mutex<CompiledPatch>>,
-    track_state: Arc<Mutex<TrackState>>,
+    cmd_tx: CommandSender,
     meter_rx: MeterReceiver,
     output_rx: OutputReceiver,
-    meter_values: HashMap<ModuleId, Vec<f32>>,
-    probe_values: HashMap<ModuleId, f32>,
     show_meters: bool,
     playing: bool,
-    track_text: String,
     file_path: Option<PathBuf>,
     save_input: Input,
     probe_min: f32,
@@ -188,14 +261,14 @@ struct App {
     probe_len: usize,
     grid_area: Rect,
     dragging: Option<ModuleId>,
-    view_center: GridPos,
     bpm: f32,
-    scale_idx: usize,
     export_input: Input,
     export_loops: usize,
     output_history: VecDeque<f32>,
     value_input: Input,
     step_size: usize,
+    probe_voice: usize,
+    brand_scroll: Animated<f32, Instant>,
 }
 
 const SCALE_NAMES: &[&str] = &[
@@ -271,42 +344,10 @@ fn subpatch_color(index: usize) -> Color {
 }
 
 impl App {
-    fn new(
-        audio_patch: Arc<Mutex<CompiledPatch>>,
-        track_state: Arc<Mutex<TrackState>>,
-        meter_rx: MeterReceiver,
-        output_rx: OutputReceiver,
-    ) -> Self {
-        let mut patches = PatchSet::new(20, 20);
-        patches
-            .root
-            .add_module(ModuleKind::Output, GridPos::new(19, 19));
-
-        let track_text = r#"
-# _ = rest
-# 0+ = sharp, 0- = flat
-# 0* = 2x weight, 0** = 3x weight
-# (0/_/2) = bar with divisions
-# ((0/1)/(2/3/4)) = nested divisions
-# {0&2} = polyphony
-# ({0&2&4}/{1&3&5}) = two chords in sequence
-(0/2/4/7)
-"#
-        .to_string();
-        let scale = cmin();
-        let bpm = 120.0;
-        if let Ok(track) = Track::parse(&track_text, &scale) {
-            track_state.lock().unwrap().set_track(Some(track));
-        }
-        track_state.lock().unwrap().clock.bpm(bpm);
-
+    fn new(cmd_tx: CommandSender, meter_rx: MeterReceiver, output_rx: OutputReceiver) -> Self {
         Self {
-            patches,
-            editing_subpatch: None,
-            subpatch_stack: Vec::new(),
-            undo_stack: Vec::new(),
-            redo_stack: Vec::new(),
-            cursor: GridPos::new(0, 0),
+            instruments: vec![Instrument::new()],
+            current_instrument: 0,
             mode: Mode::Normal,
             pending_request: None,
             palette_category: 0,
@@ -317,15 +358,11 @@ impl App {
             message: None,
             should_quit: false,
             dirty: false,
-            audio_patch,
-            track_state,
+            cmd_tx,
             meter_rx,
             output_rx,
-            meter_values: HashMap::new(),
-            probe_values: HashMap::new(),
             show_meters: true,
             playing: false,
-            track_text,
             file_path: None,
             save_input: Input::new("patch.bw".to_string()),
             probe_min: -1.0,
@@ -333,15 +370,106 @@ impl App {
             probe_len: 4410,
             grid_area: Rect::default(),
             dragging: None,
-            view_center: GridPos::new(0, 0),
-            bpm,
-            scale_idx: 2,
+            bpm: 120.0,
             export_input: Input::new("output.wav".to_string()),
             export_loops: 1,
             output_history: VecDeque::with_capacity(128),
             value_input: Input::default(),
             step_size: 1,
+            probe_voice: 0,
+            brand_scroll: Animated::new(0.0)
+                .duration(8000.0)
+                .easing(Easing::EaseInOutCubic)
+                .repeat_forever()
+                .auto_reverse()
+                .auto_start(1.0, Instant::now()),
         }
+    }
+
+    fn inst(&self) -> &Instrument {
+        &self.instruments[self.current_instrument]
+    }
+
+    fn inst_mut(&mut self) -> &mut Instrument {
+        &mut self.instruments[self.current_instrument]
+    }
+
+    fn cursor(&self) -> GridPos {
+        self.inst().cursor
+    }
+
+    fn set_cursor(&mut self, pos: GridPos) {
+        self.inst_mut().cursor = pos;
+    }
+
+    fn view_center(&self) -> GridPos {
+        self.inst().view_center
+    }
+
+    fn set_view_center(&mut self, pos: GridPos) {
+        self.inst_mut().view_center = pos;
+    }
+
+    fn scale_idx(&self) -> usize {
+        self.inst().scale_idx
+    }
+
+    fn track_text(&self) -> &str {
+        &self.inst().track_text
+    }
+
+    fn meter_values(&self) -> &HashMap<ModuleId, Vec<f32>> {
+        &self.inst().meter_values
+    }
+
+    fn probe_values(&self) -> &HashMap<ModuleId, f32> {
+        &self.inst().probe_values
+    }
+
+    fn editing_subpatch(&self) -> Option<SubPatchId> {
+        self.inst().editing_subpatch
+    }
+
+    fn switch_instrument(&mut self, idx: usize) {
+        if idx < self.instruments.len() && idx != self.current_instrument {
+            self.current_instrument = idx;
+            self.message = Some(format!("Instrument {}", idx + 1));
+        }
+    }
+
+    fn add_instrument(&mut self) {
+        if self.instruments.len() < 9 {
+            self.instruments.push(Instrument::new());
+            let new_idx = self.instruments.len() - 1;
+            self.current_instrument = new_idx;
+            self.send_compile(new_idx);
+            self.message = Some(format!("New instrument {}", new_idx + 1));
+        } else {
+            self.message = Some("Max 9 instruments".into());
+        }
+    }
+
+    fn send_compile(&self, inst_idx: usize) {
+        let inst = &self.instruments[inst_idx];
+        let scale = scale_from_idx(inst.scale_idx);
+        let track = Track::parse(&inst.track_text, &scale).ok();
+        let bars = track.as_ref().map(|t| t.bar_count() as f32).unwrap_or(1.0);
+        let ctx = CompileContext {
+            sample_rate: 44100.0,
+            bpm: self.bpm,
+            bars,
+        };
+        let voices = compile_voices(&inst.patches, NUM_VOICES, &ctx);
+        let _ = self.cmd_tx.send(AudioCommand::SetInstrument {
+            idx: inst_idx,
+            voices,
+            track,
+            bars,
+        });
+    }
+
+    fn send_compile_current(&self) {
+        self.send_compile(self.current_instrument);
     }
 
     fn step_value(&self) -> f32 {
@@ -359,33 +487,52 @@ impl App {
         (val / step).round() * step
     }
 
+    fn patches(&self) -> &PatchSet {
+        &self.inst().patches
+    }
+
+    fn patches_mut(&mut self) -> &mut PatchSet {
+        &mut self.inst_mut().patches
+    }
+
     fn patch(&self) -> &Patch {
-        match self.editing_subpatch {
-            Some(sub_id) => self
+        let inst = self.inst();
+        match inst.editing_subpatch {
+            Some(sub_id) => inst
                 .patches
                 .subpatch(sub_id)
                 .map(|s| &s.patch)
-                .unwrap_or(&self.patches.root),
-            None => &self.patches.root,
+                .unwrap_or(&inst.patches.root),
+            None => &inst.patches.root,
         }
     }
 
     fn patch_mut(&mut self) -> &mut Patch {
-        match self.editing_subpatch {
-            Some(sub_id) if self.patches.subpatches.contains_key(&sub_id) => {
-                &mut self.patches.subpatches.get_mut(&sub_id).unwrap().patch
+        let inst = self.inst_mut();
+        match inst.editing_subpatch {
+            Some(sub_id) if inst.patches.subpatches.contains_key(&sub_id) => {
+                &mut inst.patches.subpatches.get_mut(&sub_id).unwrap().patch
             }
-            _ => &mut self.patches.root,
+            _ => &mut inst.patches.root,
         }
     }
 
     fn drain_meters(&mut self) {
+        let probe_len = self.probe_len;
         while let Ok(frame) = self.meter_rx.try_recv() {
-            for (id, values) in frame.ports {
-                self.meter_values.insert(id, values);
-            }
-            for (id, val) in frame.probes {
-                self.probe_values.insert(id, val);
+            if frame.instrument_idx == self.current_instrument {
+                let inst = self.inst_mut();
+                for (id, values) in frame.ports {
+                    inst.meter_values.insert(id, values);
+                }
+                for (id, val) in frame.probes {
+                    inst.probe_values.insert(id, val);
+                    let history = inst.probe_histories.entry(id).or_default();
+                    history.push_back(val);
+                    while history.len() > probe_len {
+                        history.pop_front();
+                    }
+                }
             }
         }
         while let Ok(level) = self.output_rx.try_recv() {
@@ -397,13 +544,10 @@ impl App {
     }
 
     fn reparse_track(&mut self) {
-        let scale = scale_from_idx(self.scale_idx);
-        match Track::parse(&self.track_text, &scale) {
-            Ok(track) => {
-                let bar_count = track.bar_count();
-                let mut state = self.track_state.lock().unwrap();
-                state.clock.bars(bar_count as f32);
-                state.set_track(Some(track));
+        let scale = scale_from_idx(self.scale_idx());
+        match Track::parse(self.track_text(), &scale) {
+            Ok(_) => {
+                self.send_compile_current();
                 self.message = Some("Track updated".into());
             }
             Err(e) => {
@@ -413,11 +557,7 @@ impl App {
     }
 
     fn snapshot(&mut self) {
-        self.undo_stack.push(self.patches.clone());
-        self.redo_stack.clear();
-        if self.undo_stack.len() > 100 {
-            self.undo_stack.remove(0);
-        }
+        self.inst_mut().snapshot();
     }
 
     fn commit_patch(&mut self) {
@@ -426,26 +566,17 @@ impl App {
     }
 
     fn recompile_patch(&mut self) {
-        let state = self.track_state.lock().unwrap();
-        let num_voices = state.num_voices();
-        let bars = state.clock.current_bars();
-        drop(state);
-        let mut audio = self.audio_patch.lock().unwrap();
-        let ctx = CompileContext {
-            sample_rate: 44100.0,
-            bpm: self.bpm,
-            bars,
-        };
-        compile_patch(&mut audio, &self.patches, num_voices, &ctx);
-        self.meter_values.clear();
-        self.probe_values.clear();
+        self.send_compile_current();
+        self.inst_mut().meter_values.clear();
+        self.inst_mut().probe_values.clear();
         self.dirty = true;
     }
 
     fn undo(&mut self) {
-        if let Some(prev) = self.undo_stack.pop() {
-            self.redo_stack.push(self.patches.clone());
-            self.patches = prev;
+        if let Some(prev) = self.inst_mut().undo_stack.pop() {
+            let inst = self.inst_mut();
+            inst.redo_stack.push(inst.patches.clone());
+            inst.patches = prev;
             self.recompile_patch();
             self.message = Some("Undo".into());
         } else {
@@ -454,9 +585,10 @@ impl App {
     }
 
     fn redo(&mut self) {
-        if let Some(next) = self.redo_stack.pop() {
-            self.undo_stack.push(self.patches.clone());
-            self.patches = next;
+        if let Some(next) = self.inst_mut().redo_stack.pop() {
+            let inst = self.inst_mut();
+            inst.undo_stack.push(inst.patches.clone());
+            inst.patches = next;
             self.recompile_patch();
             self.message = Some("Redo".into());
         } else {
@@ -466,10 +598,12 @@ impl App {
 
     fn move_cursor(&mut self, dx: i16, dy: i16) {
         let grid = self.patch().grid();
-        let new_x = (self.cursor.x as i16 + dx).clamp(0, grid.width() as i16 - 1) as u16;
-        let new_y = (self.cursor.y as i16 + dy).clamp(0, grid.height() as i16 - 1) as u16;
-        self.cursor = GridPos::new(new_x, new_y);
-        self.view_center = self.cursor;
+        let cursor = self.cursor();
+        let new_x = (cursor.x as i16 + dx).clamp(0, grid.width() as i16 - 1) as u16;
+        let new_y = (cursor.y as i16 + dy).clamp(0, grid.height() as i16 - 1) as u16;
+        let new_pos = GridPos::new(new_x, new_y);
+        self.set_cursor(new_pos);
+        self.set_view_center(new_pos);
     }
 
     fn screen_to_grid(&self, col: u16, row: u16) -> Option<GridPos> {
@@ -490,19 +624,19 @@ impl App {
         let half_rows = visible_rows / 2;
 
         let grid = self.patch().grid();
-        let origin_x = if self.view_center.x < half_cols {
+        let origin_x = if self.view_center().x < half_cols {
             0
-        } else if self.view_center.x + half_cols >= grid.width() as u16 {
+        } else if self.view_center().x + half_cols >= grid.width() as u16 {
             (grid.width() as u16).saturating_sub(visible_cols)
         } else {
-            self.view_center.x - half_cols
+            self.view_center().x - half_cols
         };
-        let origin_y = if self.view_center.y < half_rows {
+        let origin_y = if self.view_center().y < half_rows {
             0
-        } else if self.view_center.y + half_rows >= grid.height() as u16 {
+        } else if self.view_center().y + half_rows >= grid.height() as u16 {
             (grid.height() as u16).saturating_sub(visible_rows)
         } else {
-            self.view_center.y - half_rows
+            self.view_center().y - half_rows
         };
 
         let vx = (col - grid_x) / CELL_WIDTH;
@@ -544,7 +678,7 @@ impl App {
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(pos) = self.screen_to_grid(col, row) {
-                    self.cursor = pos;
+                    self.set_cursor(pos);
                     if let Some(m) = self.patch().module_at(pos) {
                         self.dragging = Some(m.id);
                     } else {
@@ -557,13 +691,13 @@ impl App {
                     if let Some(pos) = self.screen_to_grid(col, row) {
                         self.patch_mut().move_module(id, pos);
                         self.commit_patch();
-                        self.cursor = pos;
+                        self.set_cursor(pos);
                     }
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 self.dragging = None;
-                self.view_center = self.cursor;
+                self.set_view_center(self.cursor());
             }
             _ => {}
         }
@@ -573,12 +707,12 @@ impl App {
         match kind {
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let Some(pos) = self.screen_to_grid(col, row) {
-                    self.cursor = pos;
+                    self.set_cursor(pos);
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                self.view_center = self.cursor;
-                if anchor == self.cursor {
+                self.set_view_center(self.cursor());
+                if anchor == self.cursor() {
                     self.mode = Mode::Normal;
                 } else {
                     self.mode = Mode::Select { anchor };
@@ -595,7 +729,7 @@ impl App {
         row: u16,
         anchor: GridPos,
     ) {
-        let extent = self.cursor;
+        let extent = self.cursor();
         let (min_x, max_x) = (anchor.x.min(extent.x), anchor.x.max(extent.x));
         let (min_y, max_y) = (anchor.y.min(extent.y), anchor.y.max(extent.y));
 
@@ -610,10 +744,10 @@ impl App {
                             extent: GridPos::new(max_x, max_y),
                             move_origin: pos,
                         };
-                        self.cursor = pos;
+                        self.set_cursor(pos);
                     } else {
                         self.mode = Mode::Normal;
-                        self.cursor = pos;
+                        self.set_cursor(pos);
                     }
                 }
             }
@@ -643,10 +777,10 @@ impl App {
                             extent,
                             move_origin: pos,
                         };
-                        self.cursor = pos;
+                        self.set_cursor(pos);
                     } else {
                         self.mode = Mode::Normal;
-                        self.cursor = pos;
+                        self.set_cursor(pos);
                     }
                 }
             }
@@ -690,12 +824,12 @@ impl App {
                                 move_origin: pos,
                             };
                         }
-                        self.cursor = pos;
+                        self.set_cursor(pos);
                     }
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                self.view_center = self.cursor;
+                self.set_view_center(self.cursor());
             }
             _ => {}
         }
@@ -788,15 +922,15 @@ impl App {
                 self.mode = Mode::Palette;
             }
             Action::Move => {
-                if let Some(id) = self.patch().module_id_at(self.cursor) {
+                if let Some(id) = self.patch().module_id_at(self.cursor()) {
                     self.mode = Mode::Move {
                         module_id: id,
-                        origin: self.cursor,
+                        origin: self.cursor(),
                     };
                 }
             }
             Action::Delete => {
-                if let Some(id) = self.patch().module_id_at(self.cursor) {
+                if let Some(id) = self.patch().module_id_at(self.cursor()) {
                     if let Some(m) = self.patch().module(id) {
                         if m.kind == ModuleKind::Output {
                             self.message = Some("Cannot delete output".into());
@@ -808,7 +942,7 @@ impl App {
                 }
             }
             Action::Rotate => {
-                if let Some(id) = self.patch().module_id_at(self.cursor) {
+                if let Some(id) = self.patch().module_id_at(self.cursor()) {
                     if let Some(m) = self.patch().module(id) {
                         if m.kind.is_routing() {
                             self.message = Some("Cannot rotate".into());
@@ -822,7 +956,7 @@ impl App {
                 }
             }
             Action::Edit => {
-                if let Some(id) = self.patch().module_id_at(self.cursor) {
+                if let Some(id) = self.patch().module_id_at(self.cursor()) {
                     if let Some(m) = self.patch().module(id) {
                         if m.kind == ModuleKind::Adsr {
                             self.mode = Mode::AdsrEdit {
@@ -855,7 +989,7 @@ impl App {
                 }
             }
             Action::Copy => {
-                if let Some(id) = self.patch().module_id_at(self.cursor) {
+                if let Some(id) = self.patch().module_id_at(self.cursor()) {
                     if let Some(m) = self.patch().module(id).cloned() {
                         self.mode = Mode::Copy { module: m };
                         self.message = Some("Place copy with space/enter".into());
@@ -879,7 +1013,7 @@ impl App {
             }
             Action::Select => {
                 self.mode = Mode::Select {
-                    anchor: self.cursor,
+                    anchor: self.cursor(),
                 };
             }
             Action::Save => {
@@ -916,7 +1050,7 @@ impl App {
             Action::EditSubpatch => {
                 let on_subpatch = self
                     .patch()
-                    .module_id_at(self.cursor)
+                    .module_id_at(self.cursor())
                     .and_then(|id| self.patch().module(id))
                     .and_then(|m| match m.kind {
                         ModuleKind::SubPatch(sub_id) => Some(sub_id),
@@ -924,41 +1058,42 @@ impl App {
                     });
                 if let Some(sub_id) = on_subpatch {
                     let name = self
-                        .patches
+                        .patches()
                         .subpatch(sub_id)
                         .map(|s| s.name.clone())
                         .unwrap_or_default();
-                    self.subpatch_stack
-                        .push((self.editing_subpatch, self.cursor));
-                    self.editing_subpatch = Some(sub_id);
-                    self.cursor = GridPos::new(0, 0);
+                    let inst = self.inst_mut();
+                    inst.subpatch_stack
+                        .push((inst.editing_subpatch, inst.cursor));
+                    inst.editing_subpatch = Some(sub_id);
+                    inst.cursor = GridPos::new(0, 0);
                     self.message = Some(format!("Editing '{}'", name));
-                } else if let Some(sub_id) = self.editing_subpatch.take() {
+                } else if let Some(sub_id) = self.inst_mut().editing_subpatch.take() {
                     let name = self
-                        .patches
+                        .patches()
                         .subpatch(sub_id)
                         .map(|s| s.name.clone())
                         .unwrap_or_default();
                     self.sync_subpatch_ports(sub_id);
-                    if let Some((parent, cursor)) = self.subpatch_stack.pop() {
-                        self.editing_subpatch = parent;
-                        self.cursor = cursor;
+                    if let Some((parent, cursor)) = self.inst_mut().subpatch_stack.pop() {
+                        self.inst_mut().editing_subpatch = parent;
+                        self.set_cursor(cursor);
                     }
                     self.message = Some(format!("Exited '{}'", name));
                     self.commit_patch();
                 }
             }
             Action::ExitSubpatch => {
-                if let Some(sub_id) = self.editing_subpatch.take() {
+                if let Some(sub_id) = self.inst_mut().editing_subpatch.take() {
                     let name = self
-                        .patches
+                        .patches()
                         .subpatch(sub_id)
                         .map(|s| s.name.clone())
                         .unwrap_or_default();
                     self.sync_subpatch_ports(sub_id);
-                    if let Some((parent, cursor)) = self.subpatch_stack.pop() {
-                        self.editing_subpatch = parent;
-                        self.cursor = cursor;
+                    if let Some((parent, cursor)) = self.inst_mut().subpatch_stack.pop() {
+                        self.inst_mut().editing_subpatch = parent;
+                        self.set_cursor(cursor);
                     }
                     self.message = Some(format!("Exited '{}'", name));
                     self.commit_patch();
@@ -966,6 +1101,16 @@ impl App {
             }
             Action::ToggleMeters => {
                 self.show_meters = !self.show_meters;
+            }
+            Action::Instrument(idx) => {
+                if idx < self.instruments.len() {
+                    self.switch_instrument(idx);
+                    self.message = Some(format!("Instrument {}", idx + 1));
+                }
+            }
+            Action::NewInstrument => {
+                self.add_instrument();
+                self.message = Some(format!("New instrument {}", self.instruments.len()));
             }
             _ => {}
         }
@@ -1037,13 +1182,13 @@ impl App {
                 };
             }
             Action::Confirm => {
-                let cursor = self.cursor;
+                let cursor = self.cursor();
                 if let Some(kind) = modules.get(palette_module) {
                     if *kind == ModuleKind::Output && self.patch().output_id().is_some() {
                         self.message = Some("Output exists".into());
                     } else if matches!(kind, ModuleKind::SubPatch(_)) {
-                        let color = subpatch_color(self.patches.subpatches.len());
-                        let sub_id = self.patches.create_subpatch("Sub".into(), color);
+                        let color = subpatch_color(self.patches().subpatches.len());
+                        let sub_id = self.patches_mut().create_subpatch("Sub".into(), color);
                         if self
                             .patch_mut()
                             .add_module(ModuleKind::SubPatch(sub_id), cursor)
@@ -1110,13 +1255,13 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                let cursor = self.cursor;
+                let cursor = self.cursor();
                 if let Some(kind) = filtered.get(self.palette_filter_selection) {
                     if *kind == ModuleKind::Output && self.patch().output_id().is_some() {
                         self.message = Some("Output exists".into());
                     } else if matches!(kind, ModuleKind::SubPatch(_)) {
-                        let color = subpatch_color(self.patches.subpatches.len());
-                        let sub_id = self.patches.create_subpatch("Sub".into(), color);
+                        let color = subpatch_color(self.patches().subpatches.len());
+                        let sub_id = self.patches_mut().create_subpatch("Sub".into(), color);
                         if self
                             .patch_mut()
                             .add_module(ModuleKind::SubPatch(sub_id), cursor)
@@ -1173,12 +1318,12 @@ impl App {
         };
         match action {
             Action::Cancel => {
-                self.cursor = origin;
+                self.set_cursor(origin);
                 self.mode = Mode::Normal;
                 self.message = Some("Move cancelled".into());
             }
             Action::Confirm => {
-                let cursor = self.cursor;
+                let cursor = self.cursor();
                 if self.patch_mut().move_module(module_id, cursor) {
                     self.mode = Mode::Normal;
                     self.message = Some("Moved".into());
@@ -1209,7 +1354,7 @@ impl App {
                 self.message = Some("Copy cancelled".into());
             }
             Action::Confirm => {
-                let cursor = self.cursor;
+                let cursor = self.cursor();
                 if let Some(_new_id) = self.patch_mut().add_module_clone(&module, cursor) {
                     self.mode = Mode::Normal;
                     self.message = Some("Placed".into());
@@ -1245,8 +1390,8 @@ impl App {
                 self.message = Some("Copy cancelled".into());
             }
             Action::Confirm => {
-                let dx = self.cursor.x as i16 - origin.x as i16;
-                let dy = self.cursor.y as i16 - origin.y as i16;
+                let dx = self.cursor().x as i16 - origin.x as i16;
+                let dy = self.cursor().y as i16 - origin.y as i16;
                 let mut placed = 0;
                 for (module, pos) in &modules {
                     let new_x = (pos.x as i16 + dx).max(0) as u16;
@@ -1293,12 +1438,12 @@ impl App {
             Action::Move => {
                 self.mode = Mode::SelectMove {
                     anchor,
-                    extent: self.cursor,
-                    move_origin: self.cursor,
+                    extent: self.cursor(),
+                    move_origin: self.cursor(),
                 };
             }
             Action::Delete => {
-                let ids = self.modules_in_rect(anchor, self.cursor);
+                let ids = self.modules_in_rect(anchor, self.cursor());
                 let count = ids.len();
                 for id in ids {
                     self.patch_mut().remove_module(id);
@@ -1308,7 +1453,7 @@ impl App {
                 self.commit_patch();
             }
             Action::Copy => {
-                let ids = self.modules_in_rect(anchor, self.cursor);
+                let ids = self.modules_in_rect(anchor, self.cursor());
                 if ids.is_empty() {
                     self.message = Some("No modules to copy".into());
                     return;
@@ -1324,7 +1469,7 @@ impl App {
                 if !modules.is_empty() {
                     self.mode = Mode::CopySelection {
                         modules,
-                        origin: self.cursor,
+                        origin: self.cursor(),
                     };
                     self.message = Some("Place copies with space/enter".into());
                 }
@@ -1348,7 +1493,7 @@ impl App {
         };
         match action {
             Action::Cancel => {
-                self.cursor = move_origin;
+                self.set_cursor(move_origin);
                 self.mode = Mode::Normal;
                 self.message = Some("Move cancelled".into());
             }
@@ -1361,8 +1506,8 @@ impl App {
             Action::UpFast => self.move_cursor(0, -4),
             Action::RightFast => self.move_cursor(4, 0),
             Action::Confirm => {
-                let dx = self.cursor.x as i16 - move_origin.x as i16;
-                let dy = self.cursor.y as i16 - move_origin.y as i16;
+                let dx = self.cursor().x as i16 - move_origin.x as i16;
+                let dy = self.cursor().y as i16 - move_origin.y as i16;
                 let ids = self.modules_in_rect(anchor, extent);
                 let moves: Vec<_> = ids
                     .iter()
@@ -1382,7 +1527,7 @@ impl App {
         }
     }
     fn create_subpatch_from_selection(&mut self, anchor: GridPos) {
-        let ids = self.modules_in_rect(anchor, self.cursor);
+        let ids = self.modules_in_rect(anchor, self.cursor());
         if ids.is_empty() {
             self.message = Some("No modules selected".into());
             return;
@@ -1400,11 +1545,11 @@ impl App {
         let min_x = modules.iter().map(|(_, p)| p.x).min().unwrap_or(0);
         let min_y = modules.iter().map(|(_, p)| p.y).min().unwrap_or(0);
 
-        let name = format!("Sub{}", self.patches.subpatches.len());
-        let color = subpatch_color(self.patches.subpatches.len());
-        let sub_id = self.patches.create_subpatch(name.clone(), color);
+        let name = format!("Sub{}", self.patches().subpatches.len());
+        let color = subpatch_color(self.patches().subpatches.len());
+        let sub_id = self.patches_mut().create_subpatch(name.clone(), color);
 
-        if let Some(subpatch) = self.patches.subpatch_mut(sub_id) {
+        if let Some(subpatch) = self.patches_mut().subpatch_mut(sub_id) {
             for (module, pos) in &modules {
                 let new_pos = GridPos::new(pos.x - min_x, pos.y - min_y);
                 subpatch.patch.add_module_clone(module, new_pos);
@@ -1426,14 +1571,14 @@ impl App {
     }
 
     fn sync_subpatch_ports(&mut self, sub_id: SubPatchId) {
-        let (inputs, outputs) = if let Some(sub) = self.patches.subpatch(sub_id) {
+        let (inputs, outputs) = if let Some(sub) = self.patches().subpatch(sub_id) {
             (sub.input_count() as u8, sub.output_count() as u8)
         } else {
             return;
         };
 
         let ids: Vec<ModuleId> = self
-            .patches
+            .patches()
             .root
             .all_modules()
             .filter(|m| m.kind == ModuleKind::SubPatch(sub_id))
@@ -1441,10 +1586,10 @@ impl App {
             .collect();
 
         for id in ids {
-            if let Some(m) = self.patches.root.module_mut(id) {
+            if let Some(m) = self.patches_mut().root.module_mut(id) {
                 m.params = ModuleParams::SubPatch { inputs, outputs };
             }
-            self.patches.root.refit_module(id);
+            self.patches_mut().root.refit_module(id);
         }
     }
 
@@ -1950,11 +2095,10 @@ impl App {
         use crate::Signal;
 
         let sample_rate = 44100usize;
-        let state = self.track_state.lock().unwrap();
-        let bpm = state.clock.current_bpm();
-        let bars = state.clock.current_bars();
-        let num_voices = state.num_voices();
-        drop(state);
+        let scale = scale_from_idx(self.scale_idx());
+        let track = Track::parse(self.track_text(), &scale).ok();
+        let bars = track.as_ref().map(|t| t.bar_count() as f32).unwrap_or(1.0);
+        let bpm = self.bpm;
 
         let seconds_per_beat = 60.0 / bpm;
         let beats_per_bar = 4.0;
@@ -1967,22 +2111,20 @@ impl App {
             bpm,
             bars,
         };
-        compile_patch(&mut compiled, &self.patches, num_voices, &ctx);
+        compile_patch(&mut compiled, &self.patches(), NUM_VOICES, &ctx);
 
-        let mut track_state = TrackState::new(num_voices);
+        let mut track_state = TrackState::new(NUM_VOICES);
         track_state.clock.bpm(bpm).bars(bars);
-
-        let scale = crate::scale::cmin();
-        if let Ok(track) = crate::track::Track::parse(&self.track_text, &scale) {
-            track_state.set_track(Some(track));
-        }
+        track_state.set_track(track);
 
         let mut signal = Signal::new(sample_rate);
         let mut samples = Vec::with_capacity(total_samples);
 
         for _ in 0..total_samples {
             track_state.update(&mut signal);
-            let sample = compiled.process(&mut signal, &track_state).clamp(-1.0, 1.0);
+            let sample = compiled
+                .process(&mut signal, &track_state, 0)
+                .clamp(-1.0, 1.0);
             samples.push(sample);
             signal.advance();
         }
@@ -2018,17 +2160,26 @@ impl App {
     }
 
     fn save_to_file(&mut self, path: PathBuf) {
-        let track = if self.track_text.trim().is_empty() {
+        let track_str = self.track_text();
+        let track = if track_str.trim().is_empty() {
             None
         } else {
-            Some(self.track_text.as_str())
+            Some(track_str)
         };
-        let state = self.track_state.lock().unwrap();
-        let bpm = state.clock.current_bpm();
-        let bars = state.clock.current_bars();
-        drop(state);
+        let scale = scale_from_idx(self.scale_idx());
+        let bars = Track::parse(track_str, &scale)
+            .ok()
+            .map(|t| t.bar_count() as f32)
+            .unwrap_or(1.0);
 
-        match persist::save_patchset(&path, &self.patches, bpm, bars, self.scale_idx, track) {
+        match persist::save_patchset(
+            &path,
+            &self.patches(),
+            self.bpm,
+            bars,
+            self.scale_idx(),
+            track,
+        ) {
             Ok(()) => {
                 self.file_path = Some(path.clone());
                 self.dirty = false;
@@ -2043,20 +2194,18 @@ impl App {
     fn load_from_file(&mut self, path: PathBuf) {
         match persist::load_patchset(&path) {
             Ok(result) => {
-                self.patches = result.patches;
+                {
+                    let inst = self.inst_mut();
+                    inst.patches = result.patches;
+                    inst.scale_idx = result.scale_idx;
+                    if let Some(track_text) = result.track {
+                        inst.track_text = track_text;
+                    }
+                }
+
                 self.file_path = Some(path.clone());
                 self.bpm = result.bpm;
-                self.scale_idx = result.scale_idx;
-
-                {
-                    let mut state = self.track_state.lock().unwrap();
-                    state.clock.bpm(result.bpm).bars(result.bars);
-                }
-
-                if let Some(track_text) = result.track {
-                    self.track_text = track_text;
-                    self.reparse_track();
-                }
+                let _ = self.cmd_tx.send(AudioCommand::SetBpm(self.bpm));
 
                 self.commit_patch();
 
@@ -2487,7 +2636,7 @@ impl App {
                     .filter(|m| m.kind == ModuleKind::Probe)
                     .position(|m| m.id == module_id);
                 if let Some(idx) = probe_idx {
-                    self.audio_patch.lock().unwrap().clear_probe_history(idx);
+                    let _ = self.cmd_tx.send(AudioCommand::ClearProbeHistory(idx));
                 }
             }
             _ => {}
@@ -2498,7 +2647,6 @@ impl App {
         let Some(action) = lookup(bindings::settings_bindings(), code) else {
             return;
         };
-        let num_voices = self.track_state.lock().unwrap().num_voices();
         match action {
             Action::Cancel => {
                 self.mode = Mode::Normal;
@@ -2514,49 +2662,57 @@ impl App {
             Action::ValueUp => match param_idx {
                 0 => {
                     self.bpm = (self.bpm + 5.0).min(300.0);
-                    self.track_state.lock().unwrap().clock.bpm(self.bpm);
+                    let _ = self.cmd_tx.send(AudioCommand::SetBpm(self.bpm));
                 }
                 1 => {
-                    self.scale_idx = (self.scale_idx + 1) % SCALE_NAMES.len();
+                    let new_idx = (self.scale_idx() + 1) % SCALE_NAMES.len();
+                    self.inst_mut().scale_idx = new_idx;
                     self.reparse_track();
                 }
                 2 => {
-                    let mut patch = self.audio_patch.lock().unwrap();
-                    let v = (patch.probe_voice() + 1) % num_voices;
-                    patch.set_probe_voice(v);
+                    let _ = self.cmd_tx.send(AudioCommand::SetProbeVoice(
+                        (self.probe_voice + 1) % NUM_VOICES,
+                    ));
+                    self.probe_voice = (self.probe_voice + 1) % NUM_VOICES;
                 }
                 _ => {}
             },
             Action::ValueDown => match param_idx {
                 0 => {
                     self.bpm = (self.bpm - 5.0).max(20.0);
-                    self.track_state.lock().unwrap().clock.bpm(self.bpm);
+                    let _ = self.cmd_tx.send(AudioCommand::SetBpm(self.bpm));
                 }
                 1 => {
-                    self.scale_idx = if self.scale_idx == 0 {
+                    let cur = self.scale_idx();
+                    let new_idx = if cur == 0 {
                         SCALE_NAMES.len() - 1
                     } else {
-                        self.scale_idx - 1
+                        cur - 1
                     };
+                    self.inst_mut().scale_idx = new_idx;
                     self.reparse_track();
                 }
                 2 => {
-                    let mut patch = self.audio_patch.lock().unwrap();
-                    let v = patch.probe_voice();
-                    patch.set_probe_voice(if v == 0 { num_voices - 1 } else { v - 1 });
+                    let v = if self.probe_voice == 0 {
+                        NUM_VOICES - 1
+                    } else {
+                        self.probe_voice - 1
+                    };
+                    let _ = self.cmd_tx.send(AudioCommand::SetProbeVoice(v));
+                    self.probe_voice = v;
                 }
                 _ => {}
             },
             Action::ValueUpFast => {
                 if param_idx == 0 {
                     self.bpm = (self.bpm + 20.0).min(300.0);
-                    self.track_state.lock().unwrap().clock.bpm(self.bpm);
+                    let _ = self.cmd_tx.send(AudioCommand::SetBpm(self.bpm));
                 }
             }
             Action::ValueDownFast => {
                 if param_idx == 0 {
                     self.bpm = (self.bpm - 20.0).max(20.0);
-                    self.track_state.lock().unwrap().clock.bpm(self.bpm);
+                    let _ = self.cmd_tx.send(AudioCommand::SetBpm(self.bpm));
                 }
             }
             _ => {}
@@ -2588,14 +2744,14 @@ impl App {
                     .patch()
                     .module(*module_id)
                     .cloned()
-                    .map(|m| vec![(m, self.cursor)])
+                    .map(|m| vec![(m, self.cursor())])
                     .unwrap_or_default();
                 (Some(*module_id), vec![], preview)
             }
-            Mode::Copy { module } => (None, vec![(module.clone(), self.cursor)], vec![]),
+            Mode::Copy { module } => (None, vec![(module.clone(), self.cursor())], vec![]),
             Mode::CopySelection { modules, origin } => {
-                let dx = self.cursor.x as i16 - origin.x as i16;
-                let dy = self.cursor.y as i16 - origin.y as i16;
+                let dx = self.cursor().x as i16 - origin.x as i16;
+                let dy = self.cursor().y as i16 - origin.y as i16;
                 let previews = modules
                     .iter()
                     .map(|(m, pos)| {
@@ -2611,8 +2767,8 @@ impl App {
                 extent,
                 move_origin,
             } => {
-                let dx = self.cursor.x as i16 - move_origin.x as i16;
-                let dy = self.cursor.y as i16 - move_origin.y as i16;
+                let dx = self.cursor().x as i16 - move_origin.x as i16;
+                let dy = self.cursor().y as i16 - move_origin.y as i16;
                 let ids = self.modules_in_rect(*anchor, *extent);
                 let previews: Vec<(Module, GridPos)> = ids
                     .iter()
@@ -2630,7 +2786,7 @@ impl App {
         };
 
         let selection = match self.mode {
-            Mode::Select { anchor } | Mode::MouseSelect { anchor } => Some((anchor, self.cursor)),
+            Mode::Select { anchor } | Mode::MouseSelect { anchor } => Some((anchor, self.cursor())),
             Mode::SelectMove { anchor, extent, .. } => Some((anchor, extent)),
             _ => None,
         };
@@ -2639,8 +2795,8 @@ impl App {
 
         let display_patch = self.patch();
         let subpatch_border = self
-            .editing_subpatch
-            .and_then(|id| self.patches.subpatch(id).map(|s| s.color));
+            .editing_subpatch()
+            .and_then(|id| self.patches().subpatch(id).map(|s| s.color));
 
         if let Some(border_color) = subpatch_border {
             let border = Block::default()
@@ -2650,26 +2806,26 @@ impl App {
             f.render_widget(border, grid_area);
 
             let grid_widget = GridWidget::new(display_patch)
-                .cursor(self.cursor)
-                .view_center(self.view_center)
+                .cursor(self.cursor())
+                .view_center(self.view_center())
                 .moving(moving_id)
                 .copy_previews(copy_previews)
                 .move_previews(move_previews)
                 .selection(selection)
-                .probe_values(&self.probe_values)
-                .meter_values(&self.meter_values)
+                .probe_values(self.probe_values())
+                .meter_values(self.meter_values())
                 .show_meters(self.show_meters);
             f.render_widget(grid_widget, inner);
         } else {
             let grid_widget = GridWidget::new(display_patch)
-                .cursor(self.cursor)
-                .view_center(self.view_center)
+                .cursor(self.cursor())
+                .view_center(self.view_center())
                 .moving(moving_id)
                 .copy_previews(copy_previews)
                 .move_previews(move_previews)
                 .selection(selection)
-                .probe_values(&self.probe_values)
-                .meter_values(&self.meter_values)
+                .probe_values(self.probe_values())
+                .meter_values(self.meter_values())
                 .show_meters(self.show_meters);
             f.render_widget(grid_widget, grid_area);
         }
@@ -2679,11 +2835,90 @@ impl App {
             .border_style(Style::default().fg(Color::Rgb(60, 60, 60)));
         f.render_widget(help_block, help_area);
 
+        let buf = f.buffer_mut();
+        let now = Instant::now();
+        let scroll_t = self.brand_scroll.animate_wrapped(now);
+
+        let brand_rows = render_brand("BRAINWASH", 1);
+
+        let brand_height = brand_rows.len().min(8);
+        let brand_total_width = brand_rows
+            .iter()
+            .map(|r| r.chars().count())
+            .max()
+            .unwrap_or(0);
+        let viewport_width = (help_area.width.saturating_sub(2)) as usize;
+        let scroll_range = brand_total_width.saturating_sub(viewport_width);
+        let scroll_offset = (scroll_t * scroll_range as f32).round() as usize;
+
+        let brand_style = Style::default().fg(Color::Yellow);
+        for (row_idx, row) in brand_rows.iter().take(brand_height).enumerate() {
+            let y = help_area.y + row_idx as u16;
+            if y >= help_area.y + help_area.height {
+                break;
+            }
+            let chars: Vec<char> = row.chars().collect();
+            for vp_x in 0..viewport_width {
+                let char_idx = scroll_offset + vp_x;
+                if char_idx < chars.len() {
+                    let x = help_area.x + 1 + vp_x as u16;
+                    if x < help_area.x + help_area.width {
+                        buf[(x, y)].set_char(chars[char_idx]).set_style(brand_style);
+                    }
+                }
+            }
+        }
+
+        let brand_divider_y = help_area.y + brand_height as u16;
+        let divider_style = Style::default().fg(Color::Rgb(60, 60, 60));
+        for x in (help_area.x + 1)..(help_area.x + help_area.width) {
+            if brand_divider_y < help_area.y + help_area.height {
+                buf[(x, brand_divider_y)]
+                    .set_char('─')
+                    .set_style(divider_style);
+            }
+        }
+
+        let tabs_y = help_area.y + brand_height as u16 + 1;
+        let tabs_x = help_area.x + 1;
+        for i in 0..self.instruments.len().min(5) {
+            let x = tabs_x + (i as u16 * 2);
+            if x < help_area.x + help_area.width - 1 {
+                let label = format!("{}", i + 1);
+                let style = if i == self.current_instrument {
+                    Style::default().fg(Color::Black).bg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                buf[(x, tabs_y)]
+                    .set_char(label.chars().next().unwrap())
+                    .set_style(style);
+            }
+        }
+        if self.instruments.len() < 5 {
+            let plus_x = tabs_x + (self.instruments.len() as u16 * 2);
+            if plus_x < help_area.x + help_area.width - 1 {
+                buf[(plus_x, tabs_y)]
+                    .set_char('+')
+                    .set_style(Style::default().fg(Color::DarkGray));
+            }
+        }
+
+        let tabs_divider_y = help_area.y + brand_height as u16 + 2;
+        for x in (help_area.x + 1)..(help_area.x + help_area.width) {
+            if tabs_divider_y < help_area.y + help_area.height {
+                buf[(x, tabs_divider_y)]
+                    .set_char('─')
+                    .set_style(divider_style);
+            }
+        }
+
+        let header_height = brand_height as u16 + 3;
         let help_inner = Rect::new(
-            help_area.x + 2,
-            help_area.y + 1,
-            help_area.width.saturating_sub(3),
-            help_area.height.saturating_sub(1),
+            help_area.x + 1,
+            help_area.y + header_height,
+            help_area.width.saturating_sub(2),
+            help_area.height.saturating_sub(header_height),
         );
         let bindings = match &self.mode {
             Mode::Normal => bindings::normal_bindings(),
@@ -2729,7 +2964,7 @@ impl App {
             Mode::ExportConfirm => "OVERWRITE?",
         };
         let history: Vec<f32> = self.output_history.iter().copied().collect();
-        let mut status = StatusWidget::new(self.cursor, mode_str)
+        let mut status = StatusWidget::new(self.cursor(), mode_str)
             .playing(self.playing)
             .output_history(&history);
         if let Some(ref msg) = self.message {
@@ -2911,19 +3146,13 @@ impl App {
         } = self.mode
         {
             if let Some(module) = self.patch().module(module_id) {
-                let probe_idx = self
-                    .patch()
-                    .all_modules()
-                    .filter(|m| m.kind == ModuleKind::Probe)
-                    .position(|m| m.id == module_id);
-
-                let audio_patch = self.audio_patch.lock().unwrap();
-                let history: Vec<f32> = probe_idx
-                    .and_then(|i| audio_patch.probe_history(i))
+                let history: Vec<f32> = self
+                    .inst()
+                    .probe_histories
+                    .get(&module_id)
                     .map(|h| h.iter().copied().collect())
                     .unwrap_or_default();
                 let current = history.last().copied().unwrap_or(0.0);
-                drop(audio_patch);
 
                 let (auto_min, auto_max) = if history.is_empty() {
                     (-1.0, 1.0)
@@ -3056,10 +3285,9 @@ impl App {
             let bpm_label = "BPM: ";
             let bpm_value = format!("{:.0}", self.bpm);
             let scale_label = "Scale: ";
-            let scale_value = SCALE_NAMES[self.scale_idx];
+            let scale_value = SCALE_NAMES[self.scale_idx()];
             let voice_label = "Probe Voice: ";
-            let probe_voice = self.audio_patch.lock().unwrap().probe_voice();
-            let voice_value = format!("{}", probe_voice + 1);
+            let voice_value = format!("{}", self.probe_voice + 1);
 
             let bpm_style = if param_idx == 0 {
                 selected_style
@@ -3137,14 +3365,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let (meter_tx, meter_rx) = meter_channel();
     let (output_tx, output_rx) = output_channel();
-    let mut compiled_patch = CompiledPatch::default();
-    compiled_patch.set_meter_sender(meter_tx);
-    let audio_patch = Arc::new(Mutex::new(compiled_patch));
-    let audio_patch_clone = Arc::clone(&audio_patch);
-    let track_state = Arc::new(Mutex::new(TrackState::new(NUM_VOICES)));
-    let track_state_clone = Arc::clone(&track_state);
+    let (cmd_tx, cmd_rx) = command_channel();
 
     let player = AudioPlayer::new()?;
+    let sample_rate = player.config.sample_rate.0 as f32;
     let playing = Arc::new(Mutex::new(false));
     let playing_clone = Arc::clone(&playing);
 
@@ -3152,15 +3376,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         use assert_no_alloc::assert_no_alloc;
         use cpal::traits::DeviceTrait;
 
-        let signal = Arc::new(Mutex::new(Signal::new(
-            player.config.sample_rate.0 as usize,
-        )));
+        let mut engine = AudioEngine::new(NUM_VOICES, sample_rate, cmd_rx, meter_tx);
+        let mut signal = Signal::new(sample_rate as usize);
         let channels = player.config.channels as usize;
 
         let mut output_counter = 0usize;
         player.device.build_output_stream(
             &player.config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                engine.poll_commands();
+
                 let is_playing = *playing_clone.lock().unwrap();
                 if !is_playing {
                     for sample in data.iter_mut() {
@@ -3174,14 +3399,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     return;
                 }
 
-                let mut signal_lock = signal.lock().unwrap();
-                let mut patch = audio_patch_clone.lock().unwrap();
-                let mut track = track_state_clone.lock().unwrap();
-
                 for frame in data.chunks_mut(channels) {
-                    track.update(&mut signal_lock);
-                    let sample =
-                        assert_no_alloc(|| patch.process(&mut signal_lock, &track).clamp(-1., 1.));
+                    let sample = assert_no_alloc(|| engine.process(&mut signal).clamp(-1., 1.));
 
                     for channel_sample in frame.iter_mut() {
                         *channel_sample = sample;
@@ -3193,7 +3412,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         let _ = output_tx.try_send(sample);
                     }
 
-                    signal_lock.advance();
+                    signal.advance();
                 }
             },
             |err| eprintln!("Audio error: {}", err),
@@ -3210,7 +3429,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(audio_patch, track_state, meter_rx, output_rx);
+    let mut app = App::new(cmd_tx, meter_rx, output_rx);
 
     if let Some(path) = file_arg {
         app.load_from_file(path);
@@ -3245,7 +3464,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
 
                     let temp_path = std::env::temp_dir().join("brainwash_track.txt");
-                    fs::write(&temp_path, &app.track_text)?;
+                    fs::write(&temp_path, app.track_text())?;
 
                     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".into());
                     let status = Command::new(&editor).arg(&temp_path).status();
@@ -3253,7 +3472,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     if let Ok(s) = status {
                         if s.success() {
                             if let Ok(new_text) = fs::read_to_string(&temp_path) {
-                                app.track_text = new_text;
+                                app.inst_mut().track_text = new_text;
                                 app.reparse_track();
                             }
                         }

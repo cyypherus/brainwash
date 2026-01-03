@@ -11,7 +11,7 @@ path = "src/lib.rs"
 default = ["live"]
 live = ["cpal"]
 wav = ["hound"]
-tui = ["live", "wav", "ratatui", "dep:flume", "dep:tui-input"]
+tui = ["live", "wav", "ratatui", "dep:flume", "dep:tui-input", "dep:lilt"]
 
 [[example]]
 name = "simple"
@@ -37,6 +37,7 @@ hound = { version = "3.5", optional = true }
 ratatui = { version = "0.29.0", features = ["crossterm"], optional = true }
 flume = { version = "0.11", optional = true }
 tui-input = { version = "0.11", optional = true }
+lilt = { version = "0.8", optional = true }
 fastrand = "2"
 nom = "8.0.0"
 serde = { version = "1.0", features = ["derive"] }

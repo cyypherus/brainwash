@@ -2,6 +2,7 @@ mod app;
 pub mod bindings;
 mod engine;
 mod grid;
+mod instrument;
 mod module;
 mod patch;
 mod persist;
