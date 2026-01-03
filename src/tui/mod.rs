@@ -8,8 +8,8 @@ mod persist;
 mod render;
 
 pub use app::run;
-pub use engine::{CompiledPatch, compile_patch};
+pub use engine::{compile_patch, CompiledPatch};
 pub use grid::{Cell, Direction, Grid, GridPos};
 pub use module::{Module, ModuleId, ModuleKind, Orientation};
 pub use patch::Patch;
-pub use persist::{load_patchset, save_patchset};
+pub use persist::{load_patchset, save_patchset, LoadResult};

@@ -153,6 +153,7 @@ enum NodeKind {
     Lt,
     Switch,
     Rng { last_gate: f32, value: f32 },
+    Sample { samples: std::sync::Arc<Vec<f32>> },
     Probe,
     Pass,
     Output,
@@ -258,11 +259,7 @@ impl CompiledVoice {
                 NodeKind::Hpf(filter) => {
                     filter.output(inputs.first().copied().unwrap_or(0.0), signal)
                 }
-                NodeKind::Delay(delay) => {
-                    let samples = inputs.get(1).copied().unwrap_or(0.0);
-                    delay.delay(samples);
-                    delay.output(inputs.first().copied().unwrap_or(0.0))
-                }
+                NodeKind::Delay(delay) => delay.output(inputs.first().copied().unwrap_or(0.0)),
                 NodeKind::DelayTap { .. } => delay_tap_value.unwrap_or(0.0),
                 NodeKind::Reverb(reverb) => reverb.output(inputs.first().copied().unwrap_or(0.0)),
                 NodeKind::Distortion(dist) => dist.output(inputs.first().copied().unwrap_or(0.0)),
@@ -311,6 +308,19 @@ impl CompiledVoice {
                     }
                     *last_gate = gate;
                     *value
+                }
+                NodeKind::Sample { samples } => {
+                    if samples.is_empty() {
+                        0.0
+                    } else {
+                        let pos = inputs.first().copied().unwrap_or(0.0).clamp(0.0, 1.0);
+                        let idx_f = pos * (samples.len() - 1) as f32;
+                        let idx = idx_f as usize;
+                        let frac = idx_f - idx as f32;
+                        let s0 = samples[idx];
+                        let s1 = samples.get(idx + 1).copied().unwrap_or(s0);
+                        s0 + frac * (s1 - s0)
+                    }
                 }
                 NodeKind::Probe => inputs.first().copied().unwrap_or(0.0),
                 NodeKind::Pass => inputs.first().copied().unwrap_or(0.0),
@@ -498,12 +508,33 @@ impl CompiledPatch {
     }
 }
 
-pub fn compile_patch(patch: &mut CompiledPatch, patches: &PatchSet, num_voices: usize) {
+pub struct CompileContext {
+    pub sample_rate: f32,
+    pub bpm: f32,
+    pub bars: f32,
+}
+
+impl Default for CompileContext {
+    fn default() -> Self {
+        Self {
+            sample_rate: 44100.0,
+            bpm: 120.0,
+            bars: 1.0,
+        }
+    }
+}
+
+pub fn compile_patch(
+    patch: &mut CompiledPatch,
+    patches: &PatchSet,
+    num_voices: usize,
+    ctx: &CompileContext,
+) {
     let (modules, connections) = flatten_patchset(patches);
     let module_refs: Vec<&Module> = modules.iter().collect();
 
     let voices = (0..num_voices)
-        .map(|_| compile_voice(&module_refs, &connections))
+        .map(|_| compile_voice(&module_refs, &connections, ctx))
         .collect();
 
     patch.set_voices(voices);
@@ -778,6 +809,7 @@ fn trace_subpatch_connections(
 fn compile_voice(
     modules: &[&Module],
     connections: &[(ModuleId, ModuleId, usize)],
+    ctx: &CompileContext,
 ) -> CompiledVoice {
     let mut voice = CompiledVoice {
         nodes: Vec::new(),
@@ -791,8 +823,8 @@ fn compile_voice(
         let node_idx = voice.nodes.len();
         module_to_node.insert(module.id, node_idx);
 
-        let kind = create_node_kind(module);
-        let input_defaults = get_input_defaults(module);
+        let kind = create_node_kind(module, ctx);
+        let input_defaults = get_input_defaults(module, ctx);
         let input_count = input_defaults.len();
 
         voice.nodes.push(AudioNode {
@@ -938,7 +970,7 @@ fn topological_sort(nodes: &[AudioNode]) -> Vec<usize> {
     order
 }
 
-fn create_node_kind(module: &Module) -> NodeKind {
+fn create_node_kind(module: &Module, ctx: &CompileContext) -> NodeKind {
     use super::module::{ModuleParams, WaveType};
 
     match (&module.kind, &module.params) {
@@ -962,18 +994,18 @@ fn create_node_kind(module: &Module) -> NodeKind {
         (ModuleKind::Rise, ModuleParams::Rise { time, .. }) => {
             let mut ramp = GateRamp::default();
             ramp.rise();
-            ramp.time(*time);
+            ramp.time(time.to_seconds(ctx.bpm, ctx.bars));
             NodeKind::Rise(ramp)
         }
         (ModuleKind::Fall, ModuleParams::Fall { time, .. }) => {
             let mut ramp = GateRamp::default();
             ramp.fall();
-            ramp.time(*time);
+            ramp.time(time.to_seconds(ctx.bpm, ctx.bars));
             NodeKind::Fall(ramp)
         }
         (ModuleKind::Ramp, ModuleParams::Ramp { time, .. }) => {
             let mut ramp = Ramp::default();
-            ramp.time(*time);
+            ramp.time(time.to_seconds(ctx.bpm, ctx.bars));
             NodeKind::Ramp(ramp)
         }
         (
@@ -1015,9 +1047,9 @@ fn create_node_kind(module: &Module) -> NodeKind {
             filter.freq(normalized).q(*q);
             NodeKind::Hpf(filter)
         }
-        (ModuleKind::Delay, ModuleParams::Delay { samples, .. }) => {
+        (ModuleKind::Delay, ModuleParams::Delay { time, .. }) => {
             let mut delay = Delay::default();
-            delay.delay(*samples);
+            delay.delay(time.to_samples(ctx.sample_rate, ctx.bpm, ctx.bars));
             NodeKind::Delay(delay)
         }
         (ModuleKind::Reverb, ModuleParams::Reverb { room, damp, .. }) => {
@@ -1053,6 +1085,9 @@ fn create_node_kind(module: &Module) -> NodeKind {
             last_gate: 0.0,
             value: 0.0,
         },
+        (ModuleKind::Sample, ModuleParams::Sample { samples, .. }) => NodeKind::Sample {
+            samples: samples.clone(),
+        },
         (ModuleKind::Probe, _) => NodeKind::Probe,
         (ModuleKind::Output, _) => NodeKind::Output,
         (ModuleKind::LSplit, _)
@@ -1072,7 +1107,7 @@ fn create_node_kind(module: &Module) -> NodeKind {
     }
 }
 
-fn get_input_defaults(module: &Module) -> Vec<f32> {
+fn get_input_defaults(module: &Module, ctx: &CompileContext) -> Vec<f32> {
     if module.kind.is_routing() {
         return vec![0.0; module.kind.port_count()];
     }
@@ -1092,8 +1127,18 @@ fn get_input_defaults(module: &Module) -> Vec<f32> {
 
     defs.iter()
         .enumerate()
-        .filter(|(_, d)| !matches!(d.kind, super::module::ParamKind::Enum))
-        .map(|(i, _)| module.params.get_float(i).unwrap_or(0.0))
+        .filter(|(_, d)| d.kind.is_port())
+        .map(|(i, d)| {
+            if matches!(d.kind, super::module::ParamKind::Time) {
+                module
+                    .params
+                    .get_time(i)
+                    .map(|t| t.to_hz(ctx.bpm, ctx.bars))
+                    .unwrap_or(440.0)
+            } else {
+                module.params.get_float(i).unwrap_or(0.0)
+            }
+        })
         .collect()
 }
 
@@ -1311,7 +1356,8 @@ mod tests {
         );
 
         let module_refs: Vec<&Module> = modules.iter().collect();
-        let mut voice = compile_voice(&module_refs, &connections);
+        let ctx = CompileContext::default();
+        let mut voice = compile_voice(&module_refs, &connections, &ctx);
         let mut signal = Signal::new(44100);
 
         let output = voice.process(&mut signal, 440.0, 1.0);
@@ -1353,7 +1399,8 @@ mod tests {
 
         let (modules, connections) = flatten_patchset(&patches);
         let module_refs: Vec<&Module> = modules.iter().collect();
-        let mut voice = compile_voice(&module_refs, &connections);
+        let ctx = CompileContext::default();
+        let mut voice = compile_voice(&module_refs, &connections, &ctx);
         let mut signal = Signal::new(44100);
 
         let output = voice.process(&mut signal, 440.0, 1.0);
@@ -1388,8 +1435,9 @@ mod tests {
 
         let (modules, connections) = flatten_patchset(&patches);
         let module_refs: Vec<&Module> = modules.iter().collect();
+        let ctx = CompileContext::default();
 
-        let voice = compile_voice(&module_refs, &connections);
+        let voice = compile_voice(&module_refs, &connections, &ctx);
 
         let tap_node_idx = voice
             .nodes
@@ -1428,7 +1476,7 @@ mod tests {
             .unwrap();
         if let Some(m) = patches.root.module_mut(delay_id) {
             m.params = crate::tui::module::ModuleParams::Delay {
-                samples: 100.0,
+                time: crate::tui::module::TimeValue::from_samples(100.0),
                 connected: 0xFF,
             };
         }
@@ -1442,8 +1490,9 @@ mod tests {
 
         let (modules, connections) = flatten_patchset(&patches);
         let module_refs: Vec<&Module> = modules.iter().collect();
+        let ctx = CompileContext::default();
 
-        let mut voice = compile_voice(&module_refs, &connections);
+        let mut voice = compile_voice(&module_refs, &connections, &ctx);
         let mut signal = Signal::new(44100);
 
         for _ in 0..1000 {
@@ -1460,6 +1509,12 @@ mod tests {
             .iter()
             .position(|n| matches!(n.kind, NodeKind::Delay(_)))
             .unwrap();
+
+        assert!(
+            voice.nodes[delay_node_idx].output.abs() > 0.001,
+            "Delay should have output"
+        );
+        eprintln!("Delay output: {}", voice.nodes[delay_node_idx].output);
 
         assert!(
             voice.nodes[delay_node_idx].output.abs() > 0.001,

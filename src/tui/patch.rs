@@ -20,11 +20,15 @@ impl SubPatchDef {
     }
 
     pub fn inputs(&self) -> impl Iterator<Item = &Module> {
-        self.patch.all_modules().filter(|m| m.kind == ModuleKind::SubIn)
+        self.patch
+            .all_modules()
+            .filter(|m| m.kind == ModuleKind::SubIn)
     }
 
     pub fn outputs(&self) -> impl Iterator<Item = &Module> {
-        self.patch.all_modules().filter(|m| m.kind == ModuleKind::SubOut)
+        self.patch
+            .all_modules()
+            .filter(|m| m.kind == ModuleKind::SubOut)
     }
 
     pub fn input_count(&self) -> usize {

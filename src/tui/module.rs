@@ -113,6 +113,7 @@ pub enum ModuleKind {
     Lt,
     Switch,
     Rng,
+    Sample,
     Probe,
     Output,
     LSplit,
@@ -150,6 +151,7 @@ impl ModuleKind {
             ModuleKind::Lt => "Lt",
             ModuleKind::Switch => "Switch",
             ModuleKind::Rng => "Rng",
+            ModuleKind::Sample => "Sample",
             ModuleKind::Probe => "Probe",
             ModuleKind::Output => "Out",
             ModuleKind::LSplit => "LSplit ◁",
@@ -187,6 +189,7 @@ impl ModuleKind {
             ModuleKind::Lt => " < ",
             ModuleKind::Switch => "SWT",
             ModuleKind::Rng => "RNG",
+            ModuleKind::Sample => "SMP",
             ModuleKind::Probe => "PRB",
             ModuleKind::Output => "OUT",
             ModuleKind::LSplit => " ◁ ",
@@ -224,6 +227,7 @@ impl ModuleKind {
             ModuleKind::Lt => "1 if A < B, else 0",
             ModuleKind::Switch => "Output A if Sel<=0.5, else B",
             ModuleKind::Rng => "Random 0-1 on gate rising edge",
+            ModuleKind::Sample => "Play WAV file by position 0-1",
             ModuleKind::Probe => "Display signal value",
             ModuleKind::Output => "Final audio output",
             ModuleKind::LSplit => "In from left, out down+right",
@@ -242,7 +246,7 @@ impl ModuleKind {
     pub fn color(&self) -> Color {
         match self {
             ModuleKind::Freq | ModuleKind::Gate => Color::Rgb(100, 200, 100),
-            ModuleKind::Osc => Color::Rgb(100, 150, 255),
+            ModuleKind::Osc | ModuleKind::Sample => Color::Rgb(100, 150, 255),
             ModuleKind::Rise
             | ModuleKind::Fall
             | ModuleKind::Ramp
@@ -320,7 +324,7 @@ impl ModuleKind {
     pub fn category(&self) -> ModuleCategory {
         match self {
             ModuleKind::Freq | ModuleKind::Gate => ModuleCategory::Track,
-            ModuleKind::Osc => ModuleCategory::Generator,
+            ModuleKind::Osc | ModuleKind::Sample => ModuleCategory::Generator,
             ModuleKind::Rise
             | ModuleKind::Fall
             | ModuleKind::Ramp
@@ -376,6 +380,7 @@ impl ModuleKind {
             ModuleKind::Lt,
             ModuleKind::Switch,
             ModuleKind::Rng,
+            ModuleKind::Sample,
             ModuleKind::Probe,
             ModuleKind::Output,
             ModuleKind::TurnRD,
@@ -680,7 +685,7 @@ impl Module {
         if let Some(def) = defs.get(param_idx) {
             match def.kind {
                 ParamKind::Input => true,
-                ParamKind::Float { .. } => self.params.is_connected(param_idx),
+                ParamKind::Float { .. } | ParamKind::Time => self.params.is_connected(param_idx),
                 ParamKind::Enum | ParamKind::Toggle => false,
             }
         } else {
@@ -689,8 +694,233 @@ impl Module {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum TimeUnit {
+    Seconds,
+    Samples,
+    Bars,
+    Hz,
+}
+
+impl TimeUnit {
+    pub fn next(self) -> Self {
+        match self {
+            TimeUnit::Seconds => TimeUnit::Samples,
+            TimeUnit::Samples => TimeUnit::Bars,
+            TimeUnit::Bars => TimeUnit::Hz,
+            TimeUnit::Hz => TimeUnit::Seconds,
+        }
+    }
+
+    pub fn prev(self) -> Self {
+        match self {
+            TimeUnit::Seconds => TimeUnit::Hz,
+            TimeUnit::Samples => TimeUnit::Seconds,
+            TimeUnit::Bars => TimeUnit::Samples,
+            TimeUnit::Hz => TimeUnit::Bars,
+        }
+    }
+
+    pub fn suffix(&self) -> &'static str {
+        match self {
+            TimeUnit::Seconds => "s",
+            TimeUnit::Samples => "smp",
+            TimeUnit::Bars => "bar",
+            TimeUnit::Hz => "hz",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TimeValue {
+    pub unit: TimeUnit,
+    pub seconds: f32,
+    pub samples: f32,
+    pub bar_num: u8,
+    pub bar_denom: u8,
+    pub hz: f32,
+}
+
+impl Default for TimeValue {
+    fn default() -> Self {
+        Self {
+            unit: TimeUnit::Seconds,
+            seconds: 0.1,
+            samples: 4410.0,
+            bar_num: 1,
+            bar_denom: 4,
+            hz: 10.0,
+        }
+    }
+}
+
+impl TimeValue {
+    pub fn from_seconds(s: f32) -> Self {
+        Self {
+            unit: TimeUnit::Seconds,
+            seconds: s,
+            samples: s * 44100.0,
+            bar_num: 1,
+            bar_denom: 4,
+            hz: 1.0 / s,
+        }
+    }
+
+    pub fn from_samples(s: f32) -> Self {
+        Self {
+            unit: TimeUnit::Samples,
+            seconds: s / 44100.0,
+            samples: s,
+            bar_num: 1,
+            bar_denom: 4,
+            hz: 44100.0 / s,
+        }
+    }
+
+    pub fn from_hz(h: f32) -> Self {
+        Self {
+            unit: TimeUnit::Hz,
+            seconds: 1.0 / h,
+            samples: 44100.0 / h,
+            bar_num: 1,
+            bar_denom: 4,
+            hz: h,
+        }
+    }
+
+    pub fn to_hz(&self, bpm: f32, bars: f32) -> f32 {
+        1.0 / self.to_seconds(bpm, bars)
+    }
+
+    pub fn to_samples(&self, sample_rate: f32, bpm: f32, bars: f32) -> f32 {
+        match self.unit {
+            TimeUnit::Seconds => self.seconds * sample_rate,
+            TimeUnit::Samples => self.samples,
+            TimeUnit::Bars => {
+                let bar_fraction = self.bar_num as f32 / self.bar_denom as f32;
+                let seconds_per_bar = (60.0 / bpm) * 4.0 * bars;
+                bar_fraction * seconds_per_bar * sample_rate
+            }
+            TimeUnit::Hz => sample_rate / self.hz,
+        }
+    }
+
+    pub fn to_seconds(&self, bpm: f32, bars: f32) -> f32 {
+        match self.unit {
+            TimeUnit::Seconds => self.seconds,
+            TimeUnit::Samples => self.samples / 44100.0,
+            TimeUnit::Bars => {
+                let bar_fraction = self.bar_num as f32 / self.bar_denom as f32;
+                let seconds_per_bar = (60.0 / bpm) * 4.0 * bars;
+                bar_fraction * seconds_per_bar
+            }
+            TimeUnit::Hz => 1.0 / self.hz,
+        }
+    }
+
+    pub fn display(&self) -> String {
+        match self.unit {
+            TimeUnit::Seconds => {
+                if self.seconds >= 1.0 {
+                    format!("{:.2}s", self.seconds)
+                } else {
+                    format!("{:.0}ms", self.seconds * 1000.0)
+                }
+            }
+            TimeUnit::Samples => format!("{:.0}smp", self.samples),
+            TimeUnit::Bars => {
+                if self.bar_num == 1 {
+                    format!("1/{}", self.bar_denom)
+                } else {
+                    format!("{}/{}", self.bar_num, self.bar_denom)
+                }
+            }
+            TimeUnit::Hz => {
+                if self.hz >= 1.0 {
+                    format!("{:.1}hz", self.hz)
+                } else {
+                    format!("{:.3}hz", self.hz)
+                }
+            }
+        }
+    }
+
+    pub fn adjust(&mut self, up: bool, fast: bool) {
+        let mult = if fast { 10.0 } else { 1.0 };
+        match self.unit {
+            TimeUnit::Seconds => {
+                let step = if self.seconds < 0.1 {
+                    0.001
+                } else if self.seconds < 1.0 {
+                    0.01
+                } else {
+                    0.1
+                } * mult;
+                if up {
+                    self.seconds = (self.seconds + step).min(60.0);
+                } else {
+                    self.seconds = (self.seconds - step).max(0.001);
+                }
+            }
+            TimeUnit::Samples => {
+                let step = if self.samples < 1000.0 {
+                    10.0
+                } else if self.samples < 10000.0 {
+                    100.0
+                } else {
+                    1000.0
+                } * mult;
+                if up {
+                    self.samples = (self.samples + step).min(44100.0 * 60.0);
+                } else {
+                    self.samples = (self.samples - step).max(1.0);
+                }
+            }
+            TimeUnit::Bars => {
+                let max_num = if self.bar_denom == 1 {
+                    16
+                } else {
+                    self.bar_denom
+                };
+                if up {
+                    if self.bar_num < max_num {
+                        self.bar_num += 1;
+                    } else if self.bar_denom > 1 {
+                        self.bar_denom /= 2;
+                        self.bar_num = 1;
+                    }
+                } else {
+                    if self.bar_num > 1 {
+                        self.bar_num -= 1;
+                    } else if self.bar_denom < 64 {
+                        self.bar_denom *= 2;
+                        self.bar_num = self.bar_denom;
+                    }
+                }
+            }
+            TimeUnit::Hz => {
+                let step = if self.hz < 1.0 {
+                    0.01
+                } else if self.hz < 10.0 {
+                    0.1
+                } else if self.hz < 100.0 {
+                    1.0
+                } else {
+                    10.0
+                } * mult;
+                if up {
+                    self.hz = (self.hz + step).min(20000.0);
+                } else {
+                    self.hz = (self.hz - step).max(0.01);
+                }
+            }
+        }
+    }
+}
+
 pub enum ParamKind {
     Float { min: f32, max: f32, step: f32 },
+    Time,
     Input,
     Enum,
     Toggle,
@@ -698,7 +928,10 @@ pub enum ParamKind {
 
 impl ParamKind {
     pub fn is_port(&self) -> bool {
-        matches!(self, ParamKind::Input | ParamKind::Float { .. })
+        matches!(
+            self,
+            ParamKind::Input | ParamKind::Float { .. } | ParamKind::Time
+        )
     }
 }
 
@@ -718,11 +951,7 @@ impl ModuleKind {
                 },
                 ParamDef {
                     name: "Freq",
-                    kind: ParamKind::Float {
-                        min: 20.0,
-                        max: 20000.0,
-                        step: 1.0,
-                    },
+                    kind: ParamKind::Time,
                 },
                 ParamDef {
                     name: "Shift",
@@ -752,11 +981,7 @@ impl ModuleKind {
                 },
                 ParamDef {
                     name: "Time",
-                    kind: ParamKind::Float {
-                        min: 0.001,
-                        max: 10.0,
-                        step: 0.01,
-                    },
+                    kind: ParamKind::Time,
                 },
             ],
             ModuleKind::Ramp => &[
@@ -770,11 +995,7 @@ impl ModuleKind {
                 },
                 ParamDef {
                     name: "Time",
-                    kind: ParamKind::Float {
-                        min: 0.001,
-                        max: 10.0,
-                        step: 0.01,
-                    },
+                    kind: ParamKind::Time,
                 },
             ],
             ModuleKind::Adsr => &[
@@ -873,12 +1094,8 @@ impl ModuleKind {
                     },
                 },
                 ParamDef {
-                    name: "Samp",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 44100.0,
-                        step: 100.0,
-                    },
+                    name: "Time",
+                    kind: ParamKind::Time,
                 },
             ],
             ModuleKind::Reverb => &[
@@ -973,7 +1190,7 @@ impl ModuleKind {
                     kind: ParamKind::Float {
                         min: 0.0,
                         max: 100.0,
-                        step: 0.1,
+                        step: 0.05,
                     },
                 },
                 ParamDef {
@@ -981,7 +1198,7 @@ impl ModuleKind {
                     kind: ParamKind::Float {
                         min: 0.0,
                         max: 100.0,
-                        step: 0.1,
+                        step: 0.05,
                     },
                 },
             ],
@@ -991,7 +1208,7 @@ impl ModuleKind {
                     kind: ParamKind::Float {
                         min: -1000.0,
                         max: 1000.0,
-                        step: 1.0,
+                        step: 0.05,
                     },
                 },
                 ParamDef {
@@ -999,7 +1216,7 @@ impl ModuleKind {
                     kind: ParamKind::Float {
                         min: -1000.0,
                         max: 1000.0,
-                        step: 1.0,
+                        step: 0.05,
                     },
                 },
             ],
@@ -1010,7 +1227,7 @@ impl ModuleKind {
                     kind: ParamKind::Float {
                         min: -1000.0,
                         max: 1000.0,
-                        step: 0.1,
+                        step: 0.05,
                     },
                 },
                 ParamDef {
@@ -1018,7 +1235,7 @@ impl ModuleKind {
                     kind: ParamKind::Float {
                         min: -1000.0,
                         max: 1000.0,
-                        step: 0.1,
+                        step: 0.05,
                     },
                 },
             ],
@@ -1028,7 +1245,7 @@ impl ModuleKind {
                     kind: ParamKind::Float {
                         min: -1000.0,
                         max: 1000.0,
-                        step: 0.1,
+                        step: 0.05,
                     },
                 },
                 ParamDef {
@@ -1036,7 +1253,7 @@ impl ModuleKind {
                     kind: ParamKind::Float {
                         min: -1000.0,
                         max: 1000.0,
-                        step: 0.1,
+                        step: 0.05,
                     },
                 },
             ],
@@ -1066,6 +1283,16 @@ impl ModuleKind {
                 name: "Gate",
                 kind: ParamKind::Input,
             }],
+            ModuleKind::Sample => &[
+                ParamDef {
+                    name: "File",
+                    kind: ParamKind::Enum,
+                },
+                ParamDef {
+                    name: "Pos",
+                    kind: ParamKind::Input,
+                },
+            ],
             ModuleKind::Probe => &[ParamDef {
                 name: "In",
                 kind: ParamKind::Float {
@@ -1118,23 +1345,23 @@ pub enum ModuleParams {
     None,
     Osc {
         wave: WaveType,
-        freq: f32,
+        freq: TimeValue,
         shift: f32,
         gain: f32,
         uni: bool,
         connected: u8,
     },
     Rise {
-        time: f32,
+        time: TimeValue,
         connected: u8,
     },
     Fall {
-        time: f32,
+        time: TimeValue,
         connected: u8,
     },
     Ramp {
         value: f32,
-        time: f32,
+        time: TimeValue,
         connected: u8,
     },
     Adsr {
@@ -1152,7 +1379,7 @@ pub enum ModuleParams {
         connected: u8,
     },
     Delay {
-        samples: f32,
+        time: TimeValue,
         connected: u8,
     },
     Reverb {
@@ -1196,6 +1423,13 @@ pub enum ModuleParams {
         b: f32,
         connected: u8,
     },
+    Sample {
+        file_idx: usize,
+        file_name: String,
+        #[serde(skip)]
+        samples: std::sync::Arc<Vec<f32>>,
+        connected: u8,
+    },
     Probe {
         connected: u8,
     },
@@ -1217,23 +1451,23 @@ impl ModuleParams {
             ModuleKind::Freq | ModuleKind::Gate => ModuleParams::None,
             ModuleKind::Osc => ModuleParams::Osc {
                 wave: WaveType::Sin,
-                freq: 440.0,
+                freq: TimeValue::from_hz(440.0),
                 shift: 0.0,
                 gain: 1.0,
                 uni: false,
                 connected: 0xFF,
             },
             ModuleKind::Rise => ModuleParams::Rise {
-                time: 0.1,
+                time: TimeValue::from_seconds(0.1),
                 connected: 0xFF,
             },
             ModuleKind::Fall => ModuleParams::Fall {
-                time: 0.1,
+                time: TimeValue::from_seconds(0.1),
                 connected: 0xFF,
             },
             ModuleKind::Ramp => ModuleParams::Ramp {
                 value: 0.0,
-                time: 0.1,
+                time: TimeValue::from_seconds(0.1),
                 connected: 0xFF,
             },
             ModuleKind::Adsr => ModuleParams::Adsr {
@@ -1267,7 +1501,7 @@ impl ModuleParams {
                 connected: 0xFF,
             },
             ModuleKind::Delay => ModuleParams::Delay {
-                samples: 4410.0,
+                time: TimeValue::from_samples(4410.0),
                 connected: 0xFF,
             },
             ModuleKind::Reverb => ModuleParams::Reverb {
@@ -1313,6 +1547,12 @@ impl ModuleParams {
                 connected: 0xFF,
             },
             ModuleKind::Rng => ModuleParams::None,
+            ModuleKind::Sample => ModuleParams::Sample {
+                file_idx: 0,
+                file_name: String::new(),
+                samples: std::sync::Arc::new(Vec::new()),
+                connected: 0xFF,
+            },
             ModuleKind::Probe => ModuleParams::Probe { connected: 0xFF },
             ModuleKind::Output => ModuleParams::Output { connected: 0xFF },
             ModuleKind::LSplit
@@ -1351,6 +1591,7 @@ impl ModuleParams {
             ModuleParams::Gt { connected, .. } => *connected,
             ModuleParams::Lt { connected, .. } => *connected,
             ModuleParams::Switch { connected, .. } => *connected,
+            ModuleParams::Sample { connected, .. } => *connected,
             ModuleParams::Probe { connected, .. } => *connected,
             ModuleParams::Output { connected, .. } => *connected,
             ModuleParams::SubPatch { .. } => 0xFF,
@@ -1378,6 +1619,7 @@ impl ModuleParams {
             ModuleParams::Gt { connected, .. } => Some(connected),
             ModuleParams::Lt { connected, .. } => Some(connected),
             ModuleParams::Switch { connected, .. } => Some(connected),
+            ModuleParams::Sample { connected, .. } => Some(connected),
             ModuleParams::Probe { connected, .. } => Some(connected),
             ModuleParams::Output { connected, .. } => Some(connected),
             ModuleParams::DelayTap { .. } => None,
@@ -1406,21 +1648,14 @@ impl ModuleParams {
 
     pub fn get_float(&self, idx: usize) -> Option<f32> {
         match self {
-            ModuleParams::Osc {
-                freq, shift, gain, ..
-            } => match idx {
-                1 => Some(*freq),
+            ModuleParams::Osc { shift, gain, .. } => match idx {
                 2 => Some(*shift),
                 3 => Some(*gain),
                 _ => None,
             },
-            ModuleParams::Rise { time, .. } | ModuleParams::Fall { time, .. } => match idx {
-                1 => Some(*time),
-                _ => None,
-            },
-            ModuleParams::Ramp { value, time, .. } => match idx {
+            ModuleParams::Rise { .. } | ModuleParams::Fall { .. } => None,
+            ModuleParams::Ramp { value, .. } => match idx {
                 0 => Some(*value),
-                1 => Some(*time),
                 _ => None,
             },
             ModuleParams::Adsr {
@@ -1437,10 +1672,7 @@ impl ModuleParams {
                 2 => Some(*q),
                 _ => None,
             },
-            ModuleParams::Delay { samples, .. } => match idx {
-                1 => Some(*samples),
-                _ => None,
-            },
+            ModuleParams::Delay { .. } => None,
             ModuleParams::Reverb { room, damp, .. } => match idx {
                 1 => Some(*room),
                 2 => Some(*damp),
@@ -1498,21 +1730,14 @@ impl ModuleParams {
 
     pub fn set_float(&mut self, idx: usize, val: f32) {
         match self {
-            ModuleParams::Osc {
-                freq, shift, gain, ..
-            } => match idx {
-                1 => *freq = val,
+            ModuleParams::Osc { shift, gain, .. } => match idx {
                 2 => *shift = val,
                 3 => *gain = val,
                 _ => {}
             },
-            ModuleParams::Rise { time, .. } | ModuleParams::Fall { time, .. } => match idx {
-                1 => *time = val,
-                _ => {}
-            },
-            ModuleParams::Ramp { value, time, .. } => match idx {
+            ModuleParams::Rise { .. } | ModuleParams::Fall { .. } => {}
+            ModuleParams::Ramp { value, .. } => match idx {
                 0 => *value = val,
-                1 => *time = val,
                 _ => {}
             },
             ModuleParams::Adsr {
@@ -1529,10 +1754,7 @@ impl ModuleParams {
                 2 => *q = val,
                 _ => {}
             },
-            ModuleParams::Delay { samples, .. } => match idx {
-                1 => *samples = val,
-                _ => {}
-            },
+            ModuleParams::Delay { .. } => {}
             ModuleParams::Reverb { room, damp, .. } => match idx {
                 1 => *room = val,
                 2 => *damp = val,
@@ -1585,6 +1807,50 @@ impl ModuleParams {
                 _ => {}
             },
             _ => {}
+        }
+    }
+
+    pub fn get_time(&self, idx: usize) -> Option<&TimeValue> {
+        match self {
+            ModuleParams::Osc { freq, .. } => match idx {
+                1 => Some(freq),
+                _ => None,
+            },
+            ModuleParams::Rise { time, .. } | ModuleParams::Fall { time, .. } => match idx {
+                1 => Some(time),
+                _ => None,
+            },
+            ModuleParams::Ramp { time, .. } => match idx {
+                1 => Some(time),
+                _ => None,
+            },
+            ModuleParams::Delay { time, .. } => match idx {
+                1 => Some(time),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn get_time_mut(&mut self, idx: usize) -> Option<&mut TimeValue> {
+        match self {
+            ModuleParams::Osc { freq, .. } => match idx {
+                1 => Some(freq),
+                _ => None,
+            },
+            ModuleParams::Rise { time, .. } | ModuleParams::Fall { time, .. } => match idx {
+                1 => Some(time),
+                _ => None,
+            },
+            ModuleParams::Ramp { time, .. } => match idx {
+                1 => Some(time),
+                _ => None,
+            },
+            ModuleParams::Delay { time, .. } => match idx {
+                1 => Some(time),
+                _ => None,
+            },
+            _ => None,
         }
     }
 

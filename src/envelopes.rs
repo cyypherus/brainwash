@@ -361,13 +361,13 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Envelope point value must be between 0.0 and 1.0")]
+    #[should_panic(expected = "Envelope point value must be between -1.0 and 1.0")]
     fn test_envelope_invalid_value_low() {
-        Envelope::new(vec![point(0.5, -0.1)]);
+        Envelope::new(vec![point(0.5, -1.1)]);
     }
 
     #[test]
-    #[should_panic(expected = "Envelope point value must be between 0.0 and 1.0")]
+    #[should_panic(expected = "Envelope point value must be between -1.0 and 1.0")]
     fn test_envelope_invalid_value_high() {
         Envelope::new(vec![point(0.5, 1.1)]);
     }

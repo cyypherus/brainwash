@@ -1122,6 +1122,7 @@ pub struct EditWidget<'a> {
     module: &'a Module,
     selected_param: usize,
     patch: &'a Patch,
+    step_label: &'a str,
 }
 
 impl<'a> EditWidget<'a> {
@@ -1130,7 +1131,13 @@ impl<'a> EditWidget<'a> {
             module,
             selected_param,
             patch,
+            step_label: "1x",
         }
+    }
+
+    pub fn step_label(mut self, label: &'a str) -> Self {
+        self.step_label = label;
+        self
     }
 }
 
@@ -1168,7 +1175,7 @@ impl Widget for EditWidget<'_> {
 
             let port_str = match def.kind {
                 ParamKind::Input => "● ",
-                ParamKind::Float { .. } => {
+                ParamKind::Float { .. } | ParamKind::Time => {
                     if is_connected {
                         "● "
                     } else {
@@ -1211,6 +1218,19 @@ impl Widget for EditWidget<'_> {
                         } else {
                             self.module.params.enum_display().unwrap_or("?").to_string()
                         }
+                    } else if self.module.kind == ModuleKind::Sample && i == 0 {
+                        if let ModuleParams::Sample {
+                            file_name, samples, ..
+                        } = &self.module.params
+                        {
+                            if samples.is_empty() {
+                                "(no file)".to_string()
+                            } else {
+                                file_name.clone()
+                            }
+                        } else {
+                            "?".to_string()
+                        }
                     } else {
                         self.module.params.enum_display().unwrap_or("?").to_string()
                     };
@@ -1239,22 +1259,29 @@ impl Widget for EditWidget<'_> {
                         );
                     }
                 }
-                ParamKind::Float { step, .. } => {
+                ParamKind::Float { .. } => {
                     let val = self.module.params.get_float(i).unwrap_or(0.0);
-                    let val_str = if *step >= 1.0 {
-                        format!("{:.0}", val)
-                    } else if *step >= 0.1 {
-                        format!("{:.1}", val)
-                    } else {
-                        format!("{:.2}", val)
-                    };
+                    let val_str = format!("{:.3}", val);
+                    set_str(buf, val_x, y, &val_str, v_style);
+                    if is_selected {
+                        let hint = format!("{} <hl> ;", self.step_label);
+                        set_str(buf, val_x + val_str.len() as u16 + 1, y, &hint, label_style);
+                    }
+                }
+                ParamKind::Time => {
+                    let val_str = self
+                        .module
+                        .params
+                        .get_time(i)
+                        .map(|t| t.display())
+                        .unwrap_or_else(|| "?".to_string());
                     set_str(buf, val_x, y, &val_str, v_style);
                     if is_selected {
                         set_str(
                             buf,
                             val_x + val_str.len() as u16 + 1,
                             y,
-                            "<hl> ;",
+                            "<hl> u;",
                             label_style,
                         );
                     }
@@ -1262,6 +1289,23 @@ impl Widget for EditWidget<'_> {
             }
 
             y += 1;
+        }
+
+        if self.module.kind == ModuleKind::Sample {
+            if let ModuleParams::Sample { samples, .. } = &self.module.params {
+                if !samples.is_empty() {
+                    let sample_count = samples.len();
+                    let duration = sample_count as f32 / 44100.0;
+                    y += 1;
+                    set_str(
+                        buf,
+                        area.x + 2,
+                        y,
+                        &format!("{} samp ({:.2}s)", sample_count, duration),
+                        label_style,
+                    );
+                }
+            }
         }
     }
 }

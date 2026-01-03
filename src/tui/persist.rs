@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PatchFile {
@@ -54,6 +55,50 @@ fn is_horizontal(o: &Orientation) -> bool {
     *o == Orientation::Horizontal
 }
 
+fn load_wav_samples(path: &str) -> Option<Arc<Vec<f32>>> {
+    let reader = hound::WavReader::open(path).ok()?;
+    let spec = reader.spec();
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .into_samples::<f32>()
+            .filter_map(|s| s.ok())
+            .step_by(spec.channels as usize)
+            .collect(),
+        hound::SampleFormat::Int => {
+            let max = (1 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .into_samples::<i32>()
+                .filter_map(|s| s.ok())
+                .step_by(spec.channels as usize)
+                .map(|s| s as f32 / max)
+                .collect()
+        }
+    };
+    Some(Arc::new(samples))
+}
+
+fn reload_samples_in_patch(patch: &mut Patch) -> Vec<String> {
+    let mut missing = Vec::new();
+    let ids: Vec<_> = patch.all_modules().map(|m| m.id).collect();
+    for id in ids {
+        if let Some(m) = patch.module_mut(id) {
+            if let ModuleParams::Sample {
+                file_name, samples, ..
+            } = &mut m.params
+            {
+                if !file_name.is_empty() {
+                    if let Some(loaded) = load_wav_samples(file_name) {
+                        *samples = loaded;
+                    } else {
+                        missing.push(file_name.clone());
+                    }
+                }
+            }
+        }
+    }
+    missing
+}
+
 impl PatchFile {
     pub fn new() -> Self {
         Self {
@@ -94,10 +139,10 @@ fn patch_to_modules(patch: &Patch) -> Vec<ModuleDef> {
 
 fn modules_to_patch(modules: &[ModuleDef], width: u16, height: u16) -> Patch {
     use super::module::ModuleId;
-    
+
     let mut patch = Patch::new(width, height);
     let mut id_map: HashMap<u32, ModuleId> = HashMap::new();
-    
+
     for mdef in modules {
         let pos = GridPos::new(mdef.x, mdef.y);
         if let Some(new_id) = patch.add_module(mdef.kind, pos) {
@@ -108,8 +153,9 @@ fn modules_to_patch(modules: &[ModuleDef], width: u16, height: u16) -> Patch {
             }
         }
     }
-    
-    let tap_updates: Vec<_> = patch.all_modules()
+
+    let tap_updates: Vec<_> = patch
+        .all_modules()
         .filter_map(|m| {
             if let ModuleKind::DelayTap(old_delay_id) = m.kind {
                 let new_delay_id = id_map.get(&old_delay_id.0).copied()?;
@@ -119,13 +165,13 @@ fn modules_to_patch(modules: &[ModuleDef], width: u16, height: u16) -> Patch {
             }
         })
         .collect();
-    
+
     for (tap_id, new_delay_id) in tap_updates {
         if let Some(m) = patch.module_mut(tap_id) {
             m.kind = ModuleKind::DelayTap(new_delay_id);
         }
     }
-    
+
     patch.rebuild_channels();
     patch
 }
@@ -137,7 +183,13 @@ fn color_to_rgb(c: Color) -> (u8, u8, u8) {
     }
 }
 
-pub fn patchset_to_file(patches: &PatchSet, bpm: f32, bars: f32, scale_idx: usize, track: Option<&str>) -> PatchFile {
+pub fn patchset_to_file(
+    patches: &PatchSet,
+    bpm: f32,
+    bars: f32,
+    scale_idx: usize,
+    track: Option<&str>,
+) -> PatchFile {
     let mut pf = PatchFile::new();
     pf.bpm = bpm;
     pf.bars = bars;
@@ -157,8 +209,18 @@ pub fn patchset_to_file(patches: &PatchSet, bpm: f32, bars: f32, scale_idx: usiz
     pf
 }
 
-pub fn file_to_patchset(pf: &PatchFile) -> (PatchSet, f32, f32, usize, Option<String>) {
-    let root = modules_to_patch(&pf.modules, 32, 32);
+pub struct LoadResult {
+    pub patches: PatchSet,
+    pub bpm: f32,
+    pub bars: f32,
+    pub scale_idx: usize,
+    pub track: Option<String>,
+    pub missing_samples: Vec<String>,
+}
+
+pub fn file_to_patchset(pf: &PatchFile) -> LoadResult {
+    let mut root = modules_to_patch(&pf.modules, 32, 32);
+    let mut missing_samples = reload_samples_in_patch(&mut root);
 
     let mut subpatches = HashMap::new();
     let mut max_id = 0u32;
@@ -170,6 +232,7 @@ pub fn file_to_patchset(pf: &PatchFile) -> (PatchSet, f32, f32, usize, Option<St
         let (r, g, b) = sub.color;
         let mut def = SubPatchDef::new(sub.name.clone(), Color::Rgb(r, g, b));
         def.patch = modules_to_patch(&sub.modules, 10, 10);
+        missing_samples.extend(reload_samples_in_patch(&mut def.patch));
         subpatches.insert(id, def);
     }
 
@@ -179,7 +242,14 @@ pub fn file_to_patchset(pf: &PatchFile) -> (PatchSet, f32, f32, usize, Option<St
         next_subpatch_id: max_id + 1,
     };
 
-    (patches, pf.bpm, pf.bars, pf.scale_idx, pf.track.clone())
+    LoadResult {
+        patches,
+        bpm: pf.bpm,
+        bars: pf.bars,
+        scale_idx: pf.scale_idx,
+        track: pf.track.clone(),
+        missing_samples,
+    }
 }
 
 pub fn save_patchset(
@@ -199,7 +269,7 @@ pub fn save_patchset(
     fs::write(path, content)
 }
 
-pub fn load_patchset(path: &Path) -> io::Result<(PatchSet, f32, f32, usize, Option<String>)> {
+pub fn load_patchset(path: &Path) -> io::Result<LoadResult> {
     let content = fs::read_to_string(path)?;
     let pf: PatchFile =
         ron::from_str(&content).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -214,14 +284,21 @@ mod tests {
     #[test]
     fn test_ron_format() {
         let mut patches = PatchSet::new(20, 20);
-        patches.root.add_module(ModuleKind::Freq, GridPos::new(0, 0));
-        let osc_id = patches.root.add_module(ModuleKind::Osc, GridPos::new(0, 2)).unwrap();
-        patches.root.add_module(ModuleKind::Output, GridPos::new(0, 7));
+        patches
+            .root
+            .add_module(ModuleKind::Freq, GridPos::new(0, 0));
+        let osc_id = patches
+            .root
+            .add_module(ModuleKind::Osc, GridPos::new(0, 2))
+            .unwrap();
+        patches
+            .root
+            .add_module(ModuleKind::Output, GridPos::new(0, 7));
 
         if let Some(osc) = patches.root.module_mut(osc_id) {
             osc.params = ModuleParams::Osc {
                 wave: crate::tui::module::WaveType::Saw,
-                freq: 440.0,
+                freq: crate::tui::module::TimeValue::from_hz(440.0),
                 shift: 0.0,
                 gain: 1.0,
                 uni: true,
@@ -230,7 +307,9 @@ mod tests {
         }
 
         let pf = patchset_to_file(&patches, 120.0, 1.0, 0, Some("C4 D4 E4"));
-        let config = ron::ser::PrettyConfig::new().depth_limit(4).indentor("  ".to_string());
+        let config = ron::ser::PrettyConfig::new()
+            .depth_limit(4)
+            .indentor("  ".to_string());
         println!("{}", ron::ser::to_string_pretty(&pf, config).unwrap());
     }
 
@@ -238,16 +317,20 @@ mod tests {
     fn test_roundtrip() {
         let mut patches = PatchSet::new(20, 20);
 
-        let _freq_id = patches.root
+        let _freq_id = patches
+            .root
             .add_module(ModuleKind::Freq, GridPos::new(0, 0))
             .unwrap();
-        let osc_id = patches.root
+        let osc_id = patches
+            .root
             .add_module(ModuleKind::Osc, GridPos::new(0, 2))
             .unwrap();
-        let env_id = patches.root
+        let env_id = patches
+            .root
             .add_module(ModuleKind::Envelope, GridPos::new(2, 0))
             .unwrap();
-        let _out_id = patches.root
+        let _out_id = patches
+            .root
             .add_module(ModuleKind::Output, GridPos::new(0, 7))
             .unwrap();
 
@@ -255,7 +338,7 @@ mod tests {
             osc.orientation = Orientation::Vertical;
             osc.params = ModuleParams::Osc {
                 wave: crate::tui::module::WaveType::Saw,
-                freq: 660.0,
+                freq: crate::tui::module::TimeValue::from_hz(660.0),
                 shift: 12.0,
                 gain: 0.8,
                 uni: true,
@@ -287,7 +370,8 @@ mod tests {
 
         let pf = patchset_to_file(&patches, 90.0, 4.0, 5, Some("C4 E4 G4\n# comment\nD4"));
 
-        let serialized = ron::ser::to_string_pretty(&pf, ron::ser::PrettyConfig::default()).unwrap();
+        let serialized =
+            ron::ser::to_string_pretty(&pf, ron::ser::PrettyConfig::default()).unwrap();
         let pf2: PatchFile = ron::from_str(&serialized).unwrap();
 
         assert!((pf2.bpm - 90.0).abs() < 0.01);
@@ -296,21 +380,29 @@ mod tests {
         assert_eq!(pf2.modules.len(), 4);
         assert!(pf2.track.as_ref().unwrap().contains("# comment"));
 
-        let (patches2, bpm2, bars2, scale_idx2, track2) = file_to_patchset(&pf2);
-        assert_eq!(scale_idx2, 5);
+        let result = file_to_patchset(&pf2);
+        assert_eq!(result.scale_idx, 5);
 
-        assert!((bpm2 - 90.0).abs() < 0.01);
-        assert!((bars2 - 4.0).abs() < 0.01);
-        assert!(track2.unwrap().contains("# comment"));
+        assert!((result.bpm - 90.0).abs() < 0.01);
+        assert!((result.bars - 4.0).abs() < 0.01);
+        assert!(result.track.unwrap().contains("# comment"));
 
-        let modules: Vec<_> = patches2.root.all_modules().collect();
+        let modules: Vec<_> = result.patches.root.all_modules().collect();
         assert_eq!(modules.len(), 4);
 
         let osc2 = modules.iter().find(|m| m.kind == ModuleKind::Osc).unwrap();
         assert_eq!(osc2.orientation, Orientation::Vertical);
-        if let ModuleParams::Osc { wave, freq, shift, gain, uni, connected } = &osc2.params {
+        if let ModuleParams::Osc {
+            wave,
+            freq,
+            shift,
+            gain,
+            uni,
+            connected,
+        } = &osc2.params
+        {
             assert_eq!(*wave, crate::tui::module::WaveType::Saw);
-            assert!((freq - 660.0).abs() < 0.01);
+            assert!((freq.hz - 660.0).abs() < 0.01);
             assert!((shift - 12.0).abs() < 0.01);
             assert!((gain - 0.8).abs() < 0.01);
             assert!(*uni);

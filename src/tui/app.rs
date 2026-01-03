@@ -1,7 +1,7 @@
 use super::bindings::{self, lookup, Action};
 use super::engine::{
-    compile_patch, meter_channel, output_channel, CompiledPatch, MeterReceiver, OutputReceiver,
-    TrackState, OUTPUT_INTERVAL,
+    compile_patch, meter_channel, output_channel, CompileContext, CompiledPatch, MeterReceiver,
+    OutputReceiver, TrackState, OUTPUT_INTERVAL,
 };
 use super::grid::GridPos;
 use super::module::{
@@ -38,13 +38,60 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::collections::HashMap;
-
 use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::{io, time::Duration};
+use tui_input::{Input, InputRequest};
+
+fn scan_wav_files() -> Vec<String> {
+    let mut files: Vec<String> = std::fs::read_dir(".")
+        .ok()
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let path = e.path();
+                    if path.extension().map(|x| x == "wav").unwrap_or(false) {
+                        path.file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    files
+}
+
+fn load_wav_samples(path: &str) -> Arc<Vec<f32>> {
+    let Ok(reader) = hound::WavReader::open(path) else {
+        return Arc::new(Vec::new());
+    };
+    let spec = reader.spec();
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .into_samples::<f32>()
+            .filter_map(|s| s.ok())
+            .step_by(spec.channels as usize)
+            .collect(),
+        hound::SampleFormat::Int => {
+            let max = (1 << (spec.bits_per_sample - 1)) as f32;
+            reader
+                .into_samples::<i32>()
+                .filter_map(|s| s.ok())
+                .step_by(spec.channels as usize)
+                .map(|s| s as f32 / max)
+                .collect()
+        }
+    };
+    Arc::new(samples)
+}
 
 #[derive(Clone, PartialEq)]
 enum Mode {
@@ -75,6 +122,10 @@ enum Mode {
 
     QuitConfirm,
     Edit {
+        module_id: ModuleId,
+        param_idx: usize,
+    },
+    ValueInput {
         module_id: ModuleId,
         param_idx: usize,
     },
@@ -131,7 +182,7 @@ struct App {
     playing: bool,
     track_text: String,
     file_path: Option<PathBuf>,
-    save_filename: String,
+    save_input: Input,
     probe_min: f32,
     probe_max: f32,
     probe_len: usize,
@@ -140,9 +191,11 @@ struct App {
     view_center: GridPos,
     bpm: f32,
     scale_idx: usize,
-    export_filename: String,
+    export_input: Input,
     export_loops: usize,
     output_history: VecDeque<f32>,
+    value_input: Input,
+    step_size: usize,
 }
 
 const SCALE_NAMES: &[&str] = &[
@@ -274,7 +327,7 @@ impl App {
             playing: false,
             track_text,
             file_path: None,
-            save_filename: "patch.bw".to_string(),
+            save_input: Input::new("patch.bw".to_string()),
             probe_min: -1.0,
             probe_max: 1.0,
             probe_len: 4410,
@@ -283,10 +336,22 @@ impl App {
             view_center: GridPos::new(0, 0),
             bpm,
             scale_idx: 2,
-            export_filename: "output.wav".to_string(),
+            export_input: Input::new("output.wav".to_string()),
             export_loops: 1,
             output_history: VecDeque::with_capacity(128),
+            value_input: Input::default(),
+            step_size: 1,
         }
+    }
+
+    fn step_multiplier(&self) -> f32 {
+        const STEPS: [f32; 5] = [1.0, 0.1, 0.01, 0.001, 10.0];
+        STEPS[self.step_size % STEPS.len()]
+    }
+
+    fn step_label(&self) -> &'static str {
+        const LABELS: [&str; 5] = ["1x", "0.1x", "0.01x", "0.001x", "10x"];
+        LABELS[self.step_size % LABELS.len()]
     }
 
     fn patch(&self) -> &Patch {
@@ -356,9 +421,17 @@ impl App {
     }
 
     fn recompile_patch(&mut self) {
-        let num_voices = self.track_state.lock().unwrap().num_voices();
+        let state = self.track_state.lock().unwrap();
+        let num_voices = state.num_voices();
+        let bars = state.clock.current_bars();
+        drop(state);
         let mut audio = self.audio_patch.lock().unwrap();
-        compile_patch(&mut audio, &self.patches, num_voices);
+        let ctx = CompileContext {
+            sample_rate: 44100.0,
+            bpm: self.bpm,
+            bars,
+        };
+        compile_patch(&mut audio, &self.patches, num_voices, &ctx);
         self.meter_values.clear();
         self.probe_values.clear();
         self.dirty = true;
@@ -645,6 +718,10 @@ impl App {
                 module_id,
                 param_idx,
             } => self.handle_edit_key(code, module_id, param_idx),
+            Mode::ValueInput {
+                module_id,
+                param_idx,
+            } => self.handle_value_input_key(code, module_id, param_idx),
             Mode::AdsrEdit {
                 module_id,
                 param_idx,
@@ -804,24 +881,26 @@ impl App {
                 if let Some(ref path) = self.file_path {
                     self.save_to_file(path.clone());
                 } else {
-                    self.save_filename = "patch.bw".to_string();
+                    self.save_input = Input::new("patch.bw".to_string());
                     self.mode = Mode::SavePrompt;
                 }
             }
             Action::SaveAs => {
-                self.save_filename = self
+                let name = self
                     .file_path
                     .as_ref()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| "patch.bw".into());
+                self.save_input = Input::new(name);
                 self.mode = Mode::SavePrompt;
             }
             Action::Export => {
-                self.export_filename = self
+                let name = self
                     .file_path
                     .as_ref()
                     .map(|p| p.with_extension("wav").to_string_lossy().to_string())
                     .unwrap_or_else(|| "output.wav".into());
+                self.export_input = Input::new(name);
                 self.mode = Mode::ExportPrompt;
             }
             Action::Undo => self.undo(),
@@ -1432,20 +1511,31 @@ impl App {
                     let def = &defs[param_idx];
                     if matches!(module.kind, ModuleKind::DelayTap(_)) && param_idx == 0 {
                         self.cycle_delay_tap_source(module_id, false);
-                    } else if let Some(m) = self.patch_mut().module_mut(module_id) {
-                        match &def.kind {
-                            ParamKind::Float { min, step, .. } => {
-                                let cur = m.params.get_float(param_idx).unwrap_or(0.0);
-                                m.params.set_float(param_idx, (cur - step).max(*min));
-                                m.params.set_connected(param_idx, false);
+                    } else if matches!(module.kind, ModuleKind::Sample) && param_idx == 0 {
+                        self.cycle_sample_file(module_id, false);
+                    } else {
+                        let mult = self.step_multiplier();
+                        if let Some(m) = self.patch_mut().module_mut(module_id) {
+                            match &def.kind {
+                                ParamKind::Float { min, step, .. } => {
+                                    let cur = m.params.get_float(param_idx).unwrap_or(0.0);
+                                    m.params.set_float(param_idx, (cur - step * mult).max(*min));
+                                    m.params.set_connected(param_idx, false);
+                                }
+                                ParamKind::Time => {
+                                    if let Some(t) = m.params.get_time_mut(param_idx) {
+                                        t.adjust(false, false);
+                                    }
+                                    m.params.set_connected(param_idx, false);
+                                }
+                                ParamKind::Enum => {
+                                    m.params.cycle_enum_prev();
+                                }
+                                ParamKind::Toggle => {
+                                    m.params.toggle(param_idx);
+                                }
+                                ParamKind::Input => {}
                             }
-                            ParamKind::Enum => {
-                                m.params.cycle_enum_prev();
-                            }
-                            ParamKind::Toggle => {
-                                m.params.toggle(param_idx);
-                            }
-                            ParamKind::Input => {}
                         }
                     }
                     self.commit_patch();
@@ -1456,20 +1546,31 @@ impl App {
                     let def = &defs[param_idx];
                     if matches!(module.kind, ModuleKind::DelayTap(_)) && param_idx == 0 {
                         self.cycle_delay_tap_source(module_id, true);
-                    } else if let Some(m) = self.patch_mut().module_mut(module_id) {
-                        match &def.kind {
-                            ParamKind::Float { max, step, .. } => {
-                                let cur = m.params.get_float(param_idx).unwrap_or(0.0);
-                                m.params.set_float(param_idx, (cur + step).min(*max));
-                                m.params.set_connected(param_idx, false);
+                    } else if matches!(module.kind, ModuleKind::Sample) && param_idx == 0 {
+                        self.cycle_sample_file(module_id, true);
+                    } else {
+                        let mult = self.step_multiplier();
+                        if let Some(m) = self.patch_mut().module_mut(module_id) {
+                            match &def.kind {
+                                ParamKind::Float { max, step, .. } => {
+                                    let cur = m.params.get_float(param_idx).unwrap_or(0.0);
+                                    m.params.set_float(param_idx, (cur + step * mult).min(*max));
+                                    m.params.set_connected(param_idx, false);
+                                }
+                                ParamKind::Time => {
+                                    if let Some(t) = m.params.get_time_mut(param_idx) {
+                                        t.adjust(true, false);
+                                    }
+                                    m.params.set_connected(param_idx, false);
+                                }
+                                ParamKind::Enum => {
+                                    m.params.cycle_enum_next();
+                                }
+                                ParamKind::Toggle => {
+                                    m.params.toggle(param_idx);
+                                }
+                                ParamKind::Input => {}
                             }
-                            ParamKind::Enum => {
-                                m.params.cycle_enum_next();
-                            }
-                            ParamKind::Toggle => {
-                                m.params.toggle(param_idx);
-                            }
-                            ParamKind::Input => {}
                         }
                     }
                     self.commit_patch();
@@ -1478,11 +1579,22 @@ impl App {
             Action::ValueDownFast => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
+                    let mult = self.step_multiplier();
                     if let Some(m) = self.patch_mut().module_mut(module_id) {
-                        if let ParamKind::Float { min, step, .. } = &def.kind {
-                            let cur = m.params.get_float(param_idx).unwrap_or(0.0);
-                            m.params.set_float(param_idx, (cur - step * 10.0).max(*min));
-                            m.params.set_connected(param_idx, false);
+                        match &def.kind {
+                            ParamKind::Float { min, step, .. } => {
+                                let cur = m.params.get_float(param_idx).unwrap_or(0.0);
+                                m.params
+                                    .set_float(param_idx, (cur - step * mult * 10.0).max(*min));
+                                m.params.set_connected(param_idx, false);
+                            }
+                            ParamKind::Time => {
+                                if let Some(t) = m.params.get_time_mut(param_idx) {
+                                    t.adjust(false, true);
+                                }
+                                m.params.set_connected(param_idx, false);
+                            }
+                            _ => {}
                         }
                     }
                     self.commit_patch();
@@ -1491,14 +1603,38 @@ impl App {
             Action::ValueUpFast => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
+                    let mult = self.step_multiplier();
                     if let Some(m) = self.patch_mut().module_mut(module_id) {
-                        if let ParamKind::Float { max, step, .. } = &def.kind {
-                            let cur = m.params.get_float(param_idx).unwrap_or(0.0);
-                            m.params.set_float(param_idx, (cur + step * 10.0).min(*max));
-                            m.params.set_connected(param_idx, false);
+                        match &def.kind {
+                            ParamKind::Float { max, step, .. } => {
+                                let cur = m.params.get_float(param_idx).unwrap_or(0.0);
+                                m.params
+                                    .set_float(param_idx, (cur + step * mult * 10.0).min(*max));
+                                m.params.set_connected(param_idx, false);
+                            }
+                            ParamKind::Time => {
+                                if let Some(t) = m.params.get_time_mut(param_idx) {
+                                    t.adjust(true, true);
+                                }
+                                m.params.set_connected(param_idx, false);
+                            }
+                            _ => {}
                         }
                     }
                     self.commit_patch();
+                }
+            }
+            Action::CycleUnit => {
+                if param_idx < defs.len() {
+                    let def = &defs[param_idx];
+                    if matches!(def.kind, ParamKind::Time) {
+                        if let Some(m) = self.patch_mut().module_mut(module_id) {
+                            if let Some(t) = m.params.get_time_mut(param_idx) {
+                                t.unit = t.unit.next();
+                            }
+                        }
+                        self.commit_patch();
+                    }
                 }
             }
             Action::TogglePort => {
@@ -1513,7 +1649,119 @@ impl App {
                     }
                 }
             }
+            Action::TypeValue => {
+                if param_idx < defs.len() {
+                    let def = &defs[param_idx];
+                    if matches!(def.kind, ParamKind::Float { .. }) {
+                        let current = module.params.get_float(param_idx).unwrap_or(0.0);
+                        self.value_input = Input::new(format!("{}", current));
+                        self.mode = Mode::ValueInput {
+                            module_id,
+                            param_idx,
+                        };
+                    }
+                }
+            }
+            Action::CycleStep => {
+                self.step_size = (self.step_size + 1) % 5;
+                self.message = Some(format!("Step: {}", self.step_label()));
+            }
             _ => {}
+        }
+    }
+
+    fn handle_value_input_key(&mut self, code: KeyCode, module_id: ModuleId, param_idx: usize) {
+        match code {
+            KeyCode::Esc => {
+                self.mode = Mode::Edit {
+                    module_id,
+                    param_idx,
+                };
+            }
+            KeyCode::Enter => {
+                if let Ok(val) = self.value_input.value().parse::<f32>() {
+                    if let Some(m) = self.patch_mut().module_mut(module_id) {
+                        m.params.set_float(param_idx, val);
+                        m.params.set_connected(param_idx, false);
+                    }
+                    self.commit_patch();
+                }
+                self.mode = Mode::Edit {
+                    module_id,
+                    param_idx,
+                };
+            }
+            KeyCode::Backspace => {
+                self.value_input.handle(InputRequest::DeletePrevChar);
+            }
+            KeyCode::Delete => {
+                self.value_input.handle(InputRequest::DeleteNextChar);
+            }
+            KeyCode::Left => {
+                self.value_input.handle(InputRequest::GoToPrevChar);
+            }
+            KeyCode::Right => {
+                self.value_input.handle(InputRequest::GoToNextChar);
+            }
+            KeyCode::Home => {
+                self.value_input.handle(InputRequest::GoToStart);
+            }
+            KeyCode::End => {
+                self.value_input.handle(InputRequest::GoToEnd);
+            }
+            KeyCode::Char(c) => {
+                if c.is_ascii_digit() || c == '.' || c == '-' {
+                    self.value_input.handle(InputRequest::InsertChar(c));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn cycle_sample_file(&mut self, module_id: ModuleId, forward: bool) {
+        let files = scan_wav_files();
+        if files.is_empty() {
+            return;
+        }
+
+        let current_idx = if let Some(m) = self.patch().module(module_id) {
+            if let ModuleParams::Sample { file_idx, .. } = &m.params {
+                *file_idx
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        let new_idx = if forward {
+            (current_idx + 1) % files.len()
+        } else {
+            if current_idx == 0 {
+                files.len() - 1
+            } else {
+                current_idx - 1
+            }
+        };
+
+        let new_name = files.get(new_idx).cloned().unwrap_or_default();
+        let new_samples = files
+            .get(new_idx)
+            .map(|p| load_wav_samples(p))
+            .unwrap_or_else(|| Arc::new(Vec::new()));
+
+        if let Some(m) = self.patch_mut().module_mut(module_id) {
+            if let ModuleParams::Sample {
+                file_idx,
+                file_name,
+                samples,
+                ..
+            } = &mut m.params
+            {
+                *file_idx = new_idx;
+                *file_name = new_name;
+                *samples = new_samples;
+            }
         }
     }
 
@@ -1565,7 +1813,7 @@ impl App {
                 self.message = Some("Save cancelled".into());
             }
             KeyCode::Enter => {
-                let path = PathBuf::from(&self.save_filename);
+                let path = PathBuf::from(self.save_input.value());
                 let is_current_file = self.file_path.as_ref() == Some(&path);
                 if !is_current_file && path.exists() {
                     self.mode = Mode::SaveConfirm;
@@ -1575,10 +1823,25 @@ impl App {
                 }
             }
             KeyCode::Backspace => {
-                self.save_filename.pop();
+                self.save_input.handle(InputRequest::DeletePrevChar);
+            }
+            KeyCode::Delete => {
+                self.save_input.handle(InputRequest::DeleteNextChar);
+            }
+            KeyCode::Left => {
+                self.save_input.handle(InputRequest::GoToPrevChar);
+            }
+            KeyCode::Right => {
+                self.save_input.handle(InputRequest::GoToNextChar);
+            }
+            KeyCode::Home => {
+                self.save_input.handle(InputRequest::GoToStart);
+            }
+            KeyCode::End => {
+                self.save_input.handle(InputRequest::GoToEnd);
             }
             KeyCode::Char(c) => {
-                self.save_filename.push(c);
+                self.save_input.handle(InputRequest::InsertChar(c));
             }
             _ => {}
         }
@@ -1590,7 +1853,7 @@ impl App {
         };
         match action {
             Action::Confirm => {
-                let path = PathBuf::from(&self.save_filename);
+                let path = PathBuf::from(self.save_input.value());
                 self.save_to_file(path);
                 self.mode = Mode::Normal;
             }
@@ -1608,7 +1871,7 @@ impl App {
                 self.message = Some("Export cancelled".into());
             }
             KeyCode::Enter => {
-                let path = PathBuf::from(&self.export_filename);
+                let path = PathBuf::from(self.export_input.value());
                 if path.exists() {
                     self.mode = Mode::ExportConfirm;
                 } else {
@@ -1617,7 +1880,22 @@ impl App {
                 }
             }
             KeyCode::Backspace => {
-                self.export_filename.pop();
+                self.export_input.handle(InputRequest::DeletePrevChar);
+            }
+            KeyCode::Delete => {
+                self.export_input.handle(InputRequest::DeleteNextChar);
+            }
+            KeyCode::Left => {
+                self.export_input.handle(InputRequest::GoToPrevChar);
+            }
+            KeyCode::Right => {
+                self.export_input.handle(InputRequest::GoToNextChar);
+            }
+            KeyCode::Home => {
+                self.export_input.handle(InputRequest::GoToStart);
+            }
+            KeyCode::End => {
+                self.export_input.handle(InputRequest::GoToEnd);
             }
             KeyCode::Up => {
                 self.export_loops = self.export_loops.saturating_add(1).min(100);
@@ -1626,7 +1904,7 @@ impl App {
                 self.export_loops = self.export_loops.saturating_sub(1).max(1);
             }
             KeyCode::Char(c) => {
-                self.export_filename.push(c);
+                self.export_input.handle(InputRequest::InsertChar(c));
             }
             _ => {}
         }
@@ -1664,7 +1942,12 @@ impl App {
         let total_samples = (duration * sample_rate as f32) as usize;
 
         let mut compiled = CompiledPatch::default();
-        compile_patch(&mut compiled, &self.patches, num_voices);
+        let ctx = CompileContext {
+            sample_rate: sample_rate as f32,
+            bpm,
+            bars,
+        };
+        compile_patch(&mut compiled, &self.patches, num_voices, &ctx);
 
         let mut track_state = TrackState::new(num_voices);
         track_state.clock.bpm(bpm).bars(bars);
@@ -1691,7 +1974,7 @@ impl App {
             sample_format: hound::SampleFormat::Float,
         };
 
-        match hound::WavWriter::create(&self.export_filename, spec) {
+        match hound::WavWriter::create(self.export_input.value(), spec) {
             Ok(mut writer) => {
                 for sample in samples {
                     let _ = writer.write_sample(sample);
@@ -1700,7 +1983,9 @@ impl App {
                 if writer.finalize().is_ok() {
                     self.message = Some(format!(
                         "Exported {} ({:.1}s, {} loops)",
-                        self.export_filename, duration, self.export_loops
+                        self.export_input.value(),
+                        duration,
+                        self.export_loops
                     ));
                 } else {
                     self.message = Some("Export failed: finalize error".into());
@@ -1737,24 +2022,40 @@ impl App {
 
     fn load_from_file(&mut self, path: PathBuf) {
         match persist::load_patchset(&path) {
-            Ok((patches, bpm, bars, scale_idx, track)) => {
-                self.patches = patches;
+            Ok(result) => {
+                self.patches = result.patches;
                 self.file_path = Some(path.clone());
-                self.bpm = bpm;
-                self.scale_idx = scale_idx;
+                self.bpm = result.bpm;
+                self.scale_idx = result.scale_idx;
 
                 {
                     let mut state = self.track_state.lock().unwrap();
-                    state.clock.bpm(bpm).bars(bars);
+                    state.clock.bpm(result.bpm).bars(result.bars);
                 }
 
-                if let Some(track_text) = track {
+                if let Some(track_text) = result.track {
                     self.track_text = track_text;
                     self.reparse_track();
                 }
 
                 self.commit_patch();
-                self.message = Some(format!("Loaded {}", path.display()));
+
+                if result.missing_samples.is_empty() {
+                    self.message = Some(format!("Loaded {}", path.display()));
+                } else {
+                    let missing: Vec<_> = result.missing_samples.iter().take(3).cloned().collect();
+                    let more = if result.missing_samples.len() > 3 {
+                        format!(" (+{} more)", result.missing_samples.len() - 3)
+                    } else {
+                        String::new()
+                    };
+                    self.message = Some(format!(
+                        "Loaded {} - missing samples: {}{}",
+                        path.display(),
+                        missing.join(", "),
+                        more
+                    ));
+                }
             }
             Err(e) => {
                 self.message = Some(format!("Load failed: {}", e));
@@ -1883,6 +2184,7 @@ impl App {
             let Some(action) = lookup(bindings::env_move_bindings(), code) else {
                 return;
             };
+            let step = 0.01 * self.step_multiplier();
             match action {
                 Action::Cancel | Action::Confirm => {
                     self.mode = Mode::EnvEdit {
@@ -1892,7 +2194,7 @@ impl App {
                     };
                 }
                 Action::Right => {
-                    let new_idx = self.adjust_env_point_time(module_id, point_idx, 0.01);
+                    let new_idx = self.adjust_env_point_time(module_id, point_idx, step);
                     self.mode = Mode::EnvEdit {
                         module_id,
                         point_idx: new_idx,
@@ -1901,7 +2203,7 @@ impl App {
                     self.commit_patch();
                 }
                 Action::Left => {
-                    let new_idx = self.adjust_env_point_time(module_id, point_idx, -0.01);
+                    let new_idx = self.adjust_env_point_time(module_id, point_idx, -step);
                     self.mode = Mode::EnvEdit {
                         module_id,
                         point_idx: new_idx,
@@ -1910,7 +2212,7 @@ impl App {
                     self.commit_patch();
                 }
                 Action::RightFast => {
-                    let new_idx = self.adjust_env_point_time(module_id, point_idx, 0.1);
+                    let new_idx = self.adjust_env_point_time(module_id, point_idx, step * 10.0);
                     self.mode = Mode::EnvEdit {
                         module_id,
                         point_idx: new_idx,
@@ -1919,7 +2221,7 @@ impl App {
                     self.commit_patch();
                 }
                 Action::LeftFast => {
-                    let new_idx = self.adjust_env_point_time(module_id, point_idx, -0.1);
+                    let new_idx = self.adjust_env_point_time(module_id, point_idx, -step * 10.0);
                     self.mode = Mode::EnvEdit {
                         module_id,
                         point_idx: new_idx,
@@ -1931,7 +2233,7 @@ impl App {
                     if let Some(m) = self.patch_mut().module_mut(module_id) {
                         if let Some(points) = m.params.env_points_mut() {
                             if let Some(p) = points.get_mut(point_idx) {
-                                p.value = (p.value + 0.05).min(1.0);
+                                p.value = (p.value + step).min(1.0);
                             }
                         }
                     }
@@ -1941,7 +2243,7 @@ impl App {
                     if let Some(m) = self.patch_mut().module_mut(module_id) {
                         if let Some(points) = m.params.env_points_mut() {
                             if let Some(p) = points.get_mut(point_idx) {
-                                p.value = (p.value - 0.05).max(-1.0);
+                                p.value = (p.value - step).max(-1.0);
                             }
                         }
                     }
@@ -1966,6 +2268,10 @@ impl App {
                         }
                     }
                     self.commit_patch();
+                }
+                Action::CycleStep => {
+                    self.step_size = (self.step_size + 1) % 5;
+                    self.message = Some(format!("Step: {}", self.step_label()));
                 }
                 _ => {}
             }
@@ -2061,6 +2367,10 @@ impl App {
                         }
                     }
                     self.commit_patch();
+                }
+                Action::CycleStep => {
+                    self.step_size = (self.step_size + 1) % 5;
+                    self.message = Some(format!("Step: {}", self.step_label()));
                 }
                 _ => {}
             }
@@ -2372,7 +2682,9 @@ impl App {
             Mode::QuitConfirm | Mode::SaveConfirm | Mode::ExportConfirm => {
                 bindings::quit_confirm_bindings()
             }
-            Mode::SavePrompt | Mode::ExportPrompt => bindings::text_input_bindings(),
+            Mode::SavePrompt | Mode::ExportPrompt | Mode::ValueInput { .. } => {
+                bindings::text_input_bindings()
+            }
             Mode::TrackSettings { .. } => bindings::settings_bindings(),
         };
         f.render_widget(HelpWidget::new(bindings), help_inner);
@@ -2385,6 +2697,7 @@ impl App {
             Mode::Select { .. } | Mode::MouseSelect { .. } => "SELECT",
             Mode::SelectMove { .. } => "SEL-MOVE",
             Mode::Edit { .. } => "EDIT",
+            Mode::ValueInput { .. } => "INPUT",
             Mode::AdsrEdit { .. } => "ADSR",
             Mode::EnvEdit { .. } => "ENV",
             Mode::ProbeEdit { .. } => "PROBE",
@@ -2463,8 +2776,44 @@ impl App {
                     edit_area.width.saturating_sub(2),
                     edit_area.height.saturating_sub(2),
                 );
-                let edit_widget = EditWidget::new(module, param_idx, self.patch());
+                let edit_widget =
+                    EditWidget::new(module, param_idx, self.patch()).step_label(self.step_label());
                 f.render_widget(edit_widget, inner);
+            }
+        }
+
+        if let Mode::ValueInput {
+            module_id,
+            param_idx,
+        } = self.mode
+        {
+            if let Some(module) = self.patch().module(module_id) {
+                let defs = module.kind.param_defs();
+                let param_name = defs.get(param_idx).map(|d| d.name).unwrap_or("Value");
+
+                let input_width = 24u16;
+                let input_height = 3u16;
+                let input_x = (f.area().width.saturating_sub(input_width)) / 2;
+                let input_y = (f.area().height.saturating_sub(input_height)) / 2;
+                let input_area = Rect::new(input_x, input_y, input_width, input_height);
+
+                f.render_widget(Clear, input_area);
+
+                let input_block = Block::default()
+                    .title(format!(" {} ", param_name))
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Yellow));
+                f.render_widget(input_block, input_area);
+
+                let inner = Rect::new(
+                    input_area.x + 1,
+                    input_area.y + 1,
+                    input_area.width.saturating_sub(2),
+                    1,
+                );
+                let input_text = ratatui::widgets::Paragraph::new(self.value_input.value());
+                f.render_widget(input_text, inner);
+                f.set_cursor_position((inner.x + self.value_input.visual_cursor() as u16, inner.y));
             }
         }
 
@@ -2623,8 +2972,9 @@ impl App {
                 prompt_area.width.saturating_sub(2),
                 1,
             );
-            let text = ratatui::widgets::Paragraph::new(self.save_filename.as_str());
+            let text = ratatui::widgets::Paragraph::new(self.save_input.value());
             f.render_widget(text, inner);
+            f.set_cursor_position((inner.x + self.save_input.visual_cursor() as u16, inner.y));
         }
 
         if matches!(self.mode, Mode::ExportPrompt | Mode::ExportConfirm) {
@@ -2655,12 +3005,13 @@ impl App {
             );
 
             let loops_text = format!("Loops: {} (up/down)", self.export_loops);
-            let file_line = ratatui::widgets::Paragraph::new(self.export_filename.as_str());
+            let file_line = ratatui::widgets::Paragraph::new(self.export_input.value());
             let loops_line = ratatui::widgets::Paragraph::new(loops_text)
                 .style(Style::default().fg(Color::DarkGray));
 
             f.render_widget(file_line, Rect::new(inner.x, inner.y, inner.width, 1));
             f.render_widget(loops_line, Rect::new(inner.x, inner.y + 1, inner.width, 1));
+            f.set_cursor_position((inner.x + self.export_input.visual_cursor() as u16, inner.y));
         }
 
         if let Mode::TrackSettings { param_idx } = self.mode {
