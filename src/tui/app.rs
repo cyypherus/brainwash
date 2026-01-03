@@ -1,22 +1,26 @@
-use super::bindings::{self, Action, lookup};
-use super::engine::{CompiledPatch, MeterReceiver, OutputReceiver, TrackState, OUTPUT_INTERVAL, compile_patch, meter_channel, output_channel};
+use super::bindings::{self, lookup, Action};
+use super::engine::{
+    compile_patch, meter_channel, output_channel, CompiledPatch, MeterReceiver, OutputReceiver,
+    TrackState, OUTPUT_INTERVAL,
+};
 use super::grid::GridPos;
-use super::module::{Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind, SubPatchId};
-use std::collections::HashMap;
+use super::module::{
+    Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind, SubPatchId,
+};
 use super::patch::{Patch, PatchSet};
 use super::persist;
 use super::render::{
     AdsrWidget, EditWidget, EnvelopeWidget, GridWidget, HelpWidget, PaletteWidget, ProbeWidget,
     StatusWidget,
 };
-use crate::Signal;
 use crate::live::AudioPlayer;
 use crate::scale::{
-    Scale, amaj, amin, asharpmaj, asharpmin, bmaj, bmin, chromatic, cmaj, cmin, csharpmaj,
-    csharpmin, dmaj, dmin, dsharpmaj, dsharpmin, emaj, emin, fmaj, fmin, fsharpmaj, fsharpmin,
-    gmaj, gmin, gsharpmaj, gsharpmin,
+    amaj, amin, asharpmaj, asharpmin, bmaj, bmin, chromatic, cmaj, cmin, csharpmaj, csharpmin,
+    dmaj, dmin, dsharpmaj, dsharpmin, emaj, emin, fmaj, fmin, fsharpmaj, fsharpmin, gmaj, gmin,
+    gsharpmaj, gsharpmin, Scale,
 };
 use crate::track::Track;
+use crate::Signal;
 use cpal::traits::StreamTrait;
 use ratatui::crossterm::{
     event::{
@@ -24,15 +28,16 @@ use ratatui::crossterm::{
         MouseEventKind,
     },
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
-    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     widgets::{Block, Borders, Clear},
+    Frame, Terminal,
 };
+use std::collections::HashMap;
 
 use std::collections::VecDeque;
 use std::fs;
@@ -220,7 +225,9 @@ impl App {
         output_rx: OutputReceiver,
     ) -> Self {
         let mut patches = PatchSet::new(20, 20);
-        patches.root.add_module(ModuleKind::Output, GridPos::new(19, 19));
+        patches
+            .root
+            .add_module(ModuleKind::Output, GridPos::new(19, 19));
 
         let track_text = r#"
 # _ = rest
@@ -352,6 +359,8 @@ impl App {
         let num_voices = self.track_state.lock().unwrap().num_voices();
         let mut audio = self.audio_patch.lock().unwrap();
         compile_patch(&mut audio, &self.patches, num_voices);
+        self.meter_values.clear();
+        self.probe_values.clear();
         self.dirty = true;
     }
 
@@ -821,7 +830,9 @@ impl App {
                 self.mode = Mode::TrackSettings { param_idx: 0 };
             }
             Action::EditSubpatch => {
-                let on_subpatch = self.patch().module_id_at(self.cursor)
+                let on_subpatch = self
+                    .patch()
+                    .module_id_at(self.cursor)
                     .and_then(|id| self.patch().module(id))
                     .and_then(|m| match m.kind {
                         ModuleKind::SubPatch(sub_id) => Some(sub_id),
@@ -833,7 +844,8 @@ impl App {
                         .subpatch(sub_id)
                         .map(|s| s.name.clone())
                         .unwrap_or_default();
-                    self.subpatch_stack.push((self.editing_subpatch, self.cursor));
+                    self.subpatch_stack
+                        .push((self.editing_subpatch, self.cursor));
                     self.editing_subpatch = Some(sub_id);
                     self.cursor = GridPos::new(0, 0);
                     self.message = Some(format!("Editing '{}'", name));
@@ -948,18 +960,28 @@ impl App {
                     } else if matches!(kind, ModuleKind::SubPatch(_)) {
                         let color = subpatch_color(self.patches.subpatches.len());
                         let sub_id = self.patches.create_subpatch("Sub".into(), color);
-                        if self.patch_mut().add_module(ModuleKind::SubPatch(sub_id), cursor).is_some() {
+                        if self
+                            .patch_mut()
+                            .add_module(ModuleKind::SubPatch(sub_id), cursor)
+                            .is_some()
+                        {
                             self.message = Some("SubPatch placed".into());
                             self.commit_patch();
                         } else {
                             self.message = Some("Can't place here".into());
                         }
                     } else if matches!(kind, ModuleKind::DelayTap(_)) {
-                        let delay_id = self.patch().all_modules()
+                        let delay_id = self
+                            .patch()
+                            .all_modules()
                             .find(|m| m.kind == ModuleKind::Delay)
                             .map(|m| m.id);
                         if let Some(delay_id) = delay_id {
-                            if self.patch_mut().add_module(ModuleKind::DelayTap(delay_id), cursor).is_some() {
+                            if self
+                                .patch_mut()
+                                .add_module(ModuleKind::DelayTap(delay_id), cursor)
+                                .is_some()
+                            {
                                 self.message = Some("DelayTap placed".into());
                                 self.commit_patch();
                             } else {
@@ -1011,18 +1033,28 @@ impl App {
                     } else if matches!(kind, ModuleKind::SubPatch(_)) {
                         let color = subpatch_color(self.patches.subpatches.len());
                         let sub_id = self.patches.create_subpatch("Sub".into(), color);
-                        if self.patch_mut().add_module(ModuleKind::SubPatch(sub_id), cursor).is_some() {
+                        if self
+                            .patch_mut()
+                            .add_module(ModuleKind::SubPatch(sub_id), cursor)
+                            .is_some()
+                        {
                             self.message = Some("SubPatch placed".into());
                             self.commit_patch();
                         } else {
                             self.message = Some("Can't place here".into());
                         }
                     } else if matches!(kind, ModuleKind::DelayTap(_)) {
-                        let delay_id = self.patch().all_modules()
+                        let delay_id = self
+                            .patch()
+                            .all_modules()
                             .find(|m| m.kind == ModuleKind::Delay)
                             .map(|m| m.id);
                         if let Some(delay_id) = delay_id {
-                            if self.patch_mut().add_module(ModuleKind::DelayTap(delay_id), cursor).is_some() {
+                            if self
+                                .patch_mut()
+                                .add_module(ModuleKind::DelayTap(delay_id), cursor)
+                                .is_some()
+                            {
                                 self.message = Some("DelayTap placed".into());
                                 self.commit_patch();
                             } else {
@@ -1300,7 +1332,8 @@ impl App {
         }
 
         let place_pos = GridPos::new(min_x, min_y);
-        self.patch_mut().add_module(ModuleKind::SubPatch(sub_id), place_pos);
+        self.patch_mut()
+            .add_module(ModuleKind::SubPatch(sub_id), place_pos);
 
         self.sync_subpatch_ports(sub_id);
         self.mode = Mode::Normal;
@@ -1351,7 +1384,11 @@ impl App {
                     && mod_min_y <= sel_max_y
                     && mod_max_y >= sel_min_y;
 
-                if overlaps { Some(m.id) } else { None }
+                if overlaps {
+                    Some(m.id)
+                } else {
+                    None
+                }
             })
             .collect()
     }
@@ -1471,6 +1508,7 @@ impl App {
                         if let Some(m) = self.patch_mut().module_mut(module_id) {
                             m.params.toggle_connected(param_idx);
                         }
+                        self.patch_mut().rebuild_channels();
                         self.commit_patch();
                     }
                 }
@@ -1480,7 +1518,8 @@ impl App {
     }
 
     fn cycle_delay_tap_source(&mut self, tap_id: ModuleId, forward: bool) {
-        let delays: Vec<ModuleId> = self.patch()
+        let delays: Vec<ModuleId> = self
+            .patch()
             .all_modules()
             .filter(|m| m.kind == ModuleKind::Delay)
             .map(|m| m.id)
@@ -1491,7 +1530,11 @@ impl App {
         }
 
         let current_delay = if let Some(m) = self.patch().module(tap_id) {
-            if let ModuleKind::DelayTap(id) = m.kind { Some(id) } else { None }
+            if let ModuleKind::DelayTap(id) = m.kind {
+                Some(id)
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -1503,7 +1546,11 @@ impl App {
         let new_idx = if forward {
             (current_idx + 1) % delays.len()
         } else {
-            if current_idx == 0 { delays.len() - 1 } else { current_idx - 1 }
+            if current_idx == 0 {
+                delays.len() - 1
+            } else {
+                current_idx - 1
+            }
         };
 
         if let Some(m) = self.patch_mut().module_mut(tap_id) {
@@ -1603,7 +1650,7 @@ impl App {
 
     fn export_to_wav(&mut self) {
         use crate::Signal;
-        
+
         let sample_rate = 44100usize;
         let state = self.track_state.lock().unwrap();
         let bpm = state.clock.current_bpm();
@@ -1621,7 +1668,7 @@ impl App {
 
         let mut track_state = TrackState::new(num_voices);
         track_state.clock.bpm(bpm).bars(bars);
-        
+
         let scale = crate::scale::cmin();
         if let Ok(track) = crate::track::Track::parse(&self.track_text, &scale) {
             track_state.set_track(Some(track));
@@ -1894,7 +1941,7 @@ impl App {
                     if let Some(m) = self.patch_mut().module_mut(module_id) {
                         if let Some(points) = m.params.env_points_mut() {
                             if let Some(p) = points.get_mut(point_idx) {
-                                p.value = (p.value - 0.05).max(0.0);
+                                p.value = (p.value - 0.05).max(-1.0);
                             }
                         }
                     }
@@ -1914,7 +1961,7 @@ impl App {
                     if let Some(m) = self.patch_mut().module_mut(module_id) {
                         if let Some(points) = m.params.env_points_mut() {
                             if let Some(p) = points.get_mut(point_idx) {
-                                p.value = 0.0;
+                                p.value = -1.0;
                             }
                         }
                     }
@@ -2207,7 +2254,10 @@ impl App {
             Vec<(Module, GridPos)>,
         ) = match &self.mode {
             Mode::Move { module_id, .. } => {
-                let preview = self.patch().module(*module_id).cloned()
+                let preview = self
+                    .patch()
+                    .module(*module_id)
+                    .cloned()
                     .map(|m| vec![(m, self.cursor)])
                     .unwrap_or_default();
                 (Some(*module_id), vec![], preview)
@@ -2250,9 +2300,7 @@ impl App {
         };
 
         let selection = match self.mode {
-            Mode::Select { anchor } | Mode::MouseSelect { anchor } => {
-                Some((anchor, self.cursor))
-            }
+            Mode::Select { anchor } | Mode::MouseSelect { anchor } => Some((anchor, self.cursor)),
             Mode::SelectMove { anchor, extent, .. } => Some((anchor, extent)),
             _ => None,
         };
@@ -2260,9 +2308,9 @@ impl App {
         self.grid_area = grid_area;
 
         let display_patch = self.patch();
-        let subpatch_border = self.editing_subpatch.and_then(|id| {
-            self.patches.subpatch(id).map(|s| s.color)
-        });
+        let subpatch_border = self
+            .editing_subpatch
+            .and_then(|id| self.patches.subpatch(id).map(|s| s.color));
 
         if let Some(border_color) = subpatch_border {
             let border = Block::default()
@@ -2321,7 +2369,9 @@ impl App {
             Mode::ProbeEdit { .. } => bindings::probe_bindings(),
             Mode::EnvEdit { editing: true, .. } => bindings::env_move_bindings(),
             Mode::EnvEdit { .. } => bindings::env_bindings(),
-            Mode::QuitConfirm | Mode::SaveConfirm | Mode::ExportConfirm => bindings::quit_confirm_bindings(),
+            Mode::QuitConfirm | Mode::SaveConfirm | Mode::ExportConfirm => {
+                bindings::quit_confirm_bindings()
+            }
             Mode::SavePrompt | Mode::ExportPrompt => bindings::text_input_bindings(),
             Mode::TrackSettings { .. } => bindings::settings_bindings(),
         };
@@ -2464,7 +2514,11 @@ impl App {
 
                 f.render_widget(Clear, env_area);
 
-                let title = if editing { " Envelope [MOVE] " } else { " Envelope " };
+                let title = if editing {
+                    " Envelope [MOVE] "
+                } else {
+                    " Envelope "
+                };
                 let env_block = Block::default()
                     .title(title)
                     .borders(Borders::ALL)
@@ -2599,12 +2653,12 @@ impl App {
                 prompt_area.width.saturating_sub(2),
                 prompt_height.saturating_sub(2),
             );
-            
+
             let loops_text = format!("Loops: {} (up/down)", self.export_loops);
             let file_line = ratatui::widgets::Paragraph::new(self.export_filename.as_str());
             let loops_line = ratatui::widgets::Paragraph::new(loops_text)
                 .style(Style::default().fg(Color::DarkGray));
-            
+
             f.render_widget(file_line, Rect::new(inner.x, inner.y, inner.width, 1));
             f.render_widget(loops_line, Rect::new(inner.x, inner.y + 1, inner.width, 1));
         }

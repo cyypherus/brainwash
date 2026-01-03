@@ -43,8 +43,8 @@ impl Envelope {
                 "Envelope point time must be between 0.0 and 1.0"
             );
             assert!(
-                (0.0..=1.0).contains(&point.value),
-                "Envelope point value must be between 0.0 and 1.0"
+                (-1.0..=1.0).contains(&point.value),
+                "Envelope point value must be between -1.0 and 1.0"
             );
         }
 

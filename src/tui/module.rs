@@ -109,10 +109,10 @@ pub enum ModuleKind {
     Flanger,
     Mul,
     Add,
-    Gain,
     Gt,
     Lt,
     Switch,
+    Rng,
     Probe,
     Output,
     LSplit,
@@ -146,10 +146,10 @@ impl ModuleKind {
             ModuleKind::Flanger => "Flang",
             ModuleKind::Mul => "Mul",
             ModuleKind::Add => "Add",
-            ModuleKind::Gain => "Gain",
             ModuleKind::Gt => "Gt",
             ModuleKind::Lt => "Lt",
             ModuleKind::Switch => "Switch",
+            ModuleKind::Rng => "Rng",
             ModuleKind::Probe => "Probe",
             ModuleKind::Output => "Out",
             ModuleKind::LSplit => "LSplit ◁",
@@ -183,10 +183,10 @@ impl ModuleKind {
             ModuleKind::Flanger => "FLG",
             ModuleKind::Mul => "MUL",
             ModuleKind::Add => "ADD",
-            ModuleKind::Gain => "GAN",
             ModuleKind::Gt => " > ",
             ModuleKind::Lt => " < ",
             ModuleKind::Switch => "SWT",
+            ModuleKind::Rng => "RNG",
             ModuleKind::Probe => "PRB",
             ModuleKind::Output => "OUT",
             ModuleKind::LSplit => " ◁ ",
@@ -220,10 +220,10 @@ impl ModuleKind {
             ModuleKind::Flanger => "Flanger/chorus effect",
             ModuleKind::Mul => "Multiply A * B",
             ModuleKind::Add => "Add A + B",
-            ModuleKind::Gain => "Scale input by gain",
             ModuleKind::Gt => "1 if A > B, else 0",
             ModuleKind::Lt => "1 if A < B, else 0",
             ModuleKind::Switch => "Output A if Sel<=0.5, else B",
+            ModuleKind::Rng => "Random 0-1 on gate rising edge",
             ModuleKind::Probe => "Display signal value",
             ModuleKind::Output => "Final audio output",
             ModuleKind::LSplit => "In from left, out down+right",
@@ -256,10 +256,10 @@ impl ModuleKind {
             | ModuleKind::Flanger => Color::Rgb(200, 100, 255),
             ModuleKind::Mul
             | ModuleKind::Add
-            | ModuleKind::Gain
             | ModuleKind::Gt
             | ModuleKind::Lt
             | ModuleKind::Switch
+            | ModuleKind::Rng
             | ModuleKind::Probe => Color::Rgb(100, 220, 220),
             ModuleKind::Output => Color::Rgb(255, 100, 100),
             ModuleKind::LSplit
@@ -276,10 +276,7 @@ impl ModuleKind {
 
     pub fn port_count(&self) -> usize {
         match self {
-            ModuleKind::LSplit
-            | ModuleKind::TSplit
-            | ModuleKind::TurnRD
-            | ModuleKind::TurnDR => 1,
+            ModuleKind::LSplit | ModuleKind::TSplit | ModuleKind::TurnRD | ModuleKind::TurnDR => 1,
             ModuleKind::RJoin | ModuleKind::DJoin => 2,
             ModuleKind::SubIn => 0,
             ModuleKind::SubOut => 1,
@@ -338,10 +335,10 @@ impl ModuleKind {
             | ModuleKind::Flanger => ModuleCategory::Effect,
             ModuleKind::Mul
             | ModuleKind::Add
-            | ModuleKind::Gain
             | ModuleKind::Gt
             | ModuleKind::Lt
             | ModuleKind::Switch
+            | ModuleKind::Rng
             | ModuleKind::Probe => ModuleCategory::Math,
             ModuleKind::Output => ModuleCategory::Output,
             ModuleKind::LSplit
@@ -375,10 +372,10 @@ impl ModuleKind {
             ModuleKind::Flanger,
             ModuleKind::Mul,
             ModuleKind::Add,
-            ModuleKind::Gain,
             ModuleKind::Gt,
             ModuleKind::Lt,
             ModuleKind::Switch,
+            ModuleKind::Rng,
             ModuleKind::Probe,
             ModuleKind::Output,
             ModuleKind::TurnRD,
@@ -512,11 +509,23 @@ impl Module {
             }
         };
 
-        let input_edges = if input_count == 0 { vec![] } else { input_edges };
-        let output_edges = if output_count == 0 { vec![] } else { output_edges };
+        let input_edges = if input_count == 0 {
+            vec![]
+        } else {
+            input_edges
+        };
+        let output_edges = if output_count == 0 {
+            vec![]
+        } else {
+            output_edges
+        };
 
         let defs = self.kind.param_defs();
-        let port_params: Vec<_> = defs.iter().enumerate().filter(|(_, d)| d.kind.is_port()).collect();
+        let port_params: Vec<_> = defs
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.kind.is_port())
+            .collect();
 
         let input_ports: Vec<PortInfo> = (0..input_count)
             .map(|i| {
@@ -531,13 +540,19 @@ impl Module {
                         connected,
                     }
                 } else {
-                    PortInfo { label: ' ', connected: true }
+                    PortInfo {
+                        label: ' ',
+                        connected: true,
+                    }
                 }
             })
             .collect();
 
         let output_ports: Vec<PortInfo> = (0..output_count)
-            .map(|_| PortInfo { label: ' ', connected: true })
+            .map(|_| PortInfo {
+                label: ' ',
+                connected: true,
+            })
             .collect();
 
         RenderInfo {
@@ -988,24 +1003,7 @@ impl ModuleKind {
                     },
                 },
             ],
-            ModuleKind::Gain => &[
-                ParamDef {
-                    name: "In",
-                    kind: ParamKind::Float {
-                        min: -1.0,
-                        max: 1.0,
-                        step: 0.01,
-                    },
-                },
-                ParamDef {
-                    name: "Gain",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 2.0,
-                        step: 0.05,
-                    },
-                },
-            ],
+
             ModuleKind::Gt => &[
                 ParamDef {
                     name: "A",
@@ -1064,6 +1062,10 @@ impl ModuleKind {
                     },
                 },
             ],
+            ModuleKind::Rng => &[ParamDef {
+                name: "Gate",
+                kind: ParamKind::Input,
+            }],
             ModuleKind::Probe => &[ParamDef {
                 name: "In",
                 kind: ParamKind::Float {
@@ -1177,10 +1179,6 @@ pub enum ModuleParams {
     Add {
         a: f32,
         b: f32,
-        connected: u8,
-    },
-    Gain {
-        gain: f32,
         connected: u8,
     },
     Gt {
@@ -1298,10 +1296,7 @@ impl ModuleParams {
                 b: 0.0,
                 connected: 0xFF,
             },
-            ModuleKind::Gain => ModuleParams::Gain {
-                gain: 1.0,
-                connected: 0xFF,
-            },
+
             ModuleKind::Gt => ModuleParams::Gt {
                 a: 0.0,
                 b: 0.0,
@@ -1317,6 +1312,7 @@ impl ModuleParams {
                 b: 0.0,
                 connected: 0xFF,
             },
+            ModuleKind::Rng => ModuleParams::None,
             ModuleKind::Probe => ModuleParams::Probe { connected: 0xFF },
             ModuleKind::Output => ModuleParams::Output { connected: 0xFF },
             ModuleKind::LSplit
@@ -1351,7 +1347,7 @@ impl ModuleParams {
             ModuleParams::Flanger { connected, .. } => *connected,
             ModuleParams::Mul { connected, .. } => *connected,
             ModuleParams::Add { connected, .. } => *connected,
-            ModuleParams::Gain { connected, .. } => *connected,
+
             ModuleParams::Gt { connected, .. } => *connected,
             ModuleParams::Lt { connected, .. } => *connected,
             ModuleParams::Switch { connected, .. } => *connected,
@@ -1378,7 +1374,7 @@ impl ModuleParams {
             ModuleParams::Flanger { connected, .. } => Some(connected),
             ModuleParams::Mul { connected, .. } => Some(connected),
             ModuleParams::Add { connected, .. } => Some(connected),
-            ModuleParams::Gain { connected, .. } => Some(connected),
+
             ModuleParams::Gt { connected, .. } => Some(connected),
             ModuleParams::Lt { connected, .. } => Some(connected),
             ModuleParams::Switch { connected, .. } => Some(connected),
@@ -1476,10 +1472,7 @@ impl ModuleParams {
                 1 => Some(*b),
                 _ => None,
             },
-            ModuleParams::Gain { gain, .. } => match idx {
-                1 => Some(*gain),
-                _ => None,
-            },
+
             ModuleParams::Gt { a, b, .. } => match idx {
                 0 => Some(*a),
                 1 => Some(*b),
@@ -1571,10 +1564,7 @@ impl ModuleParams {
                 1 => *b = val,
                 _ => {}
             },
-            ModuleParams::Gain { gain, .. } => match idx {
-                1 => *gain = val,
-                _ => {}
-            },
+
             ModuleParams::Gt { a, b, .. } => match idx {
                 0 => *a = val,
                 1 => *b = val,

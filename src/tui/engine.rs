@@ -4,7 +4,7 @@ use super::patch::{Patch, PatchSet};
 use crate::clock::Clock;
 use crate::delay::Delay;
 use crate::distortion::Distortion;
-use crate::envelopes::{ADSR, Envelope, EnvelopePoint, PointType};
+use crate::envelopes::{Envelope, EnvelopePoint, PointType, ADSR};
 use crate::filters::{HighpassFilter, LowpassFilter};
 use crate::flanger::Flanger;
 use crate::gate_ramp::GateRamp;
@@ -149,10 +149,10 @@ enum NodeKind {
     Flanger(Flanger),
     Mul,
     Add,
-    Gain(f32),
     Gt,
     Lt,
     Switch,
+    Rng { last_gate: f32, value: f32 },
     Probe,
     Pass,
     Output,
@@ -208,19 +208,20 @@ impl CompiledVoice {
                 })
                 .collect();
 
-            let delay_tap_value = if let NodeKind::DelayTap { delay_node, gain } = &self.nodes[idx].kind {
-                if let Some(delay_node_ref) = self.nodes.get(*delay_node) {
-                    if let NodeKind::Delay(delay) = &delay_node_ref.kind {
-                        Some(delay.tap() * *gain)
+            let delay_tap_value =
+                if let NodeKind::DelayTap { delay_node, gain } = &self.nodes[idx].kind {
+                    if let Some(delay_node_ref) = self.nodes.get(*delay_node) {
+                        if let NodeKind::Delay(delay) = &delay_node_ref.kind {
+                            Some(delay.tap() * *gain)
+                        } else {
+                            Some(0.0)
+                        }
                     } else {
                         Some(0.0)
                     }
                 } else {
-                    Some(0.0)
-                }
-            } else {
-                None
-            };
+                    None
+                };
 
             let node = &mut self.nodes[idx];
             node.input_values.copy_from_slice(&inputs);
@@ -274,22 +275,42 @@ impl CompiledVoice {
                 NodeKind::Add => {
                     inputs.first().copied().unwrap_or(0.0) + inputs.get(1).copied().unwrap_or(0.0)
                 }
-                NodeKind::Gain(g) => inputs.first().copied().unwrap_or(0.0) * *g,
+
                 NodeKind::Gt => {
                     let a = inputs.first().copied().unwrap_or(0.0);
                     let b = inputs.get(1).copied().unwrap_or(0.0);
-                    if a > b { 1.0 } else { 0.0 }
+                    if a > b {
+                        1.0
+                    } else {
+                        0.0
+                    }
                 }
                 NodeKind::Lt => {
                     let a = inputs.first().copied().unwrap_or(0.0);
                     let b = inputs.get(1).copied().unwrap_or(0.0);
-                    if a < b { 1.0 } else { 0.0 }
+                    if a < b {
+                        1.0
+                    } else {
+                        0.0
+                    }
                 }
                 NodeKind::Switch => {
                     let sel = inputs.first().copied().unwrap_or(0.0);
                     let a = inputs.get(1).copied().unwrap_or(0.0);
                     let b = inputs.get(2).copied().unwrap_or(0.0);
-                    if sel <= 0.5 { a } else { b }
+                    if sel <= 0.5 {
+                        a
+                    } else {
+                        b
+                    }
+                }
+                NodeKind::Rng { last_gate, value } => {
+                    let gate = inputs.first().copied().unwrap_or(0.0);
+                    if gate > 0.5 && *last_gate <= 0.5 {
+                        *value = fastrand::f32();
+                    }
+                    *last_gate = gate;
+                    *value
                 }
                 NodeKind::Probe => inputs.first().copied().unwrap_or(0.0),
                 NodeKind::Pass => inputs.first().copied().unwrap_or(0.0),
@@ -363,16 +384,16 @@ impl CompiledPatch {
 impl CompiledPatch {
     fn set_voices(&mut self, voices: Vec<CompiledVoice>) {
         let remaining = self.crossfade_total.saturating_sub(self.crossfade_pos);
-        
+
         if remaining > MIN_CROSSFADE_SAMPLES {
             self.silence_ramp = (self.silence_ramp * 0.5).max(0.1);
         } else {
             self.silence_ramp = (self.silence_ramp + 0.1).min(1.0);
         }
-        
+
         self.crossfade_total = ((CROSSFADE_SAMPLES as f32) * self.silence_ramp) as usize;
         self.crossfade_total = self.crossfade_total.max(MIN_CROSSFADE_SAMPLES);
-        
+
         self.old = self.current.take();
         self.current = Some(PatchVoices { voices });
         self.crossfade_pos = 0;
@@ -442,7 +463,10 @@ impl CompiledPatch {
                             .nodes
                             .iter()
                             .filter_map(|n| match &n.kind {
-                                NodeKind::Probe => Some((n.module_id, n.input_values.first().copied().unwrap_or(0.0))),
+                                NodeKind::Probe => Some((
+                                    n.module_id,
+                                    n.input_values.first().copied().unwrap_or(0.0),
+                                )),
                                 _ => None,
                             })
                             .collect();
@@ -488,7 +512,12 @@ pub fn compile_patch(patch: &mut CompiledPatch, patches: &PatchSet, num_voices: 
 fn flatten_patchset(patches: &PatchSet) -> (Vec<Module>, Vec<(ModuleId, ModuleId, usize)>) {
     let mut flat_modules: Vec<Module> = Vec::new();
     let mut id_map: HashMap<(Option<SubPatchId>, ModuleId), ModuleId> = HashMap::new();
-    let max_root_id = patches.root.all_modules().map(|m| m.id.0).max().unwrap_or(0);
+    let max_root_id = patches
+        .root
+        .all_modules()
+        .map(|m| m.id.0)
+        .max()
+        .unwrap_or(0);
     let mut next_id = max_root_id + 1;
 
     for module in patches.root.all_modules() {
@@ -523,9 +552,12 @@ fn flatten_patchset(patches: &PatchSet) -> (Vec<Module>, Vec<(ModuleId, ModuleId
         };
 
         if module.has_output_bottom() {
-            if let Some((target_id, port_idx)) =
-                trace_down(patches.root.grid(), &patches.root, pos.x, pos.y + module.height() as u16)
-            {
+            if let Some((target_id, port_idx)) = trace_down(
+                patches.root.grid(),
+                &patches.root,
+                pos.x,
+                pos.y + module.height() as u16,
+            ) {
                 let src = id_map.get(&(None, module.id)).copied();
                 let dst = id_map.get(&(None, target_id)).copied();
                 if let (Some(s), Some(d)) = (src, dst) {
@@ -535,9 +567,12 @@ fn flatten_patchset(patches: &PatchSet) -> (Vec<Module>, Vec<(ModuleId, ModuleId
         }
 
         if module.has_output_right() {
-            if let Some((target_id, port_idx)) =
-                trace_right(patches.root.grid(), &patches.root, pos.x + module.width() as u16, pos.y)
-            {
+            if let Some((target_id, port_idx)) = trace_right(
+                patches.root.grid(),
+                &patches.root,
+                pos.x + module.width() as u16,
+                pos.y,
+            ) {
                 let src = id_map.get(&(None, module.id)).copied();
                 let dst = id_map.get(&(None, target_id)).copied();
                 if let (Some(s), Some(d)) = (src, dst) {
@@ -588,7 +623,9 @@ fn trace_subpatch_connections(
             continue;
         };
 
-        let mut sub_inputs: Vec<_> = sub.patch.all_modules()
+        let mut sub_inputs: Vec<_> = sub
+            .patch
+            .all_modules()
             .filter(|m| m.kind == ModuleKind::SubIn)
             .filter_map(|m| {
                 let pos = sub.patch.module_position(m.id)?;
@@ -596,9 +633,15 @@ fn trace_subpatch_connections(
             })
             .collect();
         sub_inputs.sort_by_key(|(y, _)| *y);
-        let sub_inputs: Vec<_> = sub_inputs.into_iter().enumerate().map(|(i, (_, id))| (i, id)).collect();
+        let sub_inputs: Vec<_> = sub_inputs
+            .into_iter()
+            .enumerate()
+            .map(|(i, (_, id))| (i, id))
+            .collect();
 
-        let mut sub_outputs: Vec<_> = sub.patch.all_modules()
+        let mut sub_outputs: Vec<_> = sub
+            .patch
+            .all_modules()
             .filter(|m| m.kind == ModuleKind::SubOut)
             .filter_map(|m| {
                 let pos = sub.patch.module_position(m.id)?;
@@ -606,7 +649,11 @@ fn trace_subpatch_connections(
             })
             .collect();
         sub_outputs.sort_by_key(|(x, _)| *x);
-        let sub_outputs: Vec<_> = sub_outputs.into_iter().enumerate().map(|(i, (_, id))| (i, id)).collect();
+        let sub_outputs: Vec<_> = sub_outputs
+            .into_iter()
+            .enumerate()
+            .map(|(i, (_, id))| (i, id))
+            .collect();
 
         for src in patches.root.all_modules() {
             if src.id == module.id {
@@ -622,7 +669,9 @@ fn trace_subpatch_connections(
                     trace_right(patches.root.grid(), &patches.root, start_x, src_pos.y)
                 {
                     if target_id == module.id {
-                        if let Some(&(_, sub_in_id)) = sub_inputs.iter().find(|(idx, _)| *idx == port_idx) {
+                        if let Some(&(_, sub_in_id)) =
+                            sub_inputs.iter().find(|(idx, _)| *idx == port_idx)
+                        {
                             let flat_src = id_map.get(&(None, src.id)).copied();
                             let flat_dst = id_map.get(&(Some(sub_id), sub_in_id)).copied();
                             if let (Some(s), Some(d)) = (flat_src, flat_dst) {
@@ -639,7 +688,9 @@ fn trace_subpatch_connections(
                     trace_down(patches.root.grid(), &patches.root, src_pos.x, start_y)
                 {
                     if target_id == module.id {
-                        if let Some(&(_, sub_in_id)) = sub_inputs.iter().find(|(idx, _)| *idx == port_idx) {
+                        if let Some(&(_, sub_in_id)) =
+                            sub_inputs.iter().find(|(idx, _)| *idx == port_idx)
+                        {
                             let flat_src = id_map.get(&(None, src.id)).copied();
                             let flat_dst = id_map.get(&(Some(sub_id), sub_in_id)).copied();
                             if let (Some(s), Some(d)) = (flat_src, flat_dst) {
@@ -692,9 +743,12 @@ fn trace_subpatch_connections(
             };
 
             if internal.has_output_bottom() {
-                if let Some((target_id, port_idx)) =
-                    trace_down(sub.patch.grid(), &sub.patch, pos.x, pos.y + internal.height() as u16)
-                {
+                if let Some((target_id, port_idx)) = trace_down(
+                    sub.patch.grid(),
+                    &sub.patch,
+                    pos.x,
+                    pos.y + internal.height() as u16,
+                ) {
                     let flat_src = id_map.get(&(Some(sub_id), internal.id)).copied();
                     let flat_dst = id_map.get(&(Some(sub_id), target_id)).copied();
                     if let (Some(s), Some(d)) = (flat_src, flat_dst) {
@@ -704,9 +758,12 @@ fn trace_subpatch_connections(
             }
 
             if internal.has_output_right() {
-                if let Some((target_id, port_idx)) =
-                    trace_right(sub.patch.grid(), &sub.patch, pos.x + internal.width() as u16, pos.y)
-                {
+                if let Some((target_id, port_idx)) = trace_right(
+                    sub.patch.grid(),
+                    &sub.patch,
+                    pos.x + internal.width() as u16,
+                    pos.y,
+                ) {
                     let flat_src = id_map.get(&(Some(sub_id), internal.id)).copied();
                     let flat_dst = id_map.get(&(Some(sub_id), target_id)).copied();
                     if let (Some(s), Some(d)) = (flat_src, flat_dst) {
@@ -756,7 +813,9 @@ fn compile_voice(
         if let ModuleKind::DelayTap(delay_module_id) = module.kind {
             if let Some(&tap_node_idx) = module_to_node.get(&module.id) {
                 if let Some(&delay_node_idx) = module_to_node.get(&delay_module_id) {
-                    if let NodeKind::DelayTap { delay_node, .. } = &mut voice.nodes[tap_node_idx].kind {
+                    if let NodeKind::DelayTap { delay_node, .. } =
+                        &mut voice.nodes[tap_node_idx].kind
+                    {
                         *delay_node = delay_node_idx;
                     }
                 }
@@ -986,10 +1045,14 @@ fn create_node_kind(module: &Module) -> NodeKind {
         }
         (ModuleKind::Mul, _) => NodeKind::Mul,
         (ModuleKind::Add, _) => NodeKind::Add,
-        (ModuleKind::Gain, ModuleParams::Gain { gain, .. }) => NodeKind::Gain(*gain),
+
         (ModuleKind::Gt, _) => NodeKind::Gt,
         (ModuleKind::Lt, _) => NodeKind::Lt,
         (ModuleKind::Switch, _) => NodeKind::Switch,
+        (ModuleKind::Rng, _) => NodeKind::Rng {
+            last_gate: 0.0,
+            value: 0.0,
+        },
         (ModuleKind::Probe, _) => NodeKind::Probe,
         (ModuleKind::Output, _) => NodeKind::Output,
         (ModuleKind::LSplit, _)
@@ -1001,9 +1064,10 @@ fn create_node_kind(module: &Module) -> NodeKind {
         | (ModuleKind::SubIn, _)
         | (ModuleKind::SubOut, _) => NodeKind::Pass,
         (ModuleKind::SubPatch(_), _) => NodeKind::Pass,
-        (ModuleKind::DelayTap(_), ModuleParams::DelayTap { gain }) => {
-            NodeKind::DelayTap { delay_node: usize::MAX, gain: *gain }
-        }
+        (ModuleKind::DelayTap(_), ModuleParams::DelayTap { gain }) => NodeKind::DelayTap {
+            delay_node: usize::MAX,
+            gain: *gain,
+        },
         _ => NodeKind::Pass,
     }
 }
@@ -1044,9 +1108,13 @@ mod tests {
     fn test_flatten_simple() {
         let mut patches = PatchSet::new(20, 20);
 
-        patches.root.add_module(ModuleKind::Freq, GridPos::new(0, 0));
+        patches
+            .root
+            .add_module(ModuleKind::Freq, GridPos::new(0, 0));
         patches.root.add_module(ModuleKind::Osc, GridPos::new(1, 0));
-        patches.root.add_module(ModuleKind::Output, GridPos::new(5, 0));
+        patches
+            .root
+            .add_module(ModuleKind::Output, GridPos::new(5, 0));
 
         let (modules, connections) = flatten_patchset(&patches);
 
@@ -1062,18 +1130,24 @@ mod tests {
     fn test_flatten_with_subpatch() {
         let mut patches = PatchSet::new(20, 20);
 
-        patches.root.add_module(ModuleKind::Freq, GridPos::new(0, 0));
+        patches
+            .root
+            .add_module(ModuleKind::Freq, GridPos::new(0, 0));
 
         let sub_id = patches.create_subpatch("Test".into(), Color::Red);
 
         if let Some(sub) = patches.subpatch_mut(sub_id) {
             sub.patch.add_module(ModuleKind::SubIn, GridPos::new(0, 0));
-            sub.patch.add_module(ModuleKind::Gain, GridPos::new(0, 1));
+            sub.patch.add_module(ModuleKind::Mul, GridPos::new(0, 1));
             sub.patch.add_module(ModuleKind::SubOut, GridPos::new(0, 3));
         }
 
-        patches.root.add_module(ModuleKind::SubPatch(sub_id), GridPos::new(0, 1));
-        patches.root.add_module(ModuleKind::Output, GridPos::new(0, 3));
+        patches
+            .root
+            .add_module(ModuleKind::SubPatch(sub_id), GridPos::new(0, 1));
+        patches
+            .root
+            .add_module(ModuleKind::Output, GridPos::new(0, 3));
 
         let (modules, _connections) = flatten_patchset(&patches);
 
@@ -1081,18 +1155,22 @@ mod tests {
 
         assert!(modules.iter().any(|m| m.kind == ModuleKind::Freq));
         assert!(modules.iter().any(|m| m.kind == ModuleKind::SubIn));
-        assert!(modules.iter().any(|m| m.kind == ModuleKind::Gain));
+        assert!(modules.iter().any(|m| m.kind == ModuleKind::Mul));
         assert!(modules.iter().any(|m| m.kind == ModuleKind::SubOut));
         assert!(modules.iter().any(|m| m.kind == ModuleKind::Output));
 
-        assert!(!modules.iter().any(|m| matches!(m.kind, ModuleKind::SubPatch(_))));
+        assert!(!modules
+            .iter()
+            .any(|m| matches!(m.kind, ModuleKind::SubPatch(_))));
     }
 
     #[test]
     fn test_subpatch_connections() {
         let mut patches = PatchSet::new(20, 20);
 
-        patches.root.add_module(ModuleKind::Freq, GridPos::new(0, 0));
+        patches
+            .root
+            .add_module(ModuleKind::Freq, GridPos::new(0, 0));
 
         let sub_id = patches.create_subpatch("Test".into(), Color::Red);
 
@@ -1101,26 +1179,57 @@ mod tests {
             sub.patch.add_module(ModuleKind::SubOut, GridPos::new(1, 0));
         }
 
-        patches.root.add_module(ModuleKind::SubPatch(sub_id), GridPos::new(1, 0));
+        patches
+            .root
+            .add_module(ModuleKind::SubPatch(sub_id), GridPos::new(1, 0));
         sync_subpatch_params(&mut patches, sub_id);
-        patches.root.add_module(ModuleKind::Output, GridPos::new(2, 0));
+        patches
+            .root
+            .add_module(ModuleKind::Output, GridPos::new(2, 0));
         patches.root.rebuild_channels();
 
         let (modules, connections) = flatten_patchset(&patches);
 
-        let freq_id = modules.iter().find(|m| m.kind == ModuleKind::Freq).map(|m| m.id);
-        let sub_in_id = modules.iter().find(|m| m.kind == ModuleKind::SubIn).map(|m| m.id);
-        let sub_out_id = modules.iter().find(|m| m.kind == ModuleKind::SubOut).map(|m| m.id);
-        let output_id = modules.iter().find(|m| m.kind == ModuleKind::Output).map(|m| m.id);
+        let freq_id = modules
+            .iter()
+            .find(|m| m.kind == ModuleKind::Freq)
+            .map(|m| m.id);
+        let sub_in_id = modules
+            .iter()
+            .find(|m| m.kind == ModuleKind::SubIn)
+            .map(|m| m.id);
+        let sub_out_id = modules
+            .iter()
+            .find(|m| m.kind == ModuleKind::SubOut)
+            .map(|m| m.id);
+        let output_id = modules
+            .iter()
+            .find(|m| m.kind == ModuleKind::Output)
+            .map(|m| m.id);
 
-        assert!(connections.iter().any(|(src, dst, _)| Some(*src) == freq_id && Some(*dst) == sub_in_id),
-            "Freq->SubIn connection missing. Connections: {:?}", connections);
+        assert!(
+            connections
+                .iter()
+                .any(|(src, dst, _)| Some(*src) == freq_id && Some(*dst) == sub_in_id),
+            "Freq->SubIn connection missing. Connections: {:?}",
+            connections
+        );
 
-        assert!(connections.iter().any(|(src, dst, _)| Some(*src) == sub_in_id && Some(*dst) == sub_out_id),
-            "SubIn->SubOut connection missing. Connections: {:?}", connections);
+        assert!(
+            connections
+                .iter()
+                .any(|(src, dst, _)| Some(*src) == sub_in_id && Some(*dst) == sub_out_id),
+            "SubIn->SubOut connection missing. Connections: {:?}",
+            connections
+        );
 
-        assert!(connections.iter().any(|(src, dst, _)| Some(*src) == sub_out_id && Some(*dst) == output_id),
-            "SubOut->Output connection missing. Connections: {:?}", connections);
+        assert!(
+            connections
+                .iter()
+                .any(|(src, dst, _)| Some(*src) == sub_out_id && Some(*dst) == output_id),
+            "SubOut->Output connection missing. Connections: {:?}",
+            connections
+        );
     }
 
     fn sync_subpatch_params(patches: &mut PatchSet, sub_id: SubPatchId) {
@@ -1130,7 +1239,9 @@ mod tests {
             return;
         };
 
-        let ids: Vec<ModuleId> = patches.root.all_modules()
+        let ids: Vec<ModuleId> = patches
+            .root
+            .all_modules()
             .filter(|m| m.kind == ModuleKind::SubPatch(sub_id))
             .map(|m| m.id)
             .collect();
@@ -1156,32 +1267,66 @@ mod tests {
             sub.patch.rebuild_channels();
         }
 
-        patches.root.add_module(ModuleKind::SubPatch(sub_id), GridPos::new(0, 0));
+        patches
+            .root
+            .add_module(ModuleKind::SubPatch(sub_id), GridPos::new(0, 0));
         sync_subpatch_params(&mut patches, sub_id);
-        patches.root.add_module(ModuleKind::Output, GridPos::new(2, 0));
+        patches
+            .root
+            .add_module(ModuleKind::Output, GridPos::new(2, 0));
         patches.root.rebuild_channels();
 
         let (modules, connections) = flatten_patchset(&patches);
 
-        let gate_id = modules.iter().find(|m| m.kind == ModuleKind::Gate).map(|m| m.id);
-        let sub_out_id = modules.iter().find(|m| m.kind == ModuleKind::SubOut).map(|m| m.id);
-        let output_id = modules.iter().find(|m| m.kind == ModuleKind::Output).map(|m| m.id);
+        let gate_id = modules
+            .iter()
+            .find(|m| m.kind == ModuleKind::Gate)
+            .map(|m| m.id);
+        let sub_out_id = modules
+            .iter()
+            .find(|m| m.kind == ModuleKind::SubOut)
+            .map(|m| m.id);
+        let output_id = modules
+            .iter()
+            .find(|m| m.kind == ModuleKind::Output)
+            .map(|m| m.id);
 
-        assert!(gate_id.is_some(), "Gate module not found in flattened modules");
-        assert!(connections.iter().any(|(src, dst, _)| Some(*src) == gate_id && Some(*dst) == sub_out_id),
-            "Gate->SubOut connection missing. Connections: {:?}", connections);
-        assert!(connections.iter().any(|(src, dst, _)| Some(*src) == sub_out_id && Some(*dst) == output_id),
-            "SubOut->Output connection missing. Connections: {:?}", connections);
+        assert!(
+            gate_id.is_some(),
+            "Gate module not found in flattened modules"
+        );
+        assert!(
+            connections
+                .iter()
+                .any(|(src, dst, _)| Some(*src) == gate_id && Some(*dst) == sub_out_id),
+            "Gate->SubOut connection missing. Connections: {:?}",
+            connections
+        );
+        assert!(
+            connections
+                .iter()
+                .any(|(src, dst, _)| Some(*src) == sub_out_id && Some(*dst) == output_id),
+            "SubOut->Output connection missing. Connections: {:?}",
+            connections
+        );
 
         let module_refs: Vec<&Module> = modules.iter().collect();
         let mut voice = compile_voice(&module_refs, &connections);
         let mut signal = Signal::new(44100);
 
         let output = voice.process(&mut signal, 440.0, 1.0);
-        assert!((output - 1.0).abs() < 0.001, "Output should be 1.0 (gate), got {}", output);
+        assert!(
+            (output - 1.0).abs() < 0.001,
+            "Output should be 1.0 (gate), got {}",
+            output
+        );
 
         let output = voice.process(&mut signal, 440.0, 0.0);
-        assert!(output.abs() < 0.001, "Output should be 0.0 (gate off), got {}", output);
+        assert!(
+            output.abs() < 0.001,
+            "Output should be 0.0 (gate off), got {}",
+            output
+        );
     }
 
     #[test]
@@ -1197,9 +1342,13 @@ mod tests {
             sub.patch.rebuild_channels();
         }
 
-        patches.root.add_module(ModuleKind::SubPatch(sub_id), GridPos::new(0, 0));
+        patches
+            .root
+            .add_module(ModuleKind::SubPatch(sub_id), GridPos::new(0, 0));
         sync_subpatch_params(&mut patches, sub_id);
-        patches.root.add_module(ModuleKind::Output, GridPos::new(2, 0));
+        patches
+            .root
+            .add_module(ModuleKind::Output, GridPos::new(2, 0));
         patches.root.rebuild_channels();
 
         let (modules, connections) = flatten_patchset(&patches);
@@ -1208,35 +1357,60 @@ mod tests {
         let mut signal = Signal::new(44100);
 
         let output = voice.process(&mut signal, 440.0, 1.0);
-        assert!((output - 440.0).abs() < 0.001, "Output should be 440.0 (freq), got {}", output);
+        assert!(
+            (output - 440.0).abs() < 0.001,
+            "Output should be 440.0 (freq), got {}",
+            output
+        );
 
         let output = voice.process(&mut signal, 880.0, 1.0);
-        assert!((output - 880.0).abs() < 0.001, "Output should be 880.0 (freq), got {}", output);
+        assert!(
+            (output - 880.0).abs() < 0.001,
+            "Output should be 880.0 (freq), got {}",
+            output
+        );
     }
 
     #[test]
     fn test_delay_tap_linking() {
         let mut patches = PatchSet::new(20, 20);
 
-        let delay_id = patches.root.add_module(ModuleKind::Delay, GridPos::new(0, 0)).unwrap();
-        patches.root.add_module(ModuleKind::DelayTap(delay_id), GridPos::new(3, 0));
-        patches.root.add_module(ModuleKind::Output, GridPos::new(5, 0));
+        let delay_id = patches
+            .root
+            .add_module(ModuleKind::Delay, GridPos::new(0, 0))
+            .unwrap();
+        patches
+            .root
+            .add_module(ModuleKind::DelayTap(delay_id), GridPos::new(3, 0));
+        patches
+            .root
+            .add_module(ModuleKind::Output, GridPos::new(5, 0));
 
         let (modules, connections) = flatten_patchset(&patches);
         let module_refs: Vec<&Module> = modules.iter().collect();
 
         let voice = compile_voice(&module_refs, &connections);
 
-        let tap_node_idx = voice.nodes.iter().position(|n| matches!(n.kind, NodeKind::DelayTap { .. }));
-        let delay_node_idx = voice.nodes.iter().position(|n| matches!(n.kind, NodeKind::Delay(_)));
+        let tap_node_idx = voice
+            .nodes
+            .iter()
+            .position(|n| matches!(n.kind, NodeKind::DelayTap { .. }));
+        let delay_node_idx = voice
+            .nodes
+            .iter()
+            .position(|n| matches!(n.kind, NodeKind::Delay(_)));
 
         assert!(tap_node_idx.is_some(), "DelayTap node not found");
         assert!(delay_node_idx.is_some(), "Delay node not found");
 
         if let NodeKind::DelayTap { delay_node, .. } = &voice.nodes[tap_node_idx.unwrap()].kind {
-            assert_eq!(*delay_node, delay_node_idx.unwrap(), 
-                "DelayTap delay_node {} doesn't match Delay node index {}", 
-                delay_node, delay_node_idx.unwrap());
+            assert_eq!(
+                *delay_node,
+                delay_node_idx.unwrap(),
+                "DelayTap delay_node {} doesn't match Delay node index {}",
+                delay_node,
+                delay_node_idx.unwrap()
+            );
         } else {
             panic!("Expected DelayTap node kind");
         }
@@ -1248,12 +1422,22 @@ mod tests {
         let mut patches = PatchSet::new(20, 20);
 
         patches.root.add_module(ModuleKind::Osc, GridPos::new(0, 0));
-        let delay_id = patches.root.add_module(ModuleKind::Delay, GridPos::new(2, 0)).unwrap();
+        let delay_id = patches
+            .root
+            .add_module(ModuleKind::Delay, GridPos::new(2, 0))
+            .unwrap();
         if let Some(m) = patches.root.module_mut(delay_id) {
-            m.params = crate::tui::module::ModuleParams::Delay { samples: 100.0, connected: 0xFF };
+            m.params = crate::tui::module::ModuleParams::Delay {
+                samples: 100.0,
+                connected: 0xFF,
+            };
         }
-        patches.root.add_module(ModuleKind::DelayTap(delay_id), GridPos::new(4, 0));
-        patches.root.add_module(ModuleKind::Output, GridPos::new(6, 0));
+        patches
+            .root
+            .add_module(ModuleKind::DelayTap(delay_id), GridPos::new(4, 0));
+        patches
+            .root
+            .add_module(ModuleKind::Output, GridPos::new(6, 0));
         patches.root.rebuild_channels();
 
         let (modules, connections) = flatten_patchset(&patches);
@@ -1266,10 +1450,24 @@ mod tests {
             voice.process(&mut signal, 440.0, 1.0);
         }
 
-        let tap_node_idx = voice.nodes.iter().position(|n| matches!(n.kind, NodeKind::DelayTap { .. })).unwrap();
-        let delay_node_idx = voice.nodes.iter().position(|n| matches!(n.kind, NodeKind::Delay(_))).unwrap();
+        let tap_node_idx = voice
+            .nodes
+            .iter()
+            .position(|n| matches!(n.kind, NodeKind::DelayTap { .. }))
+            .unwrap();
+        let delay_node_idx = voice
+            .nodes
+            .iter()
+            .position(|n| matches!(n.kind, NodeKind::Delay(_)))
+            .unwrap();
 
-        assert!(voice.nodes[delay_node_idx].output.abs() > 0.001, "Delay should have output");
-        assert!(voice.nodes[tap_node_idx].output.abs() > 0.001, "DelayTap should have output");
+        assert!(
+            voice.nodes[delay_node_idx].output.abs() > 0.001,
+            "Delay should have output"
+        );
+        assert!(
+            voice.nodes[tap_node_idx].output.abs() > 0.001,
+            "DelayTap should have output"
+        );
     }
 }

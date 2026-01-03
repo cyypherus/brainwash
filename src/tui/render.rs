@@ -2,8 +2,6 @@ use super::bindings;
 use super::grid::{Cell, GridPos};
 use super::module::{Edge, Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind};
 use super::patch::Patch;
-use std::collections::HashMap;
-use std::sync::LazyLock;
 use crate::envelopes::{Envelope, EnvelopePoint, PointType};
 use ratatui::{
     buffer::Buffer,
@@ -11,6 +9,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::Widget,
 };
+use std::collections::HashMap;
+use std::sync::LazyLock;
 
 static EMPTY_METERS: LazyLock<HashMap<ModuleId, Vec<f32>>> = LazyLock::new(HashMap::new);
 static EMPTY_PROBES: LazyLock<HashMap<ModuleId, f32>> = LazyLock::new(HashMap::new);
@@ -133,10 +133,15 @@ fn set_str(buf: &mut Buffer, x: u16, y: u16, s: &str, style: Style) {
 
 fn meter_char(val: f32) -> char {
     let v = val.abs();
-    if v < 0.1 { ' ' }
-    else if v < 0.4 { '▁' }
-    else if v < 0.7 { '▃' }
-    else { '▅' }
+    if v < 0.1 {
+        ' '
+    } else if v < 0.4 {
+        '▁'
+    } else if v < 0.7 {
+        '▃'
+    } else {
+        '▅'
+    }
 }
 
 fn meter_style(val: f32, base_color: Color) -> Style {
@@ -739,10 +744,14 @@ impl Widget for GridWidget<'_> {
                     let gx = pos.x + lx as u16;
                     let gy = pos.y + ly as u16;
                     if gx >= origin_x && gy >= origin_y {
-                        let (sx, sy) = self.screen_pos(GridPos::new(gx, gy), viewport_origin, grid_area);
-                        if sx < grid_area.x + grid_area.width && sy < grid_area.y + grid_area.height {
+                        let (sx, sy) =
+                            self.screen_pos(GridPos::new(gx, gy), viewport_origin, grid_area);
+                        if sx < grid_area.x + grid_area.width && sy < grid_area.y + grid_area.height
+                        {
                             let is_cursor = gx == self.cursor.x && gy == self.cursor.y;
-                            self.render_module(buf, sx, sy, module, lx, ly, is_cursor, true, None, None);
+                            self.render_module(
+                                buf, sx, sy, module, lx, ly, is_cursor, true, None, None,
+                            );
                         }
                     }
                 }
@@ -757,10 +766,14 @@ impl Widget for GridWidget<'_> {
                     let gx = pos.x + lx as u16;
                     let gy = pos.y + ly as u16;
                     if gx >= origin_x && gy >= origin_y {
-                        let (sx, sy) = self.screen_pos(GridPos::new(gx, gy), viewport_origin, grid_area);
-                        if sx < grid_area.x + grid_area.width && sy < grid_area.y + grid_area.height {
+                        let (sx, sy) =
+                            self.screen_pos(GridPos::new(gx, gy), viewport_origin, grid_area);
+                        if sx < grid_area.x + grid_area.width && sy < grid_area.y + grid_area.height
+                        {
                             let is_cursor = gx == self.cursor.x && gy == self.cursor.y;
-                            self.render_module(buf, sx, sy, module, lx, ly, is_cursor, true, None, None);
+                            self.render_module(
+                                buf, sx, sy, module, lx, ly, is_cursor, true, None, None,
+                            );
                         }
                     }
                 }
@@ -964,7 +977,6 @@ impl Widget for PaletteWidget<'_> {
                 }
             }
         }
-
     }
 }
 
@@ -1033,7 +1045,7 @@ impl Widget for StatusWidget<'_> {
 
         let msg_len = self.message.map(|m| m.len() as u16 + 2).unwrap_or(0);
         let wave_end = area.x + area.width.saturating_sub(msg_len);
-        
+
         if wave_end > wave_start && !self.output_history.is_empty() {
             let wave_width = (wave_end - wave_start) as usize;
             for i in 0..wave_width {
@@ -1044,8 +1056,18 @@ impl Widget for StatusWidget<'_> {
                 if val < 0.02 {
                     continue;
                 }
-                let color = if val > 0.15 { Color::Yellow } else { Color::Rgb(60, 60, 60) };
-                set_cell(buf, wave_start + i as u16, area.y, '•', Style::default().fg(color));
+                let color = if val > 0.15 {
+                    Color::Yellow
+                } else {
+                    Color::Rgb(60, 60, 60)
+                };
+                set_cell(
+                    buf,
+                    wave_start + i as u16,
+                    area.y,
+                    '•',
+                    Style::default().fg(color),
+                );
             }
         }
 
@@ -1084,7 +1106,13 @@ impl Widget for HelpWidget {
                 return;
             }
             set_str(buf, area.x, y, key, key_style);
-            set_str(buf, area.x + key.chars().count() as u16 + 1, y, desc, desc_style);
+            set_str(
+                buf,
+                area.x + key.chars().count() as u16 + 1,
+                y,
+                desc,
+                desc_style,
+            );
             y += 1;
         }
     }
@@ -1166,7 +1194,9 @@ impl Widget for EditWidget<'_> {
                 ParamKind::Enum => {
                     let val_str = if let ModuleKind::DelayTap(delay_id) = self.module.kind {
                         if i == 0 {
-                            let is_valid_delay = self.patch.module(delay_id)
+                            let is_valid_delay = self
+                                .patch
+                                .module(delay_id)
                                 .map(|m| m.kind == ModuleKind::Delay)
                                 .unwrap_or(false);
                             if is_valid_delay {
@@ -1441,11 +1471,11 @@ impl Widget for EnvelopeWidget<'_> {
 
         let config = ChartConfig {
             color: Color::Rgb(255, 200, 100),
-            min: 0.0,
+            min: -1.0,
             max: 1.0,
             show_axes: true,
-            show_zero: false,
-            show_fill: true,
+            show_zero: true,
+            show_fill: false,
         };
         render_chart(buf, curve_area, &config, |t| env.output(t));
 
@@ -1461,7 +1491,8 @@ impl Widget for EnvelopeWidget<'_> {
         let h = (curve_area.height - 2) as f32;
         for (i, p) in points.iter().enumerate() {
             let px = 1 + (p.time * w) as u16;
-            let py = ((1.0 - p.value) * h) as u16;
+            let normalized = (1.0 - p.value) / 2.0;
+            let py = (normalized * h) as u16;
             let screen_x = curve_area.x + px.min(curve_area.width - 1);
             let screen_y = curve_area.y + py.min(curve_area.height - 2);
             let is_sel = i == self.selected_point;
