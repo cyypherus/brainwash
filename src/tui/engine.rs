@@ -350,7 +350,7 @@ impl PatchVoices {
     }
 }
 
-const CROSSFADE_SAMPLES: usize = 441;
+const CROSSFADE_SAMPLES: usize = 2205;
 const MIN_CROSSFADE_SAMPLES: usize = 10;
 
 const PROBE_HISTORY_LEN: usize = 44100 * 2;
