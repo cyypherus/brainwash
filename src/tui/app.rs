@@ -1,8 +1,8 @@
-use super::bindings::{self, lookup, Action};
+use super::bindings::{self, Action, lookup};
 use super::engine::{
-    command_channel, compile_patch, compile_voices, meter_channel, output_channel, AudioCommand,
-    AudioEngine, CommandSender, CompileContext, CompiledPatch, MeterReceiver, OutputReceiver,
-    TrackState, OUTPUT_INTERVAL,
+    AudioCommand, AudioEngine, CommandSender, CompileContext, CompiledPatch, MeterReceiver,
+    OUTPUT_INTERVAL, OutputReceiver, TrackState, command_channel, compile_patch, compile_voices,
+    meter_channel, output_channel,
 };
 use super::grid::GridPos;
 use super::instrument::Instrument;
@@ -15,14 +15,14 @@ use super::render::{
     AdsrWidget, EditWidget, EnvelopeWidget, GridWidget, HelpWidget, PaletteWidget, ProbeWidget,
     StatusWidget,
 };
+use crate::Signal;
 use crate::live::AudioPlayer;
 use crate::scale::{
-    amaj, amin, asharpmaj, asharpmin, bmaj, bmin, chromatic, cmaj, cmin, csharpmaj, csharpmin,
-    dmaj, dmin, dsharpmaj, dsharpmin, emaj, emin, fmaj, fmin, fsharpmaj, fsharpmin, gmaj, gmin,
-    gsharpmaj, gsharpmin, Scale,
+    Scale, amaj, amin, asharpmaj, asharpmin, bmaj, bmin, chromatic, cmaj, cmin, csharpmaj,
+    csharpmin, dmaj, dmin, dsharpmaj, dsharpmin, emaj, emin, fmaj, fmin, fsharpmaj, fsharpmin,
+    gmaj, gmin, gsharpmaj, gsharpmin,
 };
 use crate::track::Track;
-use crate::Signal;
 use cpal::traits::StreamTrait;
 use lilt::{Animated, Easing};
 use ratatui::crossterm::{
@@ -31,14 +31,14 @@ use ratatui::crossterm::{
         MouseEventKind,
     },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     widgets::{Block, Borders, Clear},
-    Frame, Terminal,
 };
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -260,7 +260,9 @@ struct App {
     probe_max: f32,
     probe_len: usize,
     grid_area: Rect,
-    dragging: Option<ModuleId>,
+    drag_start: Option<(ModuleId, GridPos)>,
+    dragging: bool,
+    select_start: Option<GridPos>,
     bpm: f32,
     export_input: Input,
     export_loops: usize,
@@ -369,7 +371,9 @@ impl App {
             probe_max: 1.0,
             probe_len: 4410,
             grid_area: Rect::default(),
-            dragging: None,
+            drag_start: None,
+            dragging: false,
+            select_start: None,
             bpm: 120.0,
             export_input: Input::new("output.wav".to_string()),
             export_loops: 1,
@@ -680,23 +684,43 @@ impl App {
                 if let Some(pos) = self.screen_to_grid(col, row) {
                     self.set_cursor(pos);
                     if let Some(m) = self.patch().module_at(pos) {
-                        self.dragging = Some(m.id);
+                        self.drag_start = Some((m.id, pos));
+                        self.dragging = false;
                     } else {
-                        self.mode = Mode::MouseSelect { anchor: pos };
+                        self.select_start = Some(pos);
                     }
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                if let Some(id) = self.dragging {
+                if let Some((id, start_pos)) = self.drag_start {
                     if let Some(pos) = self.screen_to_grid(col, row) {
-                        self.patch_mut().move_module(id, pos);
-                        self.commit_patch();
-                        self.set_cursor(pos);
+                        let dx = (pos.x as i32 - start_pos.x as i32).abs();
+                        let dy = (pos.y as i32 - start_pos.y as i32).abs();
+                        if dx > 0 || dy > 0 {
+                            self.dragging = true;
+                        }
+                        if self.dragging {
+                            self.patch_mut().move_module(id, pos);
+                            self.commit_patch();
+                            self.set_cursor(pos);
+                        }
+                    }
+                } else if let Some(start_pos) = self.select_start {
+                    if let Some(pos) = self.screen_to_grid(col, row) {
+                        let dx = (pos.x as i32 - start_pos.x as i32).abs();
+                        let dy = (pos.y as i32 - start_pos.y as i32).abs();
+                        if dx > 0 || dy > 0 {
+                            self.select_start = None;
+                            self.mode = Mode::MouseSelect { anchor: start_pos };
+                            self.set_cursor(pos);
+                        }
                     }
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                self.dragging = None;
+                self.drag_start = None;
+                self.dragging = false;
+                self.select_start = None;
                 self.set_view_center(self.cursor());
             }
             _ => {}
@@ -1613,11 +1637,7 @@ impl App {
                     && mod_min_y <= sel_max_y
                     && mod_max_y >= sel_min_y;
 
-                if overlaps {
-                    Some(m.id)
-                } else {
-                    None
-                }
+                if overlaps { Some(m.id) } else { None }
             })
             .collect()
     }
