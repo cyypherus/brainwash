@@ -35,6 +35,10 @@ impl Clock {
         self.bars
     }
 
+    pub fn phase(&self) -> f32 {
+        self.osc.phase_accumulator as f32 / (u32::MAX as f32 + 1.0)
+    }
+
     pub fn output(&mut self, signal: &mut Signal) -> f32 {
         let beats_per_minute = self.bpm;
         let beats_per_second = beats_per_minute / 60.0;

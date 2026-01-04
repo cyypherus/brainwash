@@ -177,6 +177,8 @@ pub enum ModuleKind {
     Envelope,
     Lpf,
     Hpf,
+    Comb,
+    Allpass,
     Delay,
     Reverb,
     Distortion,
@@ -217,6 +219,8 @@ impl ModuleKind {
             ModuleKind::Envelope => "Env",
             ModuleKind::Lpf => "LPF",
             ModuleKind::Hpf => "HPF",
+            ModuleKind::Comb => "Comb",
+            ModuleKind::Allpass => "Allpass",
             ModuleKind::Delay => "Delay",
             ModuleKind::Reverb => "Verb",
             ModuleKind::Distortion => "Dist",
@@ -257,6 +261,8 @@ impl ModuleKind {
             ModuleKind::Envelope => "ENV",
             ModuleKind::Lpf => "LPF",
             ModuleKind::Hpf => "HPF",
+            ModuleKind::Comb => "CMB",
+            ModuleKind::Allpass => "APF",
             ModuleKind::Delay => "DLY",
             ModuleKind::Reverb => "VRB",
             ModuleKind::Distortion => "DST",
@@ -297,6 +303,8 @@ impl ModuleKind {
             ModuleKind::Envelope => "Custom envelope from points",
             ModuleKind::Lpf => "Low-pass filter",
             ModuleKind::Hpf => "High-pass filter",
+            ModuleKind::Comb => "Comb filter (resonant delay)",
+            ModuleKind::Allpass => "Allpass filter (phase shift)",
             ModuleKind::Delay => "Sample delay line",
             ModuleKind::Reverb => "FDN reverb with modulation",
             ModuleKind::Distortion => "Soft-clip distortion",
@@ -334,9 +342,10 @@ impl ModuleKind {
             | ModuleKind::Ramp
             | ModuleKind::Adsr
             | ModuleKind::Envelope => Color::Rgb(255, 200, 100),
-            ModuleKind::Lpf
-            | ModuleKind::Hpf
-            | ModuleKind::Delay
+            ModuleKind::Lpf | ModuleKind::Hpf | ModuleKind::Comb | ModuleKind::Allpass => {
+                Color::Rgb(150, 200, 255)
+            }
+            ModuleKind::Delay
             | ModuleKind::Reverb
             | ModuleKind::Distortion
             | ModuleKind::Flanger => Color::Rgb(200, 100, 255),
@@ -414,9 +423,10 @@ impl ModuleKind {
             | ModuleKind::Ramp
             | ModuleKind::Adsr
             | ModuleKind::Envelope => ModuleCategory::Envelope,
-            ModuleKind::Lpf
-            | ModuleKind::Hpf
-            | ModuleKind::Delay
+            ModuleKind::Lpf | ModuleKind::Hpf | ModuleKind::Comb | ModuleKind::Allpass => {
+                ModuleCategory::Filter
+            }
+            ModuleKind::Delay
             | ModuleKind::DelayTap(_)
             | ModuleKind::Reverb
             | ModuleKind::Distortion
@@ -455,6 +465,8 @@ impl ModuleKind {
             ModuleKind::Envelope,
             ModuleKind::Lpf,
             ModuleKind::Hpf,
+            ModuleKind::Comb,
+            ModuleKind::Allpass,
             ModuleKind::Delay,
             ModuleKind::DelayTap(ModuleId(0)),
             ModuleKind::Reverb,
@@ -495,6 +507,7 @@ pub enum ModuleCategory {
     Track,
     Generator,
     Envelope,
+    Filter,
     Effect,
     Math,
     Routing,
@@ -508,6 +521,7 @@ impl ModuleCategory {
             ModuleCategory::Track => "Track",
             ModuleCategory::Generator => "Generators",
             ModuleCategory::Envelope => "Envelopes",
+            ModuleCategory::Filter => "Filters",
             ModuleCategory::Effect => "Effects",
             ModuleCategory::Math => "Math",
             ModuleCategory::Routing => "Routing",
@@ -521,6 +535,7 @@ impl ModuleCategory {
             ModuleCategory::Track,
             ModuleCategory::Generator,
             ModuleCategory::Envelope,
+            ModuleCategory::Filter,
             ModuleCategory::Effect,
             ModuleCategory::Math,
             ModuleCategory::Routing,
@@ -1217,6 +1232,65 @@ impl ModuleKind {
                     desc: None,
                 },
             ],
+            ModuleKind::Comb => &[
+                ParamDef {
+                    name: "In",
+                    kind: ParamKind::Float {
+                        min: -1.0,
+                        max: 1.0,
+                        step: 0.01,
+                    },
+                    desc: None,
+                },
+                ParamDef {
+                    name: "Time",
+                    kind: ParamKind::Time,
+                    desc: Some("Delay time (sets pitch)"),
+                },
+                ParamDef {
+                    name: "Fdbk",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 0.99,
+                        step: 0.01,
+                    },
+                    desc: Some("Feedback (resonance)"),
+                },
+                ParamDef {
+                    name: "Damp",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 1.0,
+                        step: 0.01,
+                    },
+                    desc: Some("HF damping in feedback"),
+                },
+            ],
+            ModuleKind::Allpass => &[
+                ParamDef {
+                    name: "In",
+                    kind: ParamKind::Float {
+                        min: -1.0,
+                        max: 1.0,
+                        step: 0.01,
+                    },
+                    desc: None,
+                },
+                ParamDef {
+                    name: "Time",
+                    kind: ParamKind::Time,
+                    desc: Some("Delay time"),
+                },
+                ParamDef {
+                    name: "Fdbk",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 0.99,
+                        step: 0.01,
+                    },
+                    desc: Some("Coefficient (diffusion)"),
+                },
+            ],
             ModuleKind::Delay => &[
                 ParamDef {
                     name: "In",
@@ -1568,6 +1642,17 @@ pub enum ModuleParams {
         q: f32,
         connected: u8,
     },
+    Comb {
+        time: TimeValue,
+        feedback: f32,
+        damp: f32,
+        connected: u8,
+    },
+    Allpass {
+        time: TimeValue,
+        feedback: f32,
+        connected: u8,
+    },
     Delay {
         time: TimeValue,
         connected: u8,
@@ -1694,6 +1779,17 @@ impl ModuleParams {
                 q: 0.707,
                 connected: 0xFF,
             },
+            ModuleKind::Comb => ModuleParams::Comb {
+                time: TimeValue::from_samples(441.0),
+                feedback: 0.8,
+                damp: 0.2,
+                connected: 0xFF,
+            },
+            ModuleKind::Allpass => ModuleParams::Allpass {
+                time: TimeValue::from_samples(441.0),
+                feedback: 0.5,
+                connected: 0xFF,
+            },
             ModuleKind::Delay => ModuleParams::Delay {
                 time: TimeValue::from_samples(4410.0),
                 connected: 0xFF,
@@ -1778,6 +1874,8 @@ impl ModuleParams {
             ModuleParams::Adsr { connected, .. } => *connected,
             ModuleParams::Envelope { connected, .. } => *connected,
             ModuleParams::Filter { connected, .. } => *connected,
+            ModuleParams::Comb { connected, .. } => *connected,
+            ModuleParams::Allpass { connected, .. } => *connected,
             ModuleParams::Delay { connected, .. } => *connected,
             ModuleParams::Reverb { connected, .. } => *connected,
             ModuleParams::Distortion { connected, .. } => *connected,
@@ -1808,6 +1906,8 @@ impl ModuleParams {
             ModuleParams::Adsr { connected, .. } => Some(connected),
             ModuleParams::Envelope { connected, .. } => Some(connected),
             ModuleParams::Filter { connected, .. } => Some(connected),
+            ModuleParams::Comb { connected, .. } => Some(connected),
+            ModuleParams::Allpass { connected, .. } => Some(connected),
             ModuleParams::Delay { connected, .. } => Some(connected),
             ModuleParams::Reverb { connected, .. } => Some(connected),
             ModuleParams::Distortion { connected, .. } => Some(connected),

@@ -252,6 +252,10 @@ pub struct Track {
 }
 
 impl Track {
+    pub fn set_playhead(&mut self, phase: f32) {
+        self.playhead = phase.rem_euclid(1.0);
+    }
+
     pub fn parse(notation: &str, scale: &crate::Scale) -> Result<Self, String> {
         let ast = parse_notation(notation)?;
         let mut events = Vec::new();

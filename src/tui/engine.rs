@@ -1,7 +1,9 @@
 use super::grid::{Cell, GridPos};
 use super::module::{Module, ModuleId, ModuleKind, SubPatchId};
 use super::patch::{Patch, PatchSet};
+use crate::allpass::AllpassFilter;
 use crate::clock::Clock;
+use crate::comb::CombFilter;
 use crate::delay::Delay;
 use crate::distortion::Distortion;
 use crate::envelopes::{Envelope, EnvelopePoint, PointType, ADSR};
@@ -84,7 +86,10 @@ impl TrackState {
         self.voices.len()
     }
 
-    pub fn set_track(&mut self, track: Option<Track>) {
+    pub fn set_track(&mut self, mut track: Option<Track>) {
+        if let Some(ref mut t) = track {
+            t.set_playhead(self.clock.phase());
+        }
         self.track = track;
         for v in &mut self.voices {
             v.gate = 0.0;
@@ -174,6 +179,8 @@ enum NodeKind {
     Envelope(Envelope),
     Lpf(LowpassFilter),
     Hpf(HighpassFilter),
+    Comb(CombFilter),
+    Allpass(AllpassFilter),
     Delay(Delay),
     DelayTap { delay_node: usize, gain: f32 },
     Reverb(Reverb),
@@ -298,6 +305,10 @@ impl CompiledVoice {
                 }
                 NodeKind::Hpf(filter) => {
                     filter.output(inputs.first().copied().unwrap_or(0.0), signal)
+                }
+                NodeKind::Comb(comb) => comb.output(inputs.first().copied().unwrap_or(0.0)),
+                NodeKind::Allpass(allpass) => {
+                    allpass.process(inputs.first().copied().unwrap_or(0.0))
                 }
                 NodeKind::Delay(delay) => delay.output(inputs.first().copied().unwrap_or(0.0)),
                 NodeKind::DelayTap { .. } => delay_tap_value.unwrap_or(0.0),
@@ -1194,6 +1205,26 @@ fn create_node_kind(module: &Module, ctx: &CompileContext) -> NodeKind {
             filter.freq(normalized).q(*q);
             NodeKind::Hpf(filter)
         }
+        (
+            ModuleKind::Comb,
+            ModuleParams::Comb {
+                time,
+                feedback,
+                damp,
+                ..
+            },
+        ) => {
+            let size = time.to_samples(ctx.sample_rate, ctx.bpm, ctx.bars) as usize;
+            let mut comb = CombFilter::new(size.max(1));
+            comb.feedback(*feedback).damp(*damp);
+            NodeKind::Comb(comb)
+        }
+        (ModuleKind::Allpass, ModuleParams::Allpass { time, feedback, .. }) => {
+            let size = time.to_samples(ctx.sample_rate, ctx.bpm, ctx.bars) as usize;
+            let mut allpass = AllpassFilter::new(size.max(1));
+            allpass.feedback(*feedback);
+            NodeKind::Allpass(allpass)
+        }
         (ModuleKind::Delay, ModuleParams::Delay { time, .. }) => {
             let mut delay = Delay::default();
             delay.delay(time.to_samples(ctx.sample_rate, ctx.bpm, ctx.bars));
@@ -1287,7 +1318,7 @@ fn get_input_defaults(module: &Module, ctx: &CompileContext) -> Vec<f32> {
     }
 
     match module.kind {
-        ModuleKind::SubIn => return Vec::new(),
+        ModuleKind::SubIn => return vec![0.0],
         ModuleKind::SubOut => return vec![0.0],
         ModuleKind::DelayTap(_) => return Vec::new(),
         _ => {}
