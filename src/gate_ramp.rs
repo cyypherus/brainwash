@@ -164,18 +164,27 @@ mod tests {
         assert!((v - 0.0).abs() < 0.01, "While gate HIGH, should output 0.0");
 
         let v = ramp.output(1.0, &make_signal(sr, 50));
-        assert!((v - 0.0).abs() < 0.01, "While gate HIGH, should stay at 0.0");
+        assert!(
+            (v - 0.0).abs() < 0.01,
+            "While gate HIGH, should stay at 0.0"
+        );
 
         ramp.output(0.0, &make_signal(sr, 51));
 
         let v = ramp.output(0.0, &make_signal(sr, 101));
-        assert!((v - 0.5).abs() < 0.1, "Halfway through release, should be ~0.5");
+        assert!(
+            (v - 0.5).abs() < 0.1,
+            "Halfway through release, should be ~0.5"
+        );
 
         let v = ramp.output(0.0, &make_signal(sr, 151));
         assert!((v - 1.0).abs() < 0.01, "After release time, should be 1.0");
 
         let v = ramp.output(1.0, &make_signal(sr, 152));
-        assert!((v - 0.0).abs() < 0.01, "Gate HIGH again, should reset to 0.0");
+        assert!(
+            (v - 0.0).abs() < 0.01,
+            "Gate HIGH again, should reset to 0.0"
+        );
     }
 
     #[test]

@@ -97,6 +97,7 @@ impl Action {
     }
 }
 
+#[derive(Clone)]
 pub struct Binding {
     pub key: KeyCode,
     pub action: Action,

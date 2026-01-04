@@ -1,4 +1,5 @@
-use super::bindings::{self, lookup, Action};
+use super::bindings::{lookup, Action, Binding};
+use super::config::Bindings;
 use super::engine::{
     command_channel, compile_patch, compile_voices, meter_channel, output_channel, AudioCommand,
     AudioEngine, CommandSender, CompileContext, CompiledPatch, MeterReceiver, OutputReceiver,
@@ -276,6 +277,7 @@ struct App {
     help_scroll: usize,
     last_mode_for_help: std::mem::Discriminant<Mode>,
     active_pitches: Vec<u8>,
+    bindings: Bindings,
 }
 
 const SCALE_NAMES: &[&str] = &[
@@ -402,6 +404,7 @@ impl App {
             help_scroll: 0,
             last_mode_for_help: std::mem::discriminant(&Mode::Normal),
             active_pitches: Vec::new(),
+            bindings: Bindings::load(),
         }
     }
 
@@ -879,28 +882,28 @@ impl App {
         }
     }
 
-    fn bindings_for_mode(&self) -> &'static [bindings::Binding] {
+    fn bindings_for_mode(&self) -> &[Binding] {
         match &self.mode {
-            Mode::Normal => bindings::normal_bindings(),
-            Mode::Palette => bindings::palette_bindings(),
+            Mode::Normal => &self.bindings.normal,
+            Mode::Palette => &self.bindings.palette,
             Mode::Move { .. } | Mode::Copy { .. } | Mode::CopySelection { .. } => {
-                bindings::move_bindings()
+                &self.bindings.move_mode
             }
             Mode::Select { .. } | Mode::MouseSelect { .. } | Mode::SelectMove { .. } => {
-                bindings::select_bindings()
+                &self.bindings.select
             }
-            Mode::Edit { .. } | Mode::AdsrEdit { .. } => bindings::edit_bindings(),
-            Mode::ProbeEdit { .. } => bindings::probe_bindings(),
-            Mode::SampleView { .. } => bindings::sample_bindings(),
-            Mode::EnvEdit { editing: true, .. } => bindings::env_move_bindings(),
-            Mode::EnvEdit { .. } => bindings::env_bindings(),
+            Mode::Edit { .. } | Mode::AdsrEdit { .. } => &self.bindings.edit,
+            Mode::ProbeEdit { .. } => &self.bindings.probe,
+            Mode::SampleView { .. } => &self.bindings.sample,
+            Mode::EnvEdit { editing: true, .. } => &self.bindings.env_move,
+            Mode::EnvEdit { .. } => &self.bindings.env,
             Mode::QuitConfirm | Mode::SaveConfirm | Mode::ExportConfirm => {
-                bindings::quit_confirm_bindings()
+                &self.bindings.quit_confirm
             }
             Mode::SavePrompt | Mode::ExportPrompt | Mode::ValueInput { .. } => {
-                bindings::text_input_bindings()
+                &self.bindings.text_input
             }
-            Mode::TrackSettings { .. } => bindings::settings_bindings(),
+            Mode::TrackSettings { .. } => &self.bindings.settings,
         }
     }
 
@@ -3104,7 +3107,7 @@ impl App {
             help_area.height.saturating_sub(header_height),
         );
         let bindings = if matches!(self.mode, Mode::Palette) && self.palette_searching {
-            bindings::text_input_bindings()
+            &self.bindings.text_input
         } else {
             self.bindings_for_mode()
         };

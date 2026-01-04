@@ -1,10 +1,10 @@
 use nom::{
+    Parser,
     branch::alt,
     character::complete::{char, digit1},
     combinator::opt,
     multi::{many0, many1, separated_list1},
     sequence::delimited,
-    Parser,
 };
 
 #[derive(Clone, Debug, PartialEq)]

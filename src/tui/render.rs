@@ -1078,18 +1078,18 @@ impl Widget for StatusWidget<'_> {
     }
 }
 
-pub struct HelpWidget {
-    bindings: &'static [bindings::Binding],
+pub struct HelpWidget<'a> {
+    bindings: &'a [bindings::Binding],
     scroll: usize,
 }
 
-impl HelpWidget {
-    pub fn new(bindings: &'static [bindings::Binding], scroll: usize) -> Self {
+impl<'a> HelpWidget<'a> {
+    pub fn new(bindings: &'a [bindings::Binding], scroll: usize) -> Self {
         Self { bindings, scroll }
     }
 }
 
-impl Widget for HelpWidget {
+impl Widget for HelpWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let hints = bindings::hints(self.bindings);
 

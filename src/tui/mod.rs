@@ -1,5 +1,6 @@
 mod app;
 pub mod bindings;
+mod config;
 mod engine;
 mod grid;
 mod instrument;
