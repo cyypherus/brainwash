@@ -1,10 +1,10 @@
 use nom::{
-    Parser,
     branch::alt,
     character::complete::{char, digit1},
     combinator::opt,
     multi::{many0, many1, separated_list1},
     sequence::delimited,
+    Parser,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -184,6 +184,7 @@ fn parse_notation(input: &str) -> Result<ParsedTrackAST, String> {
 #[derive(Clone, Debug)]
 struct TimelineNote {
     pitch: u8,
+    degree: i32,
     start: f32,
     end: f32,
 }
@@ -198,7 +199,12 @@ fn extract_notes(
     match item {
         Item::Note(note) => {
             let pitch = (scale.note(note.degree) + note.chromatic_shift).clamp(0, 127) as u8;
-            notes.push(TimelineNote { pitch, start, end });
+            notes.push(TimelineNote {
+                pitch,
+                degree: note.degree,
+                start,
+                end,
+            });
         }
         Item::Rest => {}
         Item::Sequence(divs) => {
@@ -235,7 +241,7 @@ fn extract_notes(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NoteEvent {
-    Press { pitch: u8 },
+    Press { pitch: u8, degree: i32 },
     Release { pitch: u8 },
 }
 
@@ -265,8 +271,10 @@ impl Track {
                 let mut weight_idx = 0;
 
                 for division in &bar.divisions {
-                    let div_start = bar_start + (weight_idx as f32 / total_weight as f32) * bar_span;
-                    let div_end = bar_start + ((weight_idx + division.weight) as f32 / total_weight as f32) * bar_span;
+                    let div_start =
+                        bar_start + (weight_idx as f32 / total_weight as f32) * bar_span;
+                    let div_end = bar_start
+                        + ((weight_idx + division.weight) as f32 / total_weight as f32) * bar_span;
                     extract_notes(&division.item, div_start, div_end, &mut events, scale);
                     weight_idx += division.weight;
                 }
@@ -351,7 +359,10 @@ impl Track {
                     // 0---------------------1
                     // ###e==t---------f==s###
                     if note_start >= from || note_start < to {
-                        events.push(NoteEvent::Press { pitch: note.pitch });
+                        events.push(NoteEvent::Press {
+                            pitch: note.pitch,
+                            degree: note.degree,
+                        });
                     }
                     // ======t------s##f##e===
                     if note_end >= from || note_end < to {
@@ -360,7 +371,10 @@ impl Track {
                 } else {
                     // ------f=s#######t##e----
                     if note_start >= from && note_start < to {
-                        events.push(NoteEvent::Press { pitch: note.pitch });
+                        events.push(NoteEvent::Press {
+                            pitch: note.pitch,
+                            degree: note.degree,
+                        });
                     }
                     // ----s##f#####e==t------
                     if note_end >= from && note_end < to {
@@ -371,14 +385,20 @@ impl Track {
                 if to > from {
                     // looped around
                     if note_start <= from || note_start > to {
-                        events.push(NoteEvent::Press { pitch: note.pitch });
+                        events.push(NoteEvent::Press {
+                            pitch: note.pitch,
+                            degree: note.degree,
+                        });
                     }
                     if note_end <= from || note_end > to {
                         events.push(NoteEvent::Release { pitch: note.pitch });
                     }
                 } else {
                     if note_start <= from && note_start > to {
-                        events.push(NoteEvent::Press { pitch: note.pitch });
+                        events.push(NoteEvent::Press {
+                            pitch: note.pitch,
+                            degree: note.degree,
+                        });
                     }
                     if note_end <= from && note_end > to {
                         events.push(NoteEvent::Release { pitch: note.pitch });

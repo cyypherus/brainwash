@@ -1080,11 +1080,12 @@ impl Widget for StatusWidget<'_> {
 
 pub struct HelpWidget {
     bindings: &'static [bindings::Binding],
+    scroll: usize,
 }
 
 impl HelpWidget {
-    pub fn new(bindings: &'static [bindings::Binding]) -> Self {
-        Self { bindings }
+    pub fn new(bindings: &'static [bindings::Binding], scroll: usize) -> Self {
+        Self { bindings, scroll }
     }
 }
 
@@ -1094,26 +1095,71 @@ impl Widget for HelpWidget {
 
         let key_style = Style::default().fg(Color::Cyan);
         let desc_style = Style::default().fg(Color::DarkGray);
+        let scroll_style = Style::default().fg(Color::DarkGray);
+
+        let mut total_lines = 0usize;
+        let mut last_section_for_count = None;
+        for (_, _, section) in hints.iter() {
+            if last_section_for_count.is_some() && last_section_for_count != Some(*section) {
+                total_lines += 1;
+            }
+            last_section_for_count = Some(*section);
+            total_lines += 1;
+        }
+
+        let visible_height = area.height as usize;
+        let can_scroll = total_lines > visible_height;
+        let max_scroll = total_lines.saturating_sub(visible_height);
+        let scroll = self.scroll.min(max_scroll);
 
         let mut y = area.y;
+        let mut line_idx = 0usize;
         let mut last_section = None;
         for (key, desc, section) in hints.iter() {
             if last_section.is_some() && last_section != Some(*section) {
-                y += 1;
+                if line_idx >= scroll {
+                    y += 1;
+                }
+                line_idx += 1;
             }
             last_section = Some(*section);
-            if y >= area.y + area.height {
-                return;
+
+            if line_idx >= scroll {
+                if y >= area.y + area.height {
+                    break;
+                }
+                set_str(buf, area.x, y, key, key_style);
+                set_str(
+                    buf,
+                    area.x + key.chars().count() as u16 + 1,
+                    y,
+                    desc,
+                    desc_style,
+                );
+                y += 1;
             }
-            set_str(buf, area.x, y, key, key_style);
-            set_str(
-                buf,
-                area.x + key.chars().count() as u16 + 1,
-                y,
-                desc,
-                desc_style,
-            );
-            y += 1;
+            line_idx += 1;
+        }
+
+        if can_scroll {
+            if scroll > 0 {
+                set_str(
+                    buf,
+                    area.x + area.width.saturating_sub(2),
+                    area.y,
+                    "▲",
+                    scroll_style,
+                );
+            }
+            if scroll + visible_height < total_lines {
+                set_str(
+                    buf,
+                    area.x + area.width.saturating_sub(2),
+                    area.y + area.height - 1,
+                    "▼",
+                    scroll_style,
+                );
+            }
         }
     }
 }
@@ -1182,7 +1228,7 @@ impl Widget for EditWidget<'_> {
                         "✕ "
                     }
                 }
-                ParamKind::Enum | ParamKind::Toggle => "  ",
+                ParamKind::Enum | ParamKind::Toggle | ParamKind::Int { .. } => "  ",
             };
             set_str(buf, area.x, y, port_str, style);
             set_str(buf, area.x + 2, y, def.name, style);
@@ -1290,6 +1336,20 @@ impl Widget for EditWidget<'_> {
                             val_x + val_str.len() as u16 + 1,
                             y,
                             "<hl> u;",
+                            label_style,
+                        );
+                    }
+                }
+                ParamKind::Int { .. } => {
+                    let val = self.module.params.get_int(i).unwrap_or(0);
+                    let val_str = format!("{}", val);
+                    set_str(buf, val_x, y, &val_str, v_style);
+                    if is_selected {
+                        set_str(
+                            buf,
+                            val_x + val_str.len() as u16 + 1,
+                            y,
+                            "<hl>",
                             label_style,
                         );
                     }

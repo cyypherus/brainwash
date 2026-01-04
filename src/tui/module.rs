@@ -167,6 +167,8 @@ impl DistType {
 pub enum ModuleKind {
     Freq,
     Gate,
+    Degree,
+    DegreeGate,
     Osc,
     Rise,
     Fall,
@@ -205,6 +207,8 @@ impl ModuleKind {
         match self {
             ModuleKind::Freq => "Freq",
             ModuleKind::Gate => "Gate",
+            ModuleKind::Degree => "Deg",
+            ModuleKind::DegreeGate => "DegG",
             ModuleKind::Osc => "Osc",
             ModuleKind::Rise => "Rise",
             ModuleKind::Fall => "Fall",
@@ -243,6 +247,8 @@ impl ModuleKind {
         match self {
             ModuleKind::Freq => "FRQ",
             ModuleKind::Gate => "GAT",
+            ModuleKind::Degree => "DEG",
+            ModuleKind::DegreeGate => "DGG",
             ModuleKind::Osc => "OSC",
             ModuleKind::Rise => "RIS",
             ModuleKind::Fall => "FAL",
@@ -281,6 +287,8 @@ impl ModuleKind {
         match self {
             ModuleKind::Freq => "Note frequency from track",
             ModuleKind::Gate => "Note gate - on / off",
+            ModuleKind::Degree => "Scale degree from track",
+            ModuleKind::DegreeGate => "Gate when degree matches",
             ModuleKind::Osc => "Oscillator - makes noise!",
             ModuleKind::Rise => "Ramps 0->1 while gate high",
             ModuleKind::Fall => "Ramps 0->1 while gate low",
@@ -317,7 +325,9 @@ impl ModuleKind {
 
     pub fn color(&self) -> Color {
         match self {
-            ModuleKind::Freq | ModuleKind::Gate => Color::Rgb(100, 200, 100),
+            ModuleKind::Freq | ModuleKind::Gate | ModuleKind::Degree | ModuleKind::DegreeGate => {
+                Color::Rgb(100, 200, 100)
+            }
             ModuleKind::Osc | ModuleKind::Sample => Color::Rgb(100, 150, 255),
             ModuleKind::Rise
             | ModuleKind::Fall
@@ -395,7 +405,9 @@ impl ModuleKind {
 
     pub fn category(&self) -> ModuleCategory {
         match self {
-            ModuleKind::Freq | ModuleKind::Gate => ModuleCategory::Track,
+            ModuleKind::Freq | ModuleKind::Gate | ModuleKind::Degree | ModuleKind::DegreeGate => {
+                ModuleCategory::Track
+            }
             ModuleKind::Osc | ModuleKind::Sample => ModuleCategory::Generator,
             ModuleKind::Rise
             | ModuleKind::Fall
@@ -433,6 +445,8 @@ impl ModuleKind {
         &[
             ModuleKind::Freq,
             ModuleKind::Gate,
+            ModuleKind::Degree,
+            ModuleKind::DegreeGate,
             ModuleKind::Osc,
             ModuleKind::Rise,
             ModuleKind::Fall,
@@ -758,7 +772,7 @@ impl Module {
             match def.kind {
                 ParamKind::Input => true,
                 ParamKind::Float { .. } | ParamKind::Time => self.params.is_connected(param_idx),
-                ParamKind::Enum | ParamKind::Toggle => false,
+                ParamKind::Enum | ParamKind::Toggle | ParamKind::Int { .. } => false,
             }
         } else {
             false
@@ -992,6 +1006,7 @@ impl TimeValue {
 
 pub enum ParamKind {
     Float { min: f32, max: f32, step: f32 },
+    Int { min: i32, max: i32 },
     Time,
     Input,
     Enum,
@@ -1015,7 +1030,11 @@ pub struct ParamDef {
 impl ModuleKind {
     pub fn param_defs(&self) -> &'static [ParamDef] {
         match self {
-            ModuleKind::Freq | ModuleKind::Gate => &[],
+            ModuleKind::Freq | ModuleKind::Gate | ModuleKind::Degree => &[],
+            ModuleKind::DegreeGate => &[ParamDef {
+                name: "Deg",
+                kind: ParamKind::Int { min: 0, max: 12 },
+            }],
             ModuleKind::Osc => &[
                 ParamDef {
                     name: "Wave",
@@ -1419,6 +1438,9 @@ pub struct EnvPoint {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ModuleParams {
     None,
+    DegreeGate {
+        degree: i32,
+    },
     Osc {
         wave: WaveType,
         freq: TimeValue,
@@ -1525,7 +1547,8 @@ pub enum ModuleParams {
 impl ModuleParams {
     pub fn default_for(kind: ModuleKind) -> Self {
         match kind {
-            ModuleKind::Freq | ModuleKind::Gate => ModuleParams::None,
+            ModuleKind::Freq | ModuleKind::Gate | ModuleKind::Degree => ModuleParams::None,
+            ModuleKind::DegreeGate => ModuleParams::DegreeGate { degree: 0 },
             ModuleKind::Osc => ModuleParams::Osc {
                 wave: WaveType::Sin,
                 freq: TimeValue::from_hz(440.0),
@@ -1651,7 +1674,7 @@ impl ModuleParams {
 
     pub fn connected(&self) -> u8 {
         match self {
-            ModuleParams::None => 0xFF,
+            ModuleParams::None | ModuleParams::DegreeGate { .. } => 0xFF,
             ModuleParams::Osc { connected, .. } => *connected,
             ModuleParams::Rise { connected, .. } => *connected,
             ModuleParams::Fall { connected, .. } => *connected,
@@ -1679,7 +1702,9 @@ impl ModuleParams {
 
     pub fn connected_mut(&mut self) -> Option<&mut u8> {
         match self {
-            ModuleParams::None | ModuleParams::SubPatch { .. } => None,
+            ModuleParams::None
+            | ModuleParams::SubPatch { .. }
+            | ModuleParams::DegreeGate { .. } => None,
             ModuleParams::Osc { connected, .. } => Some(connected),
             ModuleParams::Rise { connected, .. } => Some(connected),
             ModuleParams::Fall { connected, .. } => Some(connected),
@@ -1980,6 +2005,26 @@ impl ModuleParams {
         match self {
             ModuleParams::Osc { uni, .. } => match idx {
                 4 => *uni = !*uni,
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    pub fn get_int(&self, idx: usize) -> Option<i32> {
+        match self {
+            ModuleParams::DegreeGate { degree } => match idx {
+                0 => Some(*degree),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    pub fn set_int(&mut self, idx: usize, val: i32) {
+        match self {
+            ModuleParams::DegreeGate { degree } => match idx {
+                0 => *degree = val,
                 _ => {}
             },
             _ => {}

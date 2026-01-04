@@ -1,8 +1,8 @@
-use super::bindings::{self, Action, lookup};
+use super::bindings::{self, lookup, Action};
 use super::engine::{
-    AudioCommand, AudioEngine, CommandSender, CompileContext, CompiledPatch, MeterReceiver,
-    OUTPUT_INTERVAL, OutputReceiver, TrackState, command_channel, compile_patch, compile_voices,
-    meter_channel, output_channel,
+    command_channel, compile_patch, compile_voices, meter_channel, output_channel, AudioCommand,
+    AudioEngine, CommandSender, CompileContext, CompiledPatch, MeterReceiver, OutputReceiver,
+    TrackState, OUTPUT_INTERVAL,
 };
 use super::grid::GridPos;
 use super::instrument::Instrument;
@@ -15,14 +15,14 @@ use super::render::{
     AdsrWidget, EditWidget, EnvelopeWidget, GridWidget, HelpWidget, PaletteWidget, ProbeWidget,
     StatusWidget,
 };
-use crate::Signal;
 use crate::live::AudioPlayer;
 use crate::scale::{
-    Scale, amaj, amin, asharpmaj, asharpmin, bmaj, bmin, chromatic, cmaj, cmin, csharpmaj,
-    csharpmin, dmaj, dmin, dsharpmaj, dsharpmin, emaj, emin, fmaj, fmin, fsharpmaj, fsharpmin,
-    gmaj, gmin, gsharpmaj, gsharpmin,
+    amaj, amin, asharpmaj, asharpmin, bmaj, bmin, chromatic, cmaj, cmin, csharpmaj, csharpmin,
+    dmaj, dmin, dsharpmaj, dsharpmin, emaj, emin, fmaj, fmin, fsharpmaj, fsharpmin, gmaj, gmin,
+    gsharpmaj, gsharpmin, Scale,
 };
 use crate::track::Track;
+use crate::Signal;
 use cpal::traits::StreamTrait;
 use lilt::{Animated, Easing};
 use ratatui::crossterm::{
@@ -31,14 +31,14 @@ use ratatui::crossterm::{
         MouseEventKind,
     },
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
-    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     widgets::{Block, Borders, Clear},
+    Frame, Terminal,
 };
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -271,6 +271,8 @@ struct App {
     step_size: usize,
     probe_voice: usize,
     brand_scroll: Animated<f32, Instant>,
+    help_scroll: usize,
+    last_mode_for_help: std::mem::Discriminant<Mode>,
 }
 
 const SCALE_NAMES: &[&str] = &[
@@ -387,6 +389,8 @@ impl App {
                 .repeat_forever()
                 .auto_reverse()
                 .auto_start(1.0, Instant::now()),
+            help_scroll: 0,
+            last_mode_for_help: std::mem::discriminant(&Mode::Normal),
         }
     }
 
@@ -862,6 +866,12 @@ impl App {
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         self.message = None;
 
+        let current_mode = std::mem::discriminant(&self.mode);
+        if current_mode != self.last_mode_for_help {
+            self.help_scroll = 0;
+            self.last_mode_for_help = current_mode;
+        }
+
         match self.mode.clone() {
             Mode::Normal => self.handle_normal_key(code),
             Mode::Palette => self.handle_palette_key(code),
@@ -999,15 +1009,10 @@ impl App {
                                 param_idx: 0,
                             };
                         } else {
-                            let defs = m.kind.param_defs();
-                            if !defs.is_empty() {
-                                self.mode = Mode::Edit {
-                                    module_id: id,
-                                    param_idx: 0,
-                                };
-                            } else {
-                                self.message = Some("No params to edit".into());
-                            }
+                            self.mode = Mode::Edit {
+                                module_id: id,
+                                param_idx: 0,
+                            };
                         }
                     }
                 }
@@ -1135,6 +1140,12 @@ impl App {
             Action::NewInstrument => {
                 self.add_instrument();
                 self.message = Some(format!("New instrument {}", self.instruments.len()));
+            }
+            Action::HelpScrollUp => {
+                self.help_scroll = self.help_scroll.saturating_sub(1);
+            }
+            Action::HelpScrollDown => {
+                self.help_scroll += 1;
             }
             _ => {}
         }
@@ -1637,7 +1648,11 @@ impl App {
                     && mod_min_y <= sel_max_y
                     && mod_max_y >= sel_min_y;
 
-                if overlaps { Some(m.id) } else { None }
+                if overlaps {
+                    Some(m.id)
+                } else {
+                    None
+                }
             })
             .collect()
     }
@@ -1704,6 +1719,10 @@ impl App {
                                 ParamKind::Toggle => {
                                     m.params.toggle(param_idx);
                                 }
+                                ParamKind::Int { min, .. } => {
+                                    let cur = m.params.get_int(param_idx).unwrap_or(0);
+                                    m.params.set_int(param_idx, (cur - 1).max(*min));
+                                }
                                 ParamKind::Input => {}
                             }
                         }
@@ -1738,6 +1757,10 @@ impl App {
                                 }
                                 ParamKind::Toggle => {
                                     m.params.toggle(param_idx);
+                                }
+                                ParamKind::Int { max, .. } => {
+                                    let cur = m.params.get_int(param_idx).unwrap_or(0);
+                                    m.params.set_int(param_idx, (cur + 1).min(*max));
                                 }
                                 ParamKind::Input => {}
                             }
@@ -2962,7 +2985,7 @@ impl App {
             }
             Mode::TrackSettings { .. } => bindings::settings_bindings(),
         };
-        f.render_widget(HelpWidget::new(bindings), help_inner);
+        f.render_widget(HelpWidget::new(bindings, self.help_scroll), help_inner);
 
         let mode_str = match self.mode {
             Mode::Normal => "NORMAL",

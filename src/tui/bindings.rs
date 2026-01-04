@@ -48,6 +48,8 @@ pub enum Action {
     CycleStep,
     Instrument(usize),
     NewInstrument,
+    HelpScrollUp,
+    HelpScrollDown,
 }
 
 impl Action {
@@ -90,6 +92,7 @@ impl Action {
             Action::Export => "export wav",
             Action::Instrument(_) => "instrument",
             Action::NewInstrument => "new inst",
+            Action::HelpScrollUp | Action::HelpScrollDown => "scroll help",
         }
     }
 }
@@ -111,60 +114,74 @@ impl Binding {
 pub fn normal_bindings() -> &'static [Binding] {
     &[
         Binding {
+            key: KeyCode::Char('['),
+            action: Action::HelpScrollUp,
+            hint: Some("scroll help"),
+            group: Some("help"),
+            section: 0,
+        },
+        Binding {
+            key: KeyCode::Char(']'),
+            action: Action::HelpScrollDown,
+            hint: None,
+            group: Some("help"),
+            section: 0,
+        },
+        Binding {
             key: KeyCode::Char('h'),
             action: Action::Left,
             hint: None,
             group: Some("hjkl"),
-            section: 0,
+            section: 1,
         },
         Binding {
             key: KeyCode::Char('j'),
             action: Action::Down,
             hint: None,
             group: Some("hjkl"),
-            section: 0,
+            section: 1,
         },
         Binding {
             key: KeyCode::Char('k'),
             action: Action::Up,
             hint: None,
             group: Some("hjkl"),
-            section: 0,
+            section: 1,
         },
         Binding {
             key: KeyCode::Char('l'),
             action: Action::Right,
             hint: None,
             group: Some("hjkl"),
-            section: 0,
+            section: 1,
         },
         Binding {
             key: KeyCode::Left,
             action: Action::Left,
             hint: None,
             group: Some("arrows"),
-            section: 0,
+            section: 1,
         },
         Binding {
             key: KeyCode::Down,
             action: Action::Down,
             hint: None,
             group: Some("arrows"),
-            section: 0,
+            section: 1,
         },
         Binding {
             key: KeyCode::Up,
             action: Action::Up,
             hint: None,
             group: Some("arrows"),
-            section: 0,
+            section: 1,
         },
         Binding {
             key: KeyCode::Right,
             action: Action::Right,
             hint: None,
             group: Some("arrows"),
-            section: 0,
+            section: 1,
         },
         Binding {
             key: KeyCode::Char('m'),
@@ -1241,6 +1258,8 @@ pub fn key_str(key: KeyCode) -> &'static str {
             '-' => "-",
             '=' => "=",
             '+' => "+",
+            '[' => "[",
+            ']' => "]",
             _ => "?",
         },
         KeyCode::Enter => "ret",

@@ -54,6 +54,7 @@ pub struct MeterFrame {
 #[derive(Clone, Copy, Debug, Default)]
 struct Voice {
     pitch: u8,
+    degree: i32,
     freq: f32,
     gate: f32,
     age: usize,
@@ -99,7 +100,7 @@ impl TrackState {
 
         for event in events {
             match event {
-                NoteEvent::Press { pitch } => {
+                NoteEvent::Press { pitch, degree } => {
                     let freq = 440.0 * 2.0f32.powf((pitch as f32 - 69.0) / 12.0);
                     self.age_counter += 1;
 
@@ -126,6 +127,7 @@ impl TrackState {
                     if let Some(i) = idx {
                         let v = &mut self.voices[i];
                         v.pitch = pitch;
+                        v.degree = degree;
                         v.freq = freq;
                         v.gate = 1.0;
                         v.age = self.age_counter;
@@ -144,15 +146,17 @@ impl TrackState {
         }
     }
 
-    pub fn voice(&self, idx: usize) -> (f32, f32) {
+    pub fn voice(&self, idx: usize) -> (f32, f32, i32) {
         let v = &self.voices[idx];
-        (v.freq, v.gate)
+        (v.freq, v.gate, v.degree)
     }
 }
 
 enum NodeKind {
     Freq,
     Gate,
+    Degree,
+    DegreeGate { target: i32 },
     Oscillator(Osc),
     Rise(GateRamp),
     Fall(GateRamp),
@@ -207,7 +211,7 @@ impl CompiledVoice {
         }
     }
 
-    fn process(&mut self, signal: &mut crate::Signal, freq: f32, gate: f32) -> f32 {
+    fn process(&mut self, signal: &mut crate::Signal, freq: f32, gate: f32, degree: i32) -> f32 {
         if gate > 0.5 && self.last_gate < 0.5 {
             self.reset();
         }
@@ -248,6 +252,14 @@ impl CompiledVoice {
             node.output = match &mut node.kind {
                 NodeKind::Freq => freq,
                 NodeKind::Gate => gate,
+                NodeKind::Degree => degree as f32,
+                NodeKind::DegreeGate { target } => {
+                    if gate > 0.5 && degree == *target {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
                 NodeKind::Oscillator(osc) => {
                     let f = inputs.first().copied().unwrap_or(440.0);
                     let s = inputs.get(1).copied().unwrap_or(0.0);
@@ -362,8 +374,8 @@ impl PatchVoices {
         let mut sum = 0.0;
         let n = self.voices.len().min(track.num_voices());
         for i in 0..n {
-            let (freq, gate) = track.voice(i);
-            sum += self.voices[i].process(signal, freq, gate);
+            let (freq, gate, degree) = track.voice(i);
+            sum += self.voices[i].process(signal, freq, gate, degree);
         }
         sum
     }
@@ -1097,6 +1109,10 @@ fn create_node_kind(module: &Module, ctx: &CompileContext) -> NodeKind {
     match (&module.kind, &module.params) {
         (ModuleKind::Freq, _) => NodeKind::Freq,
         (ModuleKind::Gate, _) => NodeKind::Gate,
+        (ModuleKind::Degree, _) => NodeKind::Degree,
+        (ModuleKind::DegreeGate, ModuleParams::DegreeGate { degree }) => {
+            NodeKind::DegreeGate { target: *degree }
+        }
         (ModuleKind::Osc, ModuleParams::Osc { wave, uni, .. }) => {
             let mut osc = Osc::default();
             match wave {
@@ -1491,14 +1507,14 @@ mod tests {
         let mut voice = compile_voice(&module_refs, &connections, &ctx);
         let mut signal = Signal::new(44100);
 
-        let output = voice.process(&mut signal, 440.0, 1.0);
+        let output = voice.process(&mut signal, 440.0, 1.0, 0);
         assert!(
             (output - 1.0).abs() < 0.001,
             "Output should be 1.0 (gate), got {}",
             output
         );
 
-        let output = voice.process(&mut signal, 440.0, 0.0);
+        let output = voice.process(&mut signal, 440.0, 0.0, 0);
         assert!(
             output.abs() < 0.001,
             "Output should be 0.0 (gate off), got {}",
@@ -1534,14 +1550,14 @@ mod tests {
         let mut voice = compile_voice(&module_refs, &connections, &ctx);
         let mut signal = Signal::new(44100);
 
-        let output = voice.process(&mut signal, 440.0, 1.0);
+        let output = voice.process(&mut signal, 440.0, 1.0, 0);
         assert!(
             (output - 440.0).abs() < 0.001,
             "Output should be 440.0 (freq), got {}",
             output
         );
 
-        let output = voice.process(&mut signal, 880.0, 1.0);
+        let output = voice.process(&mut signal, 880.0, 1.0, 0);
         assert!(
             (output - 880.0).abs() < 0.001,
             "Output should be 880.0 (freq), got {}",
@@ -1627,7 +1643,7 @@ mod tests {
         let mut signal = Signal::new(44100);
 
         for _ in 0..1000 {
-            voice.process(&mut signal, 440.0, 1.0);
+            voice.process(&mut signal, 440.0, 1.0, 0);
         }
 
         let tap_node_idx = voice

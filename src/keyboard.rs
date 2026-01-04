@@ -50,7 +50,7 @@ impl<V> Keyboard<V> {
     pub fn update(&mut self, events: Vec<crate::NoteEvent>, signal: &Signal) {
         for event in events {
             match event {
-                crate::NoteEvent::Press { pitch } => {
+                crate::NoteEvent::Press { pitch, .. } => {
                     self.states[pitch as usize] = KeyState::Pressed {
                         pressed_at: signal.position,
                     };
@@ -94,7 +94,10 @@ mod tests {
     fn test_keyboard_update_press() {
         let mut keyboard: Keyboard<()> = Keyboard::new();
         let signal = Signal::new(44100);
-        let events = vec![crate::NoteEvent::Press { pitch: 60 }];
+        let events = vec![crate::NoteEvent::Press {
+            pitch: 60,
+            degree: 0,
+        }];
 
         keyboard.update(events, &signal);
 
@@ -109,7 +112,10 @@ mod tests {
         let mut keyboard: Keyboard<()> = Keyboard::new();
         let mut signal = Signal::new(44100);
 
-        let press_events = vec![crate::NoteEvent::Press { pitch: 60 }];
+        let press_events = vec![crate::NoteEvent::Press {
+            pitch: 60,
+            degree: 0,
+        }];
         keyboard.update(press_events, &signal);
 
         signal.position = 1000;
@@ -129,7 +135,10 @@ mod tests {
     fn test_keyboard_per_key_iteration() {
         let mut keyboard: Keyboard<i32> = Keyboard::with_builder(|| 42);
         let signal = Signal::new(44100);
-        let events = vec![crate::NoteEvent::Press { pitch: 60 }];
+        let events = vec![crate::NoteEvent::Press {
+            pitch: 60,
+            degree: 0,
+        }];
         keyboard.update(events, &signal);
 
         let mut visited_pitches = Vec::new();
@@ -145,7 +154,10 @@ mod tests {
     fn test_keyboard_per_key_with_state() {
         let mut keyboard: Keyboard<String> = Keyboard::with_builder(|| "voice".to_string());
         let signal = Signal::new(44100);
-        let events = vec![crate::NoteEvent::Press { pitch: 60 }];
+        let events = vec![crate::NoteEvent::Press {
+            pitch: 60,
+            degree: 0,
+        }];
         keyboard.update(events, &signal);
 
         keyboard.per_key(|voice, key| {
