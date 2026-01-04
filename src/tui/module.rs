@@ -2033,6 +2033,15 @@ impl ModuleParams {
                 1 => Some(*gain),
                 _ => None,
             },
+            ModuleParams::Comb { feedback, damp, .. } => match idx {
+                2 => Some(*feedback),
+                3 => Some(*damp),
+                _ => None,
+            },
+            ModuleParams::Allpass { feedback, .. } => match idx {
+                2 => Some(*feedback),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -2125,6 +2134,15 @@ impl ModuleParams {
                 1 => *gain = val,
                 _ => {}
             },
+            ModuleParams::Comb { feedback, damp, .. } => match idx {
+                2 => *feedback = val,
+                3 => *damp = val,
+                _ => {}
+            },
+            ModuleParams::Allpass { feedback, .. } => match idx {
+                2 => *feedback = val,
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -2147,6 +2165,10 @@ impl ModuleParams {
                 1 => Some(time),
                 _ => None,
             },
+            ModuleParams::Comb { time, .. } | ModuleParams::Allpass { time, .. } => match idx {
+                1 => Some(time),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -2166,6 +2188,10 @@ impl ModuleParams {
                 _ => None,
             },
             ModuleParams::Delay { time, .. } => match idx {
+                1 => Some(time),
+                _ => None,
+            },
+            ModuleParams::Comb { time, .. } | ModuleParams::Allpass { time, .. } => match idx {
                 1 => Some(time),
                 _ => None,
             },

@@ -44,13 +44,12 @@ pub enum AudioCommand {
         bars: f32,
     },
     SetProbeVoice(usize),
-    ClearProbeHistory(usize),
 }
 
 pub struct MeterFrame {
     pub instrument_idx: usize,
     pub ports: Vec<(ModuleId, Vec<f32>)>,
-    pub probes: Vec<(ModuleId, f32)>,
+    pub probes: Vec<(ModuleId, Vec<f32>)>,
     pub active_pitches: Vec<u8>,
 }
 
@@ -114,6 +113,11 @@ impl TrackState {
                         .voices
                         .iter()
                         .position(|v| v.pitch == pitch && v.gate > 0.5)
+                        .or_else(|| {
+                            self.voices
+                                .iter()
+                                .position(|v| v.pitch == pitch && v.gate < 0.5)
+                        })
                         .or_else(|| {
                             self.voices
                                 .iter()
@@ -412,6 +416,7 @@ pub struct CompiledPatch {
     old: Option<PatchVoices>,
     crossfade_pos: usize,
     probe_histories: Vec<VecDeque<f32>>,
+    probe_buffers: Vec<Vec<f32>>,
     probe_voice: usize,
     meter_tx: Option<MeterSender>,
     meter_counter: usize,
@@ -424,6 +429,7 @@ impl Default for CompiledPatch {
             old: None,
             crossfade_pos: CROSSFADE_SAMPLES,
             probe_histories: Vec::new(),
+            probe_buffers: Vec::new(),
             probe_voice: 0,
             meter_tx: None,
             meter_counter: 0,
@@ -483,13 +489,18 @@ impl CompiledPatch {
                 let mut probe_idx = 0;
                 for node in &voice.nodes {
                     if matches!(&node.kind, NodeKind::Probe) {
-                        if probe_idx >= self.probe_histories.len() {
+                        while probe_idx >= self.probe_histories.len() {
                             self.probe_histories
                                 .push(VecDeque::with_capacity(PROBE_HISTORY_LEN));
                         }
+                        while probe_idx >= self.probe_buffers.len() {
+                            self.probe_buffers.push(Vec::with_capacity(METER_INTERVAL));
+                        }
                         let history = &mut self.probe_histories[probe_idx];
+                        let buffer = &mut self.probe_buffers[probe_idx];
                         let val = node.input_values.first().copied().unwrap_or(0.0);
                         history.push_back(val);
+                        buffer.push(val);
                         if history.len() > PROBE_HISTORY_LEN {
                             history.pop_front();
                         }
@@ -497,6 +508,7 @@ impl CompiledPatch {
                     }
                 }
                 self.probe_histories.truncate(probe_idx);
+                self.probe_buffers.truncate(probe_idx);
 
                 self.meter_counter += 1;
                 if self.meter_counter >= METER_INTERVAL {
@@ -508,17 +520,16 @@ impl CompiledPatch {
                             .filter(|n| !n.input_values.is_empty())
                             .map(|n| (n.module_id, n.input_values.clone()))
                             .collect();
-                        let probes: Vec<(ModuleId, f32)> = voice
+                        let probes: Vec<(ModuleId, Vec<f32>)> = voice
                             .nodes
                             .iter()
-                            .filter_map(|n| match &n.kind {
-                                NodeKind::Probe => Some((
-                                    n.module_id,
-                                    n.input_values.first().copied().unwrap_or(0.0),
-                                )),
-                                _ => None,
-                            })
+                            .filter(|n| matches!(&n.kind, NodeKind::Probe))
+                            .zip(self.probe_buffers.iter())
+                            .map(|(n, buf)| (n.module_id, buf.clone()))
                             .collect();
+                        for buf in &mut self.probe_buffers {
+                            buf.clear();
+                        }
                         let _ = tx.try_send(MeterFrame {
                             instrument_idx,
                             ports,
@@ -666,11 +677,6 @@ impl AudioEngine {
             AudioCommand::SetProbeVoice(voice) => {
                 for inst in &mut self.instruments {
                     inst.patch.set_probe_voice(voice);
-                }
-            }
-            AudioCommand::ClearProbeHistory(idx) => {
-                for inst in &mut self.instruments {
-                    inst.patch.clear_probe_history(idx);
                 }
             }
         }

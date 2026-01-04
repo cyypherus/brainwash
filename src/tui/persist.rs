@@ -219,7 +219,7 @@ pub struct LoadResult {
 }
 
 pub fn file_to_patchset(pf: &PatchFile) -> LoadResult {
-    let mut root = modules_to_patch(&pf.modules, 32, 32);
+    let mut root = modules_to_patch(&pf.modules, 41, 21);
     let mut missing_samples = reload_samples_in_patch(&mut root);
 
     let mut subpatches = HashMap::new();

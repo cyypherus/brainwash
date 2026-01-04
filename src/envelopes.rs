@@ -88,42 +88,30 @@ impl Envelope {
 
                 let t = (time - p1.time) / segment_duration;
 
-                return match (p1.point_type, p2.point_type) {
-                    (PointType::Linear, PointType::Linear) => p1.value + (p2.value - p1.value) * t,
-                    _ => {
-                        let m0 = if matches!(p1.point_type, PointType::Curve) && i > 0 {
-                            (p2.value - self.points[i - 1].value) * 0.5
+                let eased_t = match (p1.point_type, p2.point_type) {
+                    (PointType::Linear, PointType::Linear) => t,
+                    (PointType::Curve, PointType::Linear) => {
+                        // Ease out: smooth departure from p1, sharp arrival at p2
+                        1.0 - (1.0 - t) * (1.0 - t)
+                    }
+                    (PointType::Linear, PointType::Curve) => {
+                        // Ease in: sharp departure from p1, smooth arrival at p2
+                        t * t
+                    }
+                    (PointType::Curve, PointType::Curve) => {
+                        // Ease in-out: smooth on both ends
+                        if t < 0.5 {
+                            2.0 * t * t
                         } else {
-                            0.0
-                        };
-
-                        let m1 = if matches!(p2.point_type, PointType::Curve)
-                            && i + 2 < self.points.len()
-                        {
-                            (self.points[i + 2].value - p1.value) * 0.5
-                        } else {
-                            0.0
-                        };
-
-                        Self::hermite(p1.value, p2.value, m0, m1, t).clamp(0.0, 1.0)
+                            1.0 - 2.0 * (1.0 - t) * (1.0 - t)
+                        }
                     }
                 };
+                return p1.value + (p2.value - p1.value) * eased_t;
             }
         }
 
         self.points[self.points.len() - 1].value
-    }
-
-    fn hermite(p0: f32, p1: f32, m0: f32, m1: f32, t: f32) -> f32 {
-        let t2 = t * t;
-        let t3 = t2 * t;
-
-        let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
-        let h10 = t3 - 2.0 * t2 + t;
-        let h01 = -2.0 * t3 + 3.0 * t2;
-        let h11 = t3 - t2;
-
-        h00 * p0 + h10 * m0 + h01 * p1 + h11 * m1
     }
 }
 

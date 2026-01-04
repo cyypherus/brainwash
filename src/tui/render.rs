@@ -1608,14 +1608,14 @@ impl Widget for EnvelopeWidget<'_> {
             .add_modifier(Modifier::BOLD);
         let editing_point_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
 
-        let w = (curve_area.width - 2) as f32;
-        let h = (curve_area.height - 2) as f32;
+        let chart_w = (curve_area.width - 1) as f32;
+        let chart_h = (curve_area.height - 1) as f32;
         for (i, p) in points.iter().enumerate() {
-            let px = 1 + (p.time * w) as u16;
+            let px = 1 + (p.time * chart_w) as u16;
             let normalized = (1.0 - p.value) / 2.0;
-            let py = (normalized * h) as u16;
+            let py = (normalized * chart_h) as u16;
             let screen_x = curve_area.x + px.min(curve_area.width - 1);
-            let screen_y = curve_area.y + py.min(curve_area.height - 2);
+            let screen_y = curve_area.y + py.min(curve_area.height - 1);
             let is_sel = i == self.selected_point;
             let style = if is_sel {
                 if self.editing {
@@ -1637,25 +1637,16 @@ pub struct ProbeWidget<'a> {
     max: f32,
     len: usize,
     current: f32,
-    selected_param: usize,
 }
 
 impl<'a> ProbeWidget<'a> {
-    pub fn new(
-        history: &'a [f32],
-        min: f32,
-        max: f32,
-        len: usize,
-        current: f32,
-        selected_param: usize,
-    ) -> Self {
+    pub fn new(history: &'a [f32], min: f32, max: f32, len: usize, current: f32) -> Self {
         Self {
             history,
             min,
             max,
             len,
             current,
-            selected_param,
         }
     }
 }
@@ -1695,37 +1686,21 @@ impl Widget for ProbeWidget<'_> {
             value_style,
         );
 
-        let min_style = if self.selected_param == 0 {
-            selected_style
-        } else {
-            label_style
-        };
-        let max_style = if self.selected_param == 1 {
-            selected_style
-        } else {
-            label_style
-        };
-        let len_style = if self.selected_param == 2 {
-            selected_style
-        } else {
-            label_style
-        };
-
         let min_str = format!("Min: {:.2}", self.min);
         let max_str = format!("Max: {:.2}", self.max);
-        let len_str = format!("Len: {}", self.len);
-        set_str(buf, header_area.x, header_area.y + 2, &min_str, min_style);
+        let len_ms = self.len as f32 / 44.1;
+        let len_str = if len_ms >= 1000.0 {
+            format!("Len: {:.1}s", len_ms / 1000.0)
+        } else if len_ms >= 10.0 {
+            format!("Len: {:.0}ms", len_ms)
+        } else {
+            format!("Len: {:.2}ms", len_ms)
+        };
+        set_str(buf, header_area.x, header_area.y + 2, &min_str, label_style);
         let mut x = header_area.x + min_str.len() as u16 + 2;
-        set_str(buf, x, header_area.y + 2, &max_str, max_style);
+        set_str(buf, x, header_area.y + 2, &max_str, label_style);
         x += max_str.len() as u16 + 2;
-        set_str(buf, x, header_area.y + 2, &len_str, len_style);
-        set_str(
-            buf,
-            header_area.x,
-            header_area.y + 3,
-            "hl select, jk adjust, r reset, c clear",
-            label_style,
-        );
+        set_str(buf, x, header_area.y + 2, &len_str, selected_style);
 
         let start = self.history.len().saturating_sub(self.len);
         let samples: &[f32] = &self.history[start..];

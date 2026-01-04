@@ -20,10 +20,10 @@ pub struct Instrument {
 
 impl Instrument {
     pub fn new() -> Self {
-        let mut patches = PatchSet::new(20, 20);
+        let mut patches = PatchSet::new(41, 21);
         patches
             .root
-            .add_module(ModuleKind::Output, GridPos::new(19, 19));
+            .add_module(ModuleKind::Output, GridPos::new(40, 20));
 
         let track_text = r#"
 # _ = rest

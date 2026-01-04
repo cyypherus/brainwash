@@ -221,7 +221,6 @@ enum Mode {
     },
     ProbeEdit {
         module_id: ModuleId,
-        param_idx: usize,
     },
     SavePrompt,
     SaveConfirm,
@@ -242,7 +241,7 @@ struct App {
     mode: Mode,
     pending_request: Option<AppRequest>,
     palette_category: usize,
-    palette_selections: [usize; 8],
+    palette_selections: [usize; 9],
     palette_filter: String,
     palette_filter_selection: usize,
     palette_searching: bool,
@@ -256,8 +255,6 @@ struct App {
     playing: bool,
     file_path: Option<PathBuf>,
     save_input: Input,
-    probe_min: f32,
-    probe_max: f32,
     probe_len: usize,
     grid_area: Rect,
     drag_start: Option<(ModuleId, GridPos)>,
@@ -365,7 +362,7 @@ impl App {
             mode: Mode::Normal,
             pending_request: None,
             palette_category: 0,
-            palette_selections: [0; 8],
+            palette_selections: [0; 9],
             palette_filter: String::new(),
             palette_filter_selection: 0,
             palette_searching: false,
@@ -379,8 +376,6 @@ impl App {
             playing: false,
             file_path: None,
             save_input: Input::new("patch.bw".to_string()),
-            probe_min: -1.0,
-            probe_max: 1.0,
             probe_len: 4410,
             grid_area: Rect::default(),
             drag_start: None,
@@ -544,10 +539,14 @@ impl App {
                 for (id, values) in frame.ports {
                     inst.meter_values.insert(id, values);
                 }
-                for (id, val) in frame.probes {
-                    inst.probe_values.insert(id, val);
+                for (id, samples) in frame.probes {
+                    if let Some(&last) = samples.last() {
+                        inst.probe_values.insert(id, last);
+                    }
                     let history = inst.probe_histories.entry(id).or_default();
-                    history.push_back(val);
+                    for val in samples {
+                        history.push_back(val);
+                    }
                     while history.len() > probe_len {
                         history.pop_front();
                     }
@@ -916,10 +915,7 @@ impl App {
                 point_idx,
                 editing,
             } => self.handle_env_edit_key(code, module_id, point_idx, editing),
-            Mode::ProbeEdit {
-                module_id,
-                param_idx,
-            } => self.handle_probe_edit_key(code, module_id, param_idx),
+            Mode::ProbeEdit { module_id } => self.handle_probe_edit_key(code, module_id),
             Mode::SavePrompt => self.handle_save_prompt_key(code, modifiers),
             Mode::SaveConfirm => self.handle_save_confirm_key(code),
             Mode::QuitConfirm => self.handle_quit_confirm_key(code),
@@ -1012,10 +1008,7 @@ impl App {
                                 editing: false,
                             };
                         } else if m.kind == ModuleKind::Probe {
-                            self.mode = Mode::ProbeEdit {
-                                module_id: id,
-                                param_idx: 0,
-                            };
+                            self.mode = Mode::ProbeEdit { module_id: id };
                         } else {
                             self.mode = Mode::Edit {
                                 module_id: id,
@@ -1115,6 +1108,7 @@ impl App {
                     if let Some((parent, cursor)) = self.inst_mut().subpatch_stack.pop() {
                         self.inst_mut().editing_subpatch = parent;
                         self.set_cursor(cursor);
+                        self.set_view_center(cursor);
                     }
                     self.message = Some(format!("Exited '{}'", name));
                     self.commit_patch();
@@ -1131,6 +1125,7 @@ impl App {
                     if let Some((parent, cursor)) = self.inst_mut().subpatch_stack.pop() {
                         self.inst_mut().editing_subpatch = parent;
                         self.set_cursor(cursor);
+                        self.set_view_center(cursor);
                     }
                     self.message = Some(format!("Exited '{}'", name));
                     self.commit_patch();
@@ -2624,7 +2619,7 @@ impl App {
             .unwrap_or(point_idx)
     }
 
-    fn handle_probe_edit_key(&mut self, code: KeyCode, module_id: ModuleId, param_idx: usize) {
+    fn handle_probe_edit_key(&mut self, code: KeyCode, module_id: ModuleId) {
         let Some(_) = self.patch().module(module_id) else {
             self.mode = Mode::Normal;
             return;
@@ -2637,58 +2632,20 @@ impl App {
             Action::Cancel => {
                 self.mode = Mode::Normal;
             }
-            Action::Right => {
-                let new_idx = (param_idx + 1) % 3;
-                self.mode = Mode::ProbeEdit {
-                    module_id,
-                    param_idx: new_idx,
-                };
+            Action::ValueUp | Action::Right => {
+                self.probe_len = (self.probe_len * 2).min(44100 * 2);
             }
-            Action::Left => {
-                let new_idx = if param_idx == 0 { 2 } else { param_idx - 1 };
-                self.mode = Mode::ProbeEdit {
-                    module_id,
-                    param_idx: new_idx,
-                };
+            Action::ValueDown | Action::Left => {
+                self.probe_len = (self.probe_len / 2).max(8);
             }
-            Action::ValueUp => match param_idx {
-                0 => self.probe_min -= 0.1,
-                1 => self.probe_max += 0.1,
-                2 => self.probe_len = (self.probe_len * 2).min(44100 * 2),
-                _ => {}
-            },
-            Action::ValueDown => match param_idx {
-                0 => self.probe_min += 0.1,
-                1 => self.probe_max -= 0.1,
-                2 => self.probe_len = (self.probe_len / 2).max(8),
-                _ => {}
-            },
-            Action::ValueUpFast => match param_idx {
-                0 => self.probe_min -= 1.0,
-                1 => self.probe_max += 1.0,
-                2 => self.probe_len = (self.probe_len * 4).min(44100 * 2),
-                _ => {}
-            },
-            Action::ValueDownFast => match param_idx {
-                0 => self.probe_min += 1.0,
-                1 => self.probe_max -= 1.0,
-                2 => self.probe_len = (self.probe_len / 4).max(8),
-                _ => {}
-            },
+            Action::ValueUpFast => {
+                self.probe_len = (self.probe_len * 4).min(44100 * 2);
+            }
+            Action::ValueDownFast => {
+                self.probe_len = (self.probe_len / 4).max(8);
+            }
             Action::Delete => {
-                self.probe_min = -1.0;
-                self.probe_max = 1.0;
                 self.probe_len = 4410;
-            }
-            Action::ToggleCurve => {
-                let probe_idx = self
-                    .patch()
-                    .all_modules()
-                    .filter(|m| m.kind == ModuleKind::Probe)
-                    .position(|m| m.id == module_id);
-                if let Some(idx) = probe_idx {
-                    let _ = self.cmd_tx.send(AudioCommand::ClearProbeHistory(idx));
-                }
             }
             _ => {}
         }
@@ -3243,11 +3200,7 @@ impl App {
             }
         }
 
-        if let Mode::ProbeEdit {
-            module_id,
-            param_idx,
-        } = self.mode
-        {
+        if let Mode::ProbeEdit { module_id, .. } = self.mode {
             if let Some(module) = self.patch().module(module_id) {
                 let history: Vec<f32> = self
                     .inst()
@@ -3286,14 +3239,8 @@ impl App {
                     probe_area.width.saturating_sub(2),
                     probe_area.height.saturating_sub(2),
                 );
-                let probe_widget = ProbeWidget::new(
-                    &history,
-                    auto_min,
-                    auto_max,
-                    self.probe_len,
-                    current,
-                    param_idx,
-                );
+                let probe_widget =
+                    ProbeWidget::new(&history, auto_min, auto_max, self.probe_len, current);
                 f.render_widget(probe_widget, inner);
             }
         }
