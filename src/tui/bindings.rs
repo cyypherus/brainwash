@@ -1188,6 +1188,95 @@ pub fn probe_bindings() -> &'static [Binding] {
     ]
 }
 
+pub fn sample_bindings() -> &'static [Binding] {
+    &[
+        Binding {
+            key: KeyCode::Char('h'),
+            action: Action::Left,
+            hint: Some("pan"),
+            group: Some("hl"),
+            section: 0,
+        },
+        Binding {
+            key: KeyCode::Char('l'),
+            action: Action::Right,
+            hint: Some("pan"),
+            group: Some("hl"),
+            section: 0,
+        },
+        Binding {
+            key: KeyCode::Left,
+            action: Action::Left,
+            hint: Some("pan"),
+            group: Some("lr"),
+            section: 0,
+        },
+        Binding {
+            key: KeyCode::Right,
+            action: Action::Right,
+            hint: Some("pan"),
+            group: Some("lr"),
+            section: 0,
+        },
+        Binding {
+            key: KeyCode::Char('j'),
+            action: Action::ValueDown,
+            hint: Some("zoom"),
+            group: Some("jk"),
+            section: 0,
+        },
+        Binding {
+            key: KeyCode::Char('k'),
+            action: Action::ValueUp,
+            hint: Some("zoom"),
+            group: Some("jk"),
+            section: 0,
+        },
+        Binding {
+            key: KeyCode::Down,
+            action: Action::ValueDown,
+            hint: Some("zoom"),
+            group: Some("ud"),
+            section: 0,
+        },
+        Binding {
+            key: KeyCode::Up,
+            action: Action::ValueUp,
+            hint: Some("zoom"),
+            group: Some("ud"),
+            section: 0,
+        },
+        Binding {
+            key: KeyCode::Char('r'),
+            action: Action::Delete,
+            hint: Some("reset"),
+            group: None,
+            section: 0,
+        },
+        Binding {
+            key: KeyCode::Char(' '),
+            action: Action::TogglePlay,
+            hint: None,
+            group: None,
+            section: 0,
+        },
+        Binding {
+            key: KeyCode::Esc,
+            action: Action::Cancel,
+            hint: Some("done"),
+            group: Some("done"),
+            section: 0,
+        },
+        Binding {
+            key: KeyCode::Char('i'),
+            action: Action::Cancel,
+            hint: Some("done"),
+            group: Some("done"),
+            section: 0,
+        },
+    ]
+}
+
 pub fn lookup(bindings: &[Binding], key: KeyCode) -> Option<Action> {
     bindings.iter().find(|b| b.key == key).map(|b| b.action)
 }

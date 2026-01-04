@@ -1832,8 +1832,6 @@ impl Widget for SampleWidget<'_> {
         let axis_style = Style::default().fg(Color::DarkGray);
         let wave_color = Color::Rgb(100, 180, 255);
         let wave_style = Style::default().fg(wave_color);
-        let fill_color = Color::Rgb(40, 70, 100);
-        let fill_style = Style::default().fg(fill_color);
 
         for y in 0..chart_area.height {
             set_cell(buf, chart_area.x, chart_area.y + y, '│', axis_style);
@@ -1855,24 +1853,6 @@ impl Widget for SampleWidget<'_> {
             axis_style,
         );
 
-        let zero_y = if range > 0.0 {
-            ((chart_max / range) * h) as u16
-        } else {
-            chart_area.height / 2
-        };
-        if zero_y < chart_area.height - 1 {
-            let zero_style = Style::default().fg(Color::Rgb(60, 60, 60));
-            for x in 1..chart_area.width {
-                set_cell(
-                    buf,
-                    chart_area.x + x,
-                    chart_area.y + zero_y,
-                    '·',
-                    zero_style,
-                );
-            }
-        }
-
         let chart_w = (chart_area.width - 1) as usize;
         let samples = self.samples;
         let samples_len = samples.len();
@@ -1882,34 +1862,43 @@ impl Widget for SampleWidget<'_> {
 
         for screen_i in 0..chart_w {
             let x = 1 + screen_i as u16;
-            let t = screen_i as f32 / chart_w.max(1) as f32;
-            let sample_t = view_start + t * view_width;
-            let idx = ((sample_t * samples_len as f32) as usize).min(samples_len.saturating_sub(1));
-            let val = samples[idx];
+            let t0 = screen_i as f32 / chart_w.max(1) as f32;
+            let t1 = (screen_i + 1) as f32 / chart_w.max(1) as f32;
 
-            let normalized = if range > 0.0 {
-                ((chart_max - val) / range).clamp(0.0, 1.0)
+            let sample_start = ((view_start + t0 * view_width) * samples_len as f32) as usize;
+            let sample_end = ((view_start + t1 * view_width) * samples_len as f32) as usize;
+            let sample_start = sample_start.min(samples_len.saturating_sub(1));
+            let sample_end = sample_end.min(samples_len).max(sample_start + 1);
+
+            let (min_val, max_val) = samples[sample_start..sample_end]
+                .iter()
+                .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &v| {
+                    (min.min(v), max.max(v))
+                });
+
+            let min_normalized = if range > 0.0 {
+                ((chart_max - max_val) / range).clamp(0.0, 1.0)
             } else {
                 0.5
             };
-            let sample_y = (normalized * h) as u16;
-            let sample_y = sample_y.min(chart_area.height.saturating_sub(2));
+            let max_normalized = if range > 0.0 {
+                ((chart_max - min_val) / range).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+
+            let top_y = (min_normalized * h) as u16;
+            let bottom_y = (max_normalized * h) as u16;
+            let top_y = top_y.min(chart_area.height.saturating_sub(2));
+            let bottom_y = bottom_y.min(chart_area.height.saturating_sub(2));
 
             let screen_x = chart_area.x + x;
 
-            let (fill_start, fill_end) = if sample_y < zero_y {
-                (sample_y + 1, zero_y)
-            } else {
-                (zero_y + 1, sample_y)
-            };
-
-            for fill_y in fill_start..fill_end {
+            for fill_y in top_y..=bottom_y {
                 if fill_y < chart_area.height - 1 {
-                    set_cell(buf, screen_x, chart_area.y + fill_y, '█', fill_style);
+                    set_cell(buf, screen_x, chart_area.y + fill_y, '█', wave_style);
                 }
             }
-
-            set_cell(buf, screen_x, chart_area.y + sample_y, '█', wave_style);
         }
     }
 }

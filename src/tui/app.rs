@@ -879,6 +879,31 @@ impl App {
         }
     }
 
+    fn bindings_for_mode(&self) -> &'static [bindings::Binding] {
+        match &self.mode {
+            Mode::Normal => bindings::normal_bindings(),
+            Mode::Palette => bindings::palette_bindings(),
+            Mode::Move { .. } | Mode::Copy { .. } | Mode::CopySelection { .. } => {
+                bindings::move_bindings()
+            }
+            Mode::Select { .. } | Mode::MouseSelect { .. } | Mode::SelectMove { .. } => {
+                bindings::select_bindings()
+            }
+            Mode::Edit { .. } | Mode::AdsrEdit { .. } => bindings::edit_bindings(),
+            Mode::ProbeEdit { .. } => bindings::probe_bindings(),
+            Mode::SampleView { .. } => bindings::sample_bindings(),
+            Mode::EnvEdit { editing: true, .. } => bindings::env_move_bindings(),
+            Mode::EnvEdit { .. } => bindings::env_bindings(),
+            Mode::QuitConfirm | Mode::SaveConfirm | Mode::ExportConfirm => {
+                bindings::quit_confirm_bindings()
+            }
+            Mode::SavePrompt | Mode::ExportPrompt | Mode::ValueInput { .. } => {
+                bindings::text_input_bindings()
+            }
+            Mode::TrackSettings { .. } => bindings::settings_bindings(),
+        }
+    }
+
     fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         self.message = None;
 
@@ -888,25 +913,33 @@ impl App {
             self.last_mode_for_help = current_mode;
         }
 
+        let action = lookup(self.bindings_for_mode(), code);
+
         match self.mode.clone() {
-            Mode::Normal => self.handle_normal_key(code),
-            Mode::Palette => self.handle_palette_key(code),
-            Mode::Move { module_id, origin } => self.handle_move_key(code, module_id, origin),
-            Mode::Copy { module } => self.handle_copy_key(code, module),
-            Mode::CopySelection { modules, origin } => {
-                self.handle_copy_selection_key(code, modules, origin)
+            Mode::Normal => self.handle_normal_action(action),
+            Mode::Palette => {
+                if self.palette_searching {
+                    self.handle_palette_search_key(code);
+                } else {
+                    self.handle_palette_action(action);
+                }
             }
-            Mode::Select { anchor } => self.handle_select_key(code, anchor),
+            Mode::Move { module_id, origin } => self.handle_move_action(action, module_id, origin),
+            Mode::Copy { module } => self.handle_copy_action(action, module),
+            Mode::CopySelection { modules, origin } => {
+                self.handle_copy_selection_action(action, modules, origin)
+            }
+            Mode::Select { anchor } => self.handle_select_action(action, anchor),
             Mode::SelectMove {
                 anchor,
                 extent,
                 move_origin,
-            } => self.handle_select_move_key(code, anchor, extent, move_origin),
-            Mode::MouseSelect { anchor } => self.handle_select_key(code, anchor),
+            } => self.handle_select_move_action(action, anchor, extent, move_origin),
+            Mode::MouseSelect { anchor } => self.handle_select_action(action, anchor),
             Mode::Edit {
                 module_id,
                 param_idx,
-            } => self.handle_edit_key(code, module_id, param_idx),
+            } => self.handle_edit_action(action, module_id, param_idx),
             Mode::ValueInput {
                 module_id,
                 param_idx,
@@ -914,29 +947,31 @@ impl App {
             Mode::AdsrEdit {
                 module_id,
                 param_idx,
-            } => self.handle_adsr_edit_key(code, module_id, param_idx),
+            } => self.handle_adsr_edit_action(action, module_id, param_idx),
             Mode::EnvEdit {
                 module_id,
                 point_idx,
                 editing,
-            } => self.handle_env_edit_key(code, module_id, point_idx, editing),
-            Mode::ProbeEdit { module_id } => self.handle_probe_edit_key(code, module_id),
+            } => self.handle_env_edit_action(action, module_id, point_idx, editing),
+            Mode::ProbeEdit { module_id } => self.handle_probe_edit_action(action, module_id),
             Mode::SampleView {
                 module_id,
                 zoom,
                 offset,
-            } => self.handle_sample_view_key(code, module_id, zoom, offset),
+            } => self.handle_sample_view_action(action, module_id, zoom, offset),
             Mode::SavePrompt => self.handle_save_prompt_key(code, modifiers),
-            Mode::SaveConfirm => self.handle_save_confirm_key(code),
-            Mode::QuitConfirm => self.handle_quit_confirm_key(code),
-            Mode::TrackSettings { param_idx } => self.handle_track_settings_key(code, param_idx),
+            Mode::SaveConfirm => self.handle_save_confirm_action(action),
+            Mode::QuitConfirm => self.handle_quit_confirm_action(action),
+            Mode::TrackSettings { param_idx } => {
+                self.handle_track_settings_action(action, param_idx)
+            }
             Mode::ExportPrompt => self.handle_export_prompt_key(code),
-            Mode::ExportConfirm => self.handle_export_confirm_key(code),
+            Mode::ExportConfirm => self.handle_export_confirm_action(action),
         }
     }
 
-    fn handle_quit_confirm_key(&mut self, code: KeyCode) {
-        let Some(action) = lookup(bindings::quit_confirm_bindings(), code) else {
+    fn handle_quit_confirm_action(&mut self, action: Option<Action>) {
+        let Some(action) = action else {
             return;
         };
         match action {
@@ -949,8 +984,8 @@ impl App {
         }
     }
 
-    fn handle_normal_key(&mut self, code: KeyCode) {
-        let Some(action) = lookup(bindings::normal_bindings(), code) else {
+    fn handle_normal_action(&mut self, action: Option<Action>) {
+        let Some(action) = action else {
             return;
         };
         match action {
@@ -1166,13 +1201,12 @@ impl App {
             .collect()
     }
 
-    fn handle_palette_key(&mut self, code: KeyCode) {
+    fn handle_palette_action(&mut self, action: Option<Action>) {
         if self.palette_searching {
-            self.handle_palette_search_key(code);
             return;
         }
 
-        let Some(action) = lookup(bindings::palette_bindings(), code) else {
+        let Some(action) = action else {
             return;
         };
 
@@ -1345,8 +1379,8 @@ impl App {
         }
     }
 
-    fn handle_move_key(&mut self, code: KeyCode, module_id: ModuleId, origin: GridPos) {
-        let Some(action) = lookup(bindings::move_bindings(), code) else {
+    fn handle_move_action(&mut self, action: Option<Action>, module_id: ModuleId, origin: GridPos) {
+        let Some(action) = action else {
             return;
         };
         match action {
@@ -1377,8 +1411,8 @@ impl App {
         }
     }
 
-    fn handle_copy_key(&mut self, code: KeyCode, module: Module) {
-        let Some(action) = lookup(bindings::move_bindings(), code) else {
+    fn handle_copy_action(&mut self, action: Option<Action>, module: Module) {
+        let Some(action) = action else {
             return;
         };
         match action {
@@ -1408,13 +1442,13 @@ impl App {
         }
     }
 
-    fn handle_copy_selection_key(
+    fn handle_copy_selection_action(
         &mut self,
-        code: KeyCode,
+        action: Option<Action>,
         modules: Vec<(Module, GridPos)>,
         origin: GridPos,
     ) {
-        let Some(action) = lookup(bindings::move_bindings(), code) else {
+        let Some(action) = action else {
             return;
         };
         match action {
@@ -1452,8 +1486,8 @@ impl App {
         }
     }
 
-    fn handle_select_key(&mut self, code: KeyCode, anchor: GridPos) {
-        let Some(action) = lookup(bindings::select_bindings(), code) else {
+    fn handle_select_action(&mut self, action: Option<Action>, anchor: GridPos) {
+        let Some(action) = action else {
             return;
         };
         match action {
@@ -1514,14 +1548,14 @@ impl App {
         }
     }
 
-    fn handle_select_move_key(
+    fn handle_select_move_action(
         &mut self,
-        code: KeyCode,
+        action: Option<Action>,
         anchor: GridPos,
         extent: GridPos,
         move_origin: GridPos,
     ) {
-        let Some(action) = lookup(bindings::move_bindings(), code) else {
+        let Some(action) = action else {
             return;
         };
         match action {
@@ -1655,7 +1689,12 @@ impl App {
             .collect()
     }
 
-    fn handle_edit_key(&mut self, code: KeyCode, module_id: ModuleId, param_idx: usize) {
+    fn handle_edit_action(
+        &mut self,
+        action: Option<Action>,
+        module_id: ModuleId,
+        param_idx: usize,
+    ) {
         let Some(module) = self.patch().module(module_id) else {
             self.mode = Mode::Normal;
             return;
@@ -1666,7 +1705,7 @@ impl App {
         let total_items = defs.len() + if has_special { 1 } else { 0 };
         let special_idx = defs.len();
 
-        let Some(action) = lookup(bindings::edit_bindings(), code) else {
+        let Some(action) = action else {
             return;
         };
         match action {
@@ -2079,8 +2118,8 @@ impl App {
         }
     }
 
-    fn handle_save_confirm_key(&mut self, code: KeyCode) {
-        let Some(action) = lookup(bindings::quit_confirm_bindings(), code) else {
+    fn handle_save_confirm_action(&mut self, action: Option<Action>) {
+        let Some(action) = action else {
             return;
         };
         match action {
@@ -2142,8 +2181,8 @@ impl App {
         }
     }
 
-    fn handle_export_confirm_key(&mut self, code: KeyCode) {
-        let Some(action) = lookup(bindings::quit_confirm_bindings(), code) else {
+    fn handle_export_confirm_action(&mut self, action: Option<Action>) {
+        let Some(action) = action else {
             return;
         };
         match action {
@@ -2299,13 +2338,18 @@ impl App {
         }
     }
 
-    fn handle_adsr_edit_key(&mut self, code: KeyCode, module_id: ModuleId, param_idx: usize) {
+    fn handle_adsr_edit_action(
+        &mut self,
+        action: Option<Action>,
+        module_id: ModuleId,
+        param_idx: usize,
+    ) {
         let Some(_) = self.patch().module(module_id) else {
             self.mode = Mode::Normal;
             return;
         };
 
-        let Some(action) = lookup(bindings::edit_bindings(), code) else {
+        let Some(action) = action else {
             return;
         };
         match action {
@@ -2398,9 +2442,9 @@ impl App {
         }
     }
 
-    fn handle_env_edit_key(
+    fn handle_env_edit_action(
         &mut self,
-        code: KeyCode,
+        action: Option<Action>,
         module_id: ModuleId,
         point_idx: usize,
         editing: bool,
@@ -2416,10 +2460,11 @@ impl App {
             return;
         }
 
+        let Some(action) = action else {
+            return;
+        };
+
         if editing {
-            let Some(action) = lookup(bindings::env_move_bindings(), code) else {
-                return;
-            };
             let step = self.step_value();
             match action {
                 Action::Cancel | Action::Confirm => {
@@ -2512,9 +2557,6 @@ impl App {
                 _ => {}
             }
         } else {
-            let Some(action) = lookup(bindings::env_bindings(), code) else {
-                return;
-            };
             match action {
                 Action::Cancel => {
                     self.mode = Mode::Normal;
@@ -2640,13 +2682,13 @@ impl App {
             .unwrap_or(point_idx)
     }
 
-    fn handle_probe_edit_key(&mut self, code: KeyCode, module_id: ModuleId) {
+    fn handle_probe_edit_action(&mut self, action: Option<Action>, module_id: ModuleId) {
         let Some(_) = self.patch().module(module_id) else {
             self.mode = Mode::Normal;
             return;
         };
 
-        let Some(action) = lookup(bindings::probe_bindings(), code) else {
+        let Some(action) = action else {
             return;
         };
         match action {
@@ -2672,18 +2714,21 @@ impl App {
         }
     }
 
-    fn handle_sample_view_key(
+    fn handle_sample_view_action(
         &mut self,
-        code: KeyCode,
+        action: Option<Action>,
         module_id: ModuleId,
         zoom: f32,
         offset: f32,
     ) {
-        match code {
-            KeyCode::Esc | KeyCode::Char('i') => {
+        let Some(action) = action else {
+            return;
+        };
+        match action {
+            Action::Cancel => {
                 self.mode = Mode::Normal;
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            Action::ValueUp => {
                 let new_zoom = (zoom * 2.0).min(64.0);
                 self.mode = Mode::SampleView {
                     module_id,
@@ -2691,7 +2736,7 @@ impl App {
                     offset: offset.min(1.0 - 1.0 / new_zoom),
                 };
             }
-            KeyCode::Char('j') | KeyCode::Down => {
+            Action::ValueDown => {
                 let new_zoom = (zoom / 2.0).max(1.0);
                 self.mode = Mode::SampleView {
                     module_id,
@@ -2699,7 +2744,7 @@ impl App {
                     offset: offset.min(1.0 - 1.0 / new_zoom).max(0.0),
                 };
             }
-            KeyCode::Char('h') | KeyCode::Left => {
+            Action::Left => {
                 let step = 0.1 / zoom;
                 let new_offset = (offset - step).max(0.0);
                 self.mode = Mode::SampleView {
@@ -2708,7 +2753,7 @@ impl App {
                     offset: new_offset,
                 };
             }
-            KeyCode::Char('l') | KeyCode::Right => {
+            Action::Right => {
                 let step = 0.1 / zoom;
                 let max_offset = (1.0 - 1.0 / zoom).max(0.0);
                 let new_offset = (offset + step).min(max_offset);
@@ -2718,7 +2763,7 @@ impl App {
                     offset: new_offset,
                 };
             }
-            KeyCode::Char('r') => {
+            Action::Delete => {
                 self.mode = Mode::SampleView {
                     module_id,
                     zoom: 1.0,
@@ -2729,8 +2774,8 @@ impl App {
         }
     }
 
-    fn handle_track_settings_key(&mut self, code: KeyCode, param_idx: usize) {
-        let Some(action) = lookup(bindings::settings_bindings(), code) else {
+    fn handle_track_settings_action(&mut self, action: Option<Action>, param_idx: usize) {
+        let Some(action) = action else {
             return;
         };
         match action {
@@ -3058,27 +3103,10 @@ impl App {
             help_area.width.saturating_sub(2),
             help_area.height.saturating_sub(header_height),
         );
-        let bindings = match &self.mode {
-            Mode::Normal => bindings::normal_bindings(),
-            Mode::Palette if self.palette_searching => bindings::text_input_bindings(),
-            Mode::Palette => bindings::palette_bindings(),
-            Mode::Move { .. } | Mode::Copy { .. } | Mode::CopySelection { .. } => {
-                bindings::move_bindings()
-            }
-            Mode::Select { .. } | Mode::MouseSelect { .. } | Mode::SelectMove { .. } => {
-                bindings::select_bindings()
-            }
-            Mode::Edit { .. } | Mode::AdsrEdit { .. } => bindings::edit_bindings(),
-            Mode::ProbeEdit { .. } | Mode::SampleView { .. } => bindings::probe_bindings(),
-            Mode::EnvEdit { editing: true, .. } => bindings::env_move_bindings(),
-            Mode::EnvEdit { .. } => bindings::env_bindings(),
-            Mode::QuitConfirm | Mode::SaveConfirm | Mode::ExportConfirm => {
-                bindings::quit_confirm_bindings()
-            }
-            Mode::SavePrompt | Mode::ExportPrompt | Mode::ValueInput { .. } => {
-                bindings::text_input_bindings()
-            }
-            Mode::TrackSettings { .. } => bindings::settings_bindings(),
+        let bindings = if matches!(self.mode, Mode::Palette) && self.palette_searching {
+            bindings::text_input_bindings()
+        } else {
+            self.bindings_for_mode()
         };
         f.render_widget(HelpWidget::new(bindings, self.help_scroll), help_inner);
 
