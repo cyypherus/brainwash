@@ -298,7 +298,7 @@ impl ModuleKind {
             ModuleKind::Lpf => "Low-pass filter",
             ModuleKind::Hpf => "High-pass filter",
             ModuleKind::Delay => "Sample delay line",
-            ModuleKind::Reverb => "Freeverb reverb effect",
+            ModuleKind::Reverb => "FDN reverb with modulation",
             ModuleKind::Distortion => "Soft-clip distortion",
             ModuleKind::Flanger => "Flanger/chorus effect",
             ModuleKind::Mul => "Multiply A * B",
@@ -1004,6 +1004,7 @@ impl TimeValue {
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum ParamKind {
     Float { min: f32, max: f32, step: f32 },
     Int { min: i32, max: i32 },
@@ -1022,9 +1023,29 @@ impl ParamKind {
     }
 }
 
+#[derive(Clone, Copy)]
 pub struct ParamDef {
     pub name: &'static str,
     pub kind: ParamKind,
+    pub desc: Option<&'static str>,
+}
+
+impl ParamDef {
+    pub const fn new(name: &'static str, kind: ParamKind) -> Self {
+        Self {
+            name,
+            kind,
+            desc: None,
+        }
+    }
+
+    pub const fn with_desc(name: &'static str, kind: ParamKind, desc: &'static str) -> Self {
+        Self {
+            name,
+            kind,
+            desc: Some(desc),
+        }
+    }
 }
 
 impl ModuleKind {
@@ -1034,15 +1055,18 @@ impl ModuleKind {
             ModuleKind::DegreeGate => &[ParamDef {
                 name: "Deg",
                 kind: ParamKind::Int { min: 0, max: 12 },
+                desc: None,
             }],
             ModuleKind::Osc => &[
                 ParamDef {
                     name: "Wave",
                     kind: ParamKind::Enum,
+                    desc: None,
                 },
                 ParamDef {
                     name: "Freq",
                     kind: ParamKind::Time,
+                    desc: None,
                 },
                 ParamDef {
                     name: "Shift",
@@ -1051,6 +1075,7 @@ impl ModuleKind {
                         max: 24.0,
                         step: 1.0,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "Gain",
@@ -1059,20 +1084,24 @@ impl ModuleKind {
                         max: 1.0,
                         step: 0.05,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "Uni",
                     kind: ParamKind::Toggle,
+                    desc: None,
                 },
             ],
             ModuleKind::Rise | ModuleKind::Fall => &[
                 ParamDef {
                     name: "Gate",
                     kind: ParamKind::Input,
+                    desc: None,
                 },
                 ParamDef {
                     name: "Time",
                     kind: ParamKind::Time,
+                    desc: None,
                 },
             ],
             ModuleKind::Ramp => &[
@@ -1083,20 +1112,24 @@ impl ModuleKind {
                         max: 1000.0,
                         step: 0.1,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "Time",
                     kind: ParamKind::Time,
+                    desc: None,
                 },
             ],
             ModuleKind::Adsr => &[
                 ParamDef {
                     name: "Rise",
                     kind: ParamKind::Input,
+                    desc: None,
                 },
                 ParamDef {
                     name: "Fall",
                     kind: ParamKind::Input,
+                    desc: None,
                 },
                 ParamDef {
                     name: "Atk",
@@ -1105,6 +1138,7 @@ impl ModuleKind {
                         max: 1.0,
                         step: 0.05,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "Sus",
@@ -1113,6 +1147,7 @@ impl ModuleKind {
                         max: 1.0,
                         step: 0.05,
                     },
+                    desc: None,
                 },
             ],
             ModuleKind::Envelope => &[ParamDef {
@@ -1122,6 +1157,7 @@ impl ModuleKind {
                     max: 1.0,
                     step: 0.01,
                 },
+                desc: None,
             }],
             ModuleKind::Lpf => &[
                 ParamDef {
@@ -1131,6 +1167,7 @@ impl ModuleKind {
                         max: 1.0,
                         step: 0.01,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "Freq",
@@ -1139,6 +1176,7 @@ impl ModuleKind {
                         max: 0.99,
                         step: 0.01,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "Q",
@@ -1147,6 +1185,7 @@ impl ModuleKind {
                         max: 10.0,
                         step: 0.1,
                     },
+                    desc: None,
                 },
             ],
             ModuleKind::Hpf => &[
@@ -1157,6 +1196,7 @@ impl ModuleKind {
                         max: 1.0,
                         step: 0.01,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "Freq",
@@ -1165,6 +1205,7 @@ impl ModuleKind {
                         max: 1.0,
                         step: 0.01,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "Q",
@@ -1173,6 +1214,7 @@ impl ModuleKind {
                         max: 10.0,
                         step: 0.1,
                     },
+                    desc: None,
                 },
             ],
             ModuleKind::Delay => &[
@@ -1183,10 +1225,12 @@ impl ModuleKind {
                         max: 1.0,
                         step: 0.01,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "Time",
                     kind: ParamKind::Time,
+                    desc: None,
                 },
             ],
             ModuleKind::Reverb => &[
@@ -1197,6 +1241,7 @@ impl ModuleKind {
                         max: 1.0,
                         step: 0.01,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "Room",
@@ -1205,6 +1250,7 @@ impl ModuleKind {
                         max: 1.0,
                         step: 0.05,
                     },
+                    desc: Some("Decay time / tail length"),
                 },
                 ParamDef {
                     name: "Damp",
@@ -1213,6 +1259,25 @@ impl ModuleKind {
                         max: 1.0,
                         step: 0.05,
                     },
+                    desc: Some("HF decay (air absorption)"),
+                },
+                ParamDef {
+                    name: "Mod",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 1.0,
+                        step: 0.05,
+                    },
+                    desc: Some("Delay wobble (kills ringing)"),
+                },
+                ParamDef {
+                    name: "Diff",
+                    kind: ParamKind::Float {
+                        min: 0.0,
+                        max: 1.0,
+                        step: 0.05,
+                    },
+                    desc: Some("Echo smear (density)"),
                 },
             ],
             ModuleKind::Distortion => &[
@@ -1223,10 +1288,12 @@ impl ModuleKind {
                         max: 1.0,
                         step: 0.01,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "Type",
                     kind: ParamKind::Enum,
+                    desc: None,
                 },
                 ParamDef {
                     name: "Drive",
@@ -1235,6 +1302,7 @@ impl ModuleKind {
                         max: 20.0,
                         step: 0.1,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "Asym",
@@ -1243,6 +1311,7 @@ impl ModuleKind {
                         max: 1.0,
                         step: 0.05,
                     },
+                    desc: None,
                 },
             ],
             ModuleKind::Flanger => &[
@@ -1253,6 +1322,7 @@ impl ModuleKind {
                         max: 1.0,
                         step: 0.01,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "Rate",
@@ -1261,6 +1331,7 @@ impl ModuleKind {
                         max: 10.0,
                         step: 0.1,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "Depth",
@@ -1269,6 +1340,7 @@ impl ModuleKind {
                         max: 1.0,
                         step: 0.05,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "Fdbk",
@@ -1277,6 +1349,7 @@ impl ModuleKind {
                         max: 0.95,
                         step: 0.05,
                     },
+                    desc: None,
                 },
             ],
             ModuleKind::Mul => &[
@@ -1287,6 +1360,7 @@ impl ModuleKind {
                         max: 100.0,
                         step: 0.05,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "B",
@@ -1295,6 +1369,7 @@ impl ModuleKind {
                         max: 100.0,
                         step: 0.05,
                     },
+                    desc: None,
                 },
             ],
             ModuleKind::Add => &[
@@ -1305,6 +1380,7 @@ impl ModuleKind {
                         max: 1000.0,
                         step: 0.05,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "B",
@@ -1313,6 +1389,7 @@ impl ModuleKind {
                         max: 1000.0,
                         step: 0.05,
                     },
+                    desc: None,
                 },
             ],
 
@@ -1324,6 +1401,7 @@ impl ModuleKind {
                         max: 1000.0,
                         step: 0.05,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "B",
@@ -1332,6 +1410,7 @@ impl ModuleKind {
                         max: 1000.0,
                         step: 0.05,
                     },
+                    desc: None,
                 },
             ],
             ModuleKind::Lt => &[
@@ -1342,6 +1421,7 @@ impl ModuleKind {
                         max: 1000.0,
                         step: 0.05,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "B",
@@ -1350,12 +1430,14 @@ impl ModuleKind {
                         max: 1000.0,
                         step: 0.05,
                     },
+                    desc: None,
                 },
             ],
             ModuleKind::Switch => &[
                 ParamDef {
                     name: "Sel",
                     kind: ParamKind::Input,
+                    desc: None,
                 },
                 ParamDef {
                     name: "A",
@@ -1364,6 +1446,7 @@ impl ModuleKind {
                         max: 1000.0,
                         step: 0.1,
                     },
+                    desc: None,
                 },
                 ParamDef {
                     name: "B",
@@ -1372,20 +1455,24 @@ impl ModuleKind {
                         max: 1000.0,
                         step: 0.1,
                     },
+                    desc: None,
                 },
             ],
             ModuleKind::Rng => &[ParamDef {
                 name: "Gate",
                 kind: ParamKind::Input,
+                desc: None,
             }],
             ModuleKind::Sample => &[
                 ParamDef {
                     name: "File",
                     kind: ParamKind::Enum,
+                    desc: None,
                 },
                 ParamDef {
                     name: "Pos",
                     kind: ParamKind::Input,
+                    desc: None,
                 },
             ],
             ModuleKind::Probe => &[ParamDef {
@@ -1395,6 +1482,7 @@ impl ModuleKind {
                     max: 1.0,
                     step: 0.01,
                 },
+                desc: None,
             }],
             ModuleKind::Output => &[ParamDef {
                 name: "In",
@@ -1403,16 +1491,19 @@ impl ModuleKind {
                     max: 1.0,
                     step: 0.01,
                 },
+                desc: None,
             }],
             ModuleKind::SubIn => &[],
             ModuleKind::SubOut => &[ParamDef {
                 name: "In",
                 kind: ParamKind::Input,
+                desc: None,
             }],
             ModuleKind::DelayTap(_) => &[
                 ParamDef {
                     name: "Src",
                     kind: ParamKind::Enum,
+                    desc: None,
                 },
                 ParamDef {
                     name: "Gain",
@@ -1421,6 +1512,7 @@ impl ModuleKind {
                         max: 0.7,
                         step: 0.05,
                     },
+                    desc: None,
                 },
             ],
             _ => &[],
@@ -1483,6 +1575,8 @@ pub enum ModuleParams {
     Reverb {
         room: f32,
         damp: f32,
+        mod_depth: f32,
+        diffusion: f32,
         connected: u8,
     },
     Distortion {
@@ -1606,7 +1700,9 @@ impl ModuleParams {
             },
             ModuleKind::Reverb => ModuleParams::Reverb {
                 room: 0.5,
-                damp: 0.5,
+                damp: 0.3,
+                mod_depth: 0.5,
+                diffusion: 0.75,
                 connected: 0xFF,
             },
             ModuleKind::Distortion => ModuleParams::Distortion {
@@ -1776,9 +1872,17 @@ impl ModuleParams {
                 _ => None,
             },
             ModuleParams::Delay { .. } => None,
-            ModuleParams::Reverb { room, damp, .. } => match idx {
+            ModuleParams::Reverb {
+                room,
+                damp,
+                mod_depth,
+                diffusion,
+                ..
+            } => match idx {
                 1 => Some(*room),
                 2 => Some(*damp),
+                3 => Some(*mod_depth),
+                4 => Some(*diffusion),
                 _ => None,
             },
             ModuleParams::Distortion {
@@ -1860,9 +1964,17 @@ impl ModuleParams {
                 _ => {}
             },
             ModuleParams::Delay { .. } => {}
-            ModuleParams::Reverb { room, damp, .. } => match idx {
+            ModuleParams::Reverb {
+                room,
+                damp,
+                mod_depth,
+                diffusion,
+                ..
+            } => match idx {
                 1 => *room = val,
                 2 => *damp = val,
+                3 => *mod_depth = val,
+                4 => *diffusion = val,
                 _ => {}
             },
             ModuleParams::Distortion {

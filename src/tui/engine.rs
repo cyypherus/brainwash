@@ -1199,9 +1199,22 @@ fn create_node_kind(module: &Module, ctx: &CompileContext) -> NodeKind {
             delay.delay(time.to_samples(ctx.sample_rate, ctx.bpm, ctx.bars));
             NodeKind::Delay(delay)
         }
-        (ModuleKind::Reverb, ModuleParams::Reverb { room, damp, .. }) => {
+        (
+            ModuleKind::Reverb,
+            ModuleParams::Reverb {
+                room,
+                damp,
+                mod_depth,
+                diffusion,
+                ..
+            },
+        ) => {
             let mut reverb = Reverb::default();
-            reverb.roomsize(*room).damp(*damp);
+            reverb
+                .roomsize(*room)
+                .damp(*damp)
+                .mod_depth(*mod_depth)
+                .diffusion(*diffusion);
             NodeKind::Reverb(reverb)
         }
         (

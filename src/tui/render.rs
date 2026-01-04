@@ -1359,6 +1359,15 @@ impl Widget for EditWidget<'_> {
             y += 1;
         }
 
+        if let Some(def) = defs.get(self.selected_param) {
+            if let Some(desc) = def.desc {
+                y += 1;
+                if y < area.y + area.height {
+                    set_str(buf, area.x, y, desc, label_style);
+                }
+            }
+        }
+
         if self.module.kind == ModuleKind::Sample {
             if let ModuleParams::Sample { samples, .. } = &self.module.params {
                 if !samples.is_empty() {

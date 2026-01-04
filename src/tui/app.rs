@@ -977,13 +977,9 @@ impl App {
             }
             Action::Delete => {
                 if let Some(id) = self.patch().module_id_at(self.cursor()) {
-                    if let Some(m) = self.patch().module(id) {
-                        if m.kind == ModuleKind::Output {
-                            self.message = Some("Cannot delete output".into());
-                        } else if self.patch_mut().remove_module(id) {
-                            self.message = Some("Deleted".into());
-                            self.commit_patch();
-                        }
+                    if self.patch_mut().remove_module(id) {
+                        self.message = Some("Deleted".into());
+                        self.commit_patch();
                     }
                 }
             }
@@ -3119,7 +3115,7 @@ impl App {
         {
             if let Some(module) = self.patch().module(module_id) {
                 let edit_width = 36;
-                let edit_height = (module.kind.param_defs().len() + 6) as u16;
+                let edit_height = (module.kind.param_defs().len() + 8) as u16;
                 let edit_x = (f.area().width.saturating_sub(edit_width)) / 2;
                 let edit_y = (f.area().height.saturating_sub(edit_height)) / 2;
                 let edit_area = Rect::new(edit_x, edit_y, edit_width, edit_height);
