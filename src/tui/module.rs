@@ -412,6 +412,22 @@ impl ModuleKind {
         )
     }
 
+    pub fn has_special_editor(&self) -> bool {
+        matches!(
+            self,
+            ModuleKind::Envelope | ModuleKind::Sample | ModuleKind::Probe
+        )
+    }
+
+    pub fn special_editor_name(&self) -> Option<&'static str> {
+        match self {
+            ModuleKind::Envelope => Some("Envelope Editor"),
+            ModuleKind::Sample => Some("Waveform View"),
+            ModuleKind::Probe => Some("Probe View"),
+            _ => None,
+        }
+    }
+
     pub fn category(&self) -> ModuleCategory {
         match self {
             ModuleKind::Freq | ModuleKind::Gate | ModuleKind::Degree | ModuleKind::DegreeGate => {

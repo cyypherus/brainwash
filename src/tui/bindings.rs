@@ -646,6 +646,13 @@ pub fn edit_bindings() -> &'static [Binding] {
             group: None,
             section: 0,
         },
+        Binding {
+            key: KeyCode::Enter,
+            action: Action::Confirm,
+            hint: Some("open"),
+            group: None,
+            section: 0,
+        },
     ]
 }
 

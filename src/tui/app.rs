@@ -13,7 +13,7 @@ use super::patch::{Patch, PatchSet};
 use super::persist;
 use super::render::{
     AdsrWidget, EditWidget, EnvelopeWidget, GridWidget, HelpWidget, PaletteWidget, ProbeWidget,
-    StatusWidget,
+    SampleWidget, StatusWidget,
 };
 use crate::live::AudioPlayer;
 use crate::scale::{
@@ -221,6 +221,11 @@ enum Mode {
     },
     ProbeEdit {
         module_id: ModuleId,
+    },
+    SampleView {
+        module_id: ModuleId,
+        zoom: f32,
+        offset: f32,
     },
     SavePrompt,
     SaveConfirm,
@@ -916,6 +921,11 @@ impl App {
                 editing,
             } => self.handle_env_edit_key(code, module_id, point_idx, editing),
             Mode::ProbeEdit { module_id } => self.handle_probe_edit_key(code, module_id),
+            Mode::SampleView {
+                module_id,
+                zoom,
+                offset,
+            } => self.handle_sample_view_key(code, module_id, zoom, offset),
             Mode::SavePrompt => self.handle_save_prompt_key(code, modifiers),
             Mode::SaveConfirm => self.handle_save_confirm_key(code),
             Mode::QuitConfirm => self.handle_quit_confirm_key(code),
@@ -995,26 +1005,11 @@ impl App {
             }
             Action::Edit => {
                 if let Some(id) = self.patch().module_id_at(self.cursor()) {
-                    if let Some(m) = self.patch().module(id) {
-                        if m.kind == ModuleKind::Adsr {
-                            self.mode = Mode::AdsrEdit {
-                                module_id: id,
-                                param_idx: 0,
-                            };
-                        } else if m.kind == ModuleKind::Envelope {
-                            self.mode = Mode::EnvEdit {
-                                module_id: id,
-                                point_idx: 0,
-                                editing: false,
-                            };
-                        } else if m.kind == ModuleKind::Probe {
-                            self.mode = Mode::ProbeEdit { module_id: id };
-                        } else {
-                            self.mode = Mode::Edit {
-                                module_id: id,
-                                param_idx: 0,
-                            };
-                        }
+                    if self.patch().module(id).is_some() {
+                        self.mode = Mode::Edit {
+                            module_id: id,
+                            param_idx: 0,
+                        };
                     }
                 }
             }
@@ -1667,7 +1662,9 @@ impl App {
         };
 
         let defs = module.kind.param_defs();
-        let total_params = defs.len();
+        let has_special = module.kind.has_special_editor();
+        let total_items = defs.len() + if has_special { 1 } else { 0 };
+        let special_idx = defs.len();
 
         let Some(action) = lookup(bindings::edit_bindings(), code) else {
             return;
@@ -1677,7 +1674,7 @@ impl App {
                 self.mode = Mode::Normal;
             }
             Action::Down => {
-                let new_idx = (param_idx + 1) % total_params;
+                let new_idx = (param_idx + 1) % total_items;
                 self.mode = Mode::Edit {
                     module_id,
                     param_idx: new_idx,
@@ -1685,7 +1682,7 @@ impl App {
             }
             Action::Up => {
                 let new_idx = if param_idx == 0 {
-                    total_params - 1
+                    total_items - 1
                 } else {
                     param_idx - 1
                 };
@@ -1693,6 +1690,30 @@ impl App {
                     module_id,
                     param_idx: new_idx,
                 };
+            }
+            Action::Confirm => {
+                if has_special && param_idx == special_idx {
+                    match module.kind {
+                        ModuleKind::Envelope => {
+                            self.mode = Mode::EnvEdit {
+                                module_id,
+                                point_idx: 0,
+                                editing: false,
+                            };
+                        }
+                        ModuleKind::Probe => {
+                            self.mode = Mode::ProbeEdit { module_id };
+                        }
+                        ModuleKind::Sample => {
+                            self.mode = Mode::SampleView {
+                                module_id,
+                                zoom: 1.0,
+                                offset: 0.0,
+                            };
+                        }
+                        _ => {}
+                    }
+                }
             }
             Action::ValueDown => {
                 if param_idx < defs.len() {
@@ -2651,6 +2672,63 @@ impl App {
         }
     }
 
+    fn handle_sample_view_key(
+        &mut self,
+        code: KeyCode,
+        module_id: ModuleId,
+        zoom: f32,
+        offset: f32,
+    ) {
+        match code {
+            KeyCode::Esc | KeyCode::Char('i') => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let new_zoom = (zoom * 2.0).min(64.0);
+                self.mode = Mode::SampleView {
+                    module_id,
+                    zoom: new_zoom,
+                    offset: offset.min(1.0 - 1.0 / new_zoom),
+                };
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                let new_zoom = (zoom / 2.0).max(1.0);
+                self.mode = Mode::SampleView {
+                    module_id,
+                    zoom: new_zoom,
+                    offset: offset.min(1.0 - 1.0 / new_zoom).max(0.0),
+                };
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                let step = 0.1 / zoom;
+                let new_offset = (offset - step).max(0.0);
+                self.mode = Mode::SampleView {
+                    module_id,
+                    zoom,
+                    offset: new_offset,
+                };
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                let step = 0.1 / zoom;
+                let max_offset = (1.0 - 1.0 / zoom).max(0.0);
+                let new_offset = (offset + step).min(max_offset);
+                self.mode = Mode::SampleView {
+                    module_id,
+                    zoom,
+                    offset: new_offset,
+                };
+            }
+            KeyCode::Char('r') => {
+                self.mode = Mode::SampleView {
+                    module_id,
+                    zoom: 1.0,
+                    offset: 0.0,
+                };
+            }
+            _ => {}
+        }
+    }
+
     fn handle_track_settings_key(&mut self, code: KeyCode, param_idx: usize) {
         let Some(action) = lookup(bindings::settings_bindings(), code) else {
             return;
@@ -2991,7 +3069,7 @@ impl App {
                 bindings::select_bindings()
             }
             Mode::Edit { .. } | Mode::AdsrEdit { .. } => bindings::edit_bindings(),
-            Mode::ProbeEdit { .. } => bindings::probe_bindings(),
+            Mode::ProbeEdit { .. } | Mode::SampleView { .. } => bindings::probe_bindings(),
             Mode::EnvEdit { editing: true, .. } => bindings::env_move_bindings(),
             Mode::EnvEdit { .. } => bindings::env_bindings(),
             Mode::QuitConfirm | Mode::SaveConfirm | Mode::ExportConfirm => {
@@ -3016,6 +3094,7 @@ impl App {
             Mode::AdsrEdit { .. } => "ADSR",
             Mode::EnvEdit { .. } => "ENV",
             Mode::ProbeEdit { .. } => "PROBE",
+            Mode::SampleView { .. } => "SAMPLE",
             Mode::SavePrompt => "SAVE",
             Mode::SaveConfirm => "OVERWRITE?",
             Mode::QuitConfirm => "QUIT?",
@@ -3072,7 +3151,12 @@ impl App {
         {
             if let Some(module) = self.patch().module(module_id) {
                 let edit_width = 36;
-                let edit_height = (module.kind.param_defs().len() + 8) as u16;
+                let extra = if module.kind.has_special_editor() {
+                    2
+                } else {
+                    0
+                };
+                let edit_height = (module.kind.param_defs().len() + 8 + extra) as u16;
                 let edit_x = (f.area().width.saturating_sub(edit_width)) / 2;
                 let edit_y = (f.area().height.saturating_sub(edit_height)) / 2;
                 let edit_area = Rect::new(edit_x, edit_y, edit_width, edit_height);
@@ -3242,6 +3326,40 @@ impl App {
                 let probe_widget =
                     ProbeWidget::new(&history, auto_min, auto_max, self.probe_len, current);
                 f.render_widget(probe_widget, inner);
+            }
+        }
+
+        if let Mode::SampleView {
+            module_id,
+            zoom,
+            offset,
+        } = self.mode
+        {
+            if let Some(module) = self.patch().module(module_id) {
+                if let ModuleParams::Sample { samples, .. } = &module.params {
+                    let sample_width = grid_area.width.saturating_sub(4);
+                    let sample_height = grid_area.height.saturating_sub(4);
+                    let sample_x = grid_area.x + 2;
+                    let sample_y = grid_area.y + 2;
+                    let sample_area = Rect::new(sample_x, sample_y, sample_width, sample_height);
+
+                    f.render_widget(Clear, sample_area);
+
+                    let sample_block = Block::default()
+                        .title(" Sample Waveform ")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(module.kind.color()));
+                    f.render_widget(sample_block, sample_area);
+
+                    let inner = Rect::new(
+                        sample_area.x + 1,
+                        sample_area.y + 1,
+                        sample_area.width.saturating_sub(2),
+                        sample_area.height.saturating_sub(2),
+                    );
+                    let sample_widget = SampleWidget::new(samples, zoom, offset);
+                    f.render_widget(sample_widget, inner);
+                }
             }
         }
 
