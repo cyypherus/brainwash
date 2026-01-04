@@ -273,6 +273,7 @@ struct App {
     brand_scroll: Animated<f32, Instant>,
     help_scroll: usize,
     last_mode_for_help: std::mem::Discriminant<Mode>,
+    active_pitches: Vec<u8>,
 }
 
 const SCALE_NAMES: &[&str] = &[
@@ -347,6 +348,15 @@ fn subpatch_color(index: usize) -> Color {
     SUBPATCH_COLORS[index % SUBPATCH_COLORS.len()]
 }
 
+fn pitch_to_note(pitch: u8) -> String {
+    const NOTES: [&str; 12] = [
+        "C ", "C#", "D ", "D#", "E ", "F ", "F#", "G ", "G#", "A ", "A#", "B ",
+    ];
+    let octave = (pitch / 12) as i8 - 1;
+    let note = NOTES[(pitch % 12) as usize];
+    format!("{}{}", note, octave)
+}
+
 impl App {
     fn new(cmd_tx: CommandSender, meter_rx: MeterReceiver, output_rx: OutputReceiver) -> Self {
         Self {
@@ -391,6 +401,7 @@ impl App {
                 .auto_start(1.0, Instant::now()),
             help_scroll: 0,
             last_mode_for_help: std::mem::discriminant(&Mode::Normal),
+            active_pitches: Vec::new(),
         }
     }
 
@@ -541,6 +552,7 @@ impl App {
                         history.pop_front();
                     }
                 }
+                self.active_pitches = frame.active_pitches;
             }
         }
         while let Ok(level) = self.output_rx.try_recv() {
@@ -2770,11 +2782,16 @@ impl App {
 
         let main_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(0), Constraint::Length(22)])
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(0),
+                Constraint::Length(22),
+            ])
             .split(chunks[0]);
 
-        let grid_area = main_chunks[0];
-        let help_area = main_chunks[1];
+        let notes_area = main_chunks[0];
+        let grid_area = main_chunks[1];
+        let help_area = main_chunks[2];
         let status_area = chunks[1];
 
         let (moving_id, copy_previews, move_previews): (
@@ -2957,6 +2974,53 @@ impl App {
         }
 
         let header_height = brand_height as u16 + 3;
+
+        let note_style = Style::default().fg(Color::Yellow);
+        let note_active_style = Style::default().fg(Color::Black).bg(Color::Yellow);
+
+        let scale = scale_from_idx(self.scale_idx());
+        let mut scale_pitches: Vec<u8> = (-49..49i32)
+            .map(|deg| scale.note(deg))
+            .filter(|&p| p >= 12 && p <= 120)
+            .map(|p| p as u8)
+            .collect();
+        scale_pitches.dedup();
+        scale_pitches.reverse();
+
+        let max_notes = notes_area.height as usize;
+        let center_pitch = if self.active_pitches.is_empty() {
+            60u8
+        } else {
+            let sum: u32 = self.active_pitches.iter().map(|&p| p as u32).sum();
+            (sum / self.active_pitches.len() as u32) as u8
+        };
+        let center_idx = scale_pitches
+            .iter()
+            .position(|&p| p <= center_pitch)
+            .unwrap_or(scale_pitches.len() / 2);
+        let half = max_notes / 2;
+        let start = center_idx.saturating_sub(half);
+        let end = (start + max_notes).min(scale_pitches.len());
+        let start = end.saturating_sub(max_notes);
+        let visible_notes: Vec<u8> = scale_pitches[start..end].to_vec();
+
+        for (i, &pitch) in visible_notes.iter().enumerate() {
+            let y = notes_area.y + i as u16;
+            let note_str = pitch_to_note(pitch);
+            let is_active = self.active_pitches.contains(&pitch);
+            let style = if is_active {
+                note_active_style
+            } else {
+                note_style
+            };
+            for (j, c) in note_str.chars().enumerate() {
+                let x = notes_area.x + j as u16;
+                if x < notes_area.x + notes_area.width {
+                    buf[(x, y)].set_char(c).set_style(style);
+                }
+            }
+        }
+
         let help_inner = Rect::new(
             help_area.x + 1,
             help_area.y + header_height,

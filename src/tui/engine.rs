@@ -49,6 +49,7 @@ pub struct MeterFrame {
     pub instrument_idx: usize,
     pub ports: Vec<(ModuleId, Vec<f32>)>,
     pub probes: Vec<(ModuleId, f32)>,
+    pub active_pitches: Vec<u8>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -149,6 +150,14 @@ impl TrackState {
     pub fn voice(&self, idx: usize) -> (f32, f32, i32) {
         let v = &self.voices[idx];
         (v.freq, v.gate, v.degree)
+    }
+
+    pub fn active_pitches(&self) -> Vec<u8> {
+        self.voices
+            .iter()
+            .filter(|v| v.gate > 0.5)
+            .map(|v| v.pitch)
+            .collect()
     }
 }
 
@@ -503,6 +512,7 @@ impl CompiledPatch {
                             instrument_idx,
                             ports,
                             probes,
+                            active_pitches: track.active_pitches(),
                         });
                     }
                 }
