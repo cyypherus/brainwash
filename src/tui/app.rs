@@ -464,7 +464,7 @@ impl App {
             self.instruments.push(Instrument::new());
             let new_idx = self.instruments.len() - 1;
             self.current_instrument = new_idx;
-            self.send_compile(new_idx);
+            self.send_compile_with_track(new_idx);
             self.message = Some(format!("New instrument {}", new_idx + 1));
         } else {
             self.message = Some("Max 9 instruments".into());
@@ -472,6 +472,24 @@ impl App {
     }
 
     fn send_compile(&self, inst_idx: usize) {
+        let inst = &self.instruments[inst_idx];
+        let scale = scale_from_idx(inst.scale_idx);
+        let track = Track::parse(&inst.track_text, &scale).ok();
+        let bars = track.as_ref().map(|t| t.bar_count() as f32).unwrap_or(1.0);
+        let ctx = CompileContext {
+            sample_rate: 44100.0,
+            bpm: self.bpm,
+            bars,
+        };
+        let voices = compile_voices(&inst.patches, NUM_VOICES, &ctx);
+        let _ = self.cmd_tx.send(AudioCommand::SetVoices {
+            idx: inst_idx,
+            voices,
+            bars,
+        });
+    }
+
+    fn send_compile_with_track(&self, inst_idx: usize) {
         let inst = &self.instruments[inst_idx];
         let scale = scale_from_idx(inst.scale_idx);
         let track = Track::parse(&inst.track_text, &scale).ok();
@@ -574,7 +592,7 @@ impl App {
         let scale = scale_from_idx(self.scale_idx());
         match Track::parse(self.track_text(), &scale) {
             Ok(_) => {
-                self.send_compile_current();
+                self.send_compile_with_track(self.current_instrument);
                 self.message = Some("Track updated".into());
             }
             Err(e) => {
@@ -2316,7 +2334,11 @@ impl App {
                 self.bpm = result.bpm;
                 let _ = self.cmd_tx.send(AudioCommand::SetBpm(self.bpm));
 
-                self.commit_patch();
+                self.snapshot();
+                self.send_compile_with_track(self.current_instrument);
+                self.inst_mut().meter_values.clear();
+                self.inst_mut().probe_values.clear();
+                self.dirty = false;
 
                 if result.missing_samples.is_empty() {
                     self.message = Some(format!("Loaded {}", path.display()));
@@ -3633,7 +3655,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = file_arg {
         app.load_from_file(path);
     } else {
-        app.recompile_patch();
+        app.send_compile_with_track(0);
     }
 
     loop {

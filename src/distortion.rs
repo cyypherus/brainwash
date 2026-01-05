@@ -1,16 +1,11 @@
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum DistortionType {
+    #[default]
     Tube,
     Tape,
     Fuzz,
     Fold,
     Clip,
-}
-
-impl Default for DistortionType {
-    fn default() -> Self {
-        Self::Tube
-    }
 }
 
 struct AllpassSection {

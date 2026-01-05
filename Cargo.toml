@@ -57,18 +57,18 @@ name = "bwsh"
 path = "src/bin/bwsh.rs"
 required-features = ["tui"]
 
-[[bench]]
-name = "sequence_bench"
-harness = false
+# [[bench]]
+# name = "sequence_bench"
+# harness = false
 
-[[bench]]
-name = "oscillator_bench"
-harness = false
+# [[bench]]
+# name = "oscillator_bench"
+# harness = false
 
-[[bench]]
-name = "adsr_bench"
-harness = false
+# [[bench]]
+# name = "adsr_bench"
+# harness = false
 
-[[bench]]
-name = "ramp_bench"
-harness = false
+# [[bench]]
+# name = "ramp_bench"
+# harness = false

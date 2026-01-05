@@ -43,6 +43,11 @@ pub enum AudioCommand {
         track: Option<Track>,
         bars: f32,
     },
+    SetVoices {
+        idx: usize,
+        voices: Vec<CompiledVoice>,
+        bars: f32,
+    },
     SetProbeVoice(usize),
 }
 
@@ -414,6 +419,7 @@ pub const OUTPUT_INTERVAL: usize = 1200;
 pub struct CompiledPatch {
     current: Option<PatchVoices>,
     old: Option<PatchVoices>,
+    pending: Option<PatchVoices>,
     crossfade_pos: usize,
     probe_histories: Vec<VecDeque<f32>>,
     probe_buffers: Vec<Vec<f32>>,
@@ -427,6 +433,7 @@ impl Default for CompiledPatch {
         Self {
             current: None,
             old: None,
+            pending: None,
             crossfade_pos: CROSSFADE_SAMPLES,
             probe_histories: Vec::new(),
             probe_buffers: Vec::new(),
@@ -445,9 +452,22 @@ impl CompiledPatch {
 
 impl CompiledPatch {
     fn set_voices(&mut self, voices: Vec<CompiledVoice>) {
-        self.old = self.current.take();
-        self.current = Some(PatchVoices { voices });
-        self.crossfade_pos = 0;
+        let new_patch = PatchVoices { voices };
+        if self.crossfade_pos >= CROSSFADE_SAMPLES {
+            self.old = self.current.take();
+            self.current = Some(new_patch);
+            self.crossfade_pos = 0;
+        } else {
+            self.pending = Some(new_patch);
+        }
+    }
+
+    fn start_pending_transition(&mut self) {
+        if let Some(pending) = self.pending.take() {
+            self.old = self.current.take();
+            self.current = Some(pending);
+            self.crossfade_pos = 0;
+        }
     }
 
     pub fn process(
@@ -474,6 +494,7 @@ impl CompiledPatch {
 
             if self.crossfade_pos >= CROSSFADE_SAMPLES {
                 self.old = None;
+                self.start_pending_transition();
             }
 
             old_sample * (1.0 - t) + new_sample * t
@@ -671,6 +692,13 @@ impl AudioEngine {
                 if let Some(inst) = self.instruments.get_mut(idx) {
                     inst.patch.set_voices(voices);
                     inst.track.set_track(track);
+                    inst.track.clock.bars(bars);
+                }
+            }
+            AudioCommand::SetVoices { idx, voices, bars } => {
+                self.ensure_instruments(idx + 1);
+                if let Some(inst) = self.instruments.get_mut(idx) {
+                    inst.patch.set_voices(voices);
                     inst.track.clock.bars(bars);
                 }
             }
