@@ -1,6 +1,8 @@
 use super::bindings;
 use super::grid::{Cell, GridPos};
-use super::module::{Edge, Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind};
+use super::module::{
+    Edge, Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind, StandardModule,
+};
 use super::patch::Patch;
 use crate::envelopes::{Envelope, EnvelopePoint, PointType};
 use ratatui::{
@@ -600,7 +602,8 @@ impl<'a> GridWidget<'a> {
             } => {
                 if let Some(module) = self.patch.module(id) {
                     let is_moving = self.moving == Some(id);
-                    let probe_value = if module.kind == ModuleKind::Probe {
+                    let probe_value = if module.kind == ModuleKind::Standard(StandardModule::Probe)
+                    {
                         self.probe_values.get(&id).copied()
                     } else {
                         None
@@ -1245,12 +1248,14 @@ impl Widget for EditWidget<'_> {
                     set_str(buf, val_x, y, "(input)", label_style);
                 }
                 ParamKind::Enum => {
-                    let val_str = if let ModuleKind::DelayTap(delay_id) = self.module.kind {
+                    let val_str = if let ModuleKind::Standard(StandardModule::DelayTap(delay_id)) =
+                        self.module.kind
+                    {
                         if i == 0 {
                             let is_valid_delay = self
                                 .patch
                                 .module(delay_id)
-                                .map(|m| m.kind == ModuleKind::Delay)
+                                .map(|m| m.kind == ModuleKind::Standard(StandardModule::Delay))
                                 .unwrap_or(false);
                             if is_valid_delay {
                                 if let Some(pos) = self.patch.module_position(delay_id) {
@@ -1268,7 +1273,9 @@ impl Widget for EditWidget<'_> {
                                 .unwrap_or("?")
                                 .to_string()
                         }
-                    } else if self.module.kind == ModuleKind::Sample && i == 0 {
+                    } else if self.module.kind == ModuleKind::Standard(StandardModule::Sample)
+                        && i == 0
+                    {
                         if let ModuleParams::Sample {
                             file_name, samples, ..
                         } = &self.module.params
@@ -1368,7 +1375,7 @@ impl Widget for EditWidget<'_> {
             }
         }
 
-        if self.module.kind == ModuleKind::Sample {
+        if self.module.kind == ModuleKind::Standard(StandardModule::Sample) {
             if let ModuleParams::Sample { samples, .. } = &self.module.params {
                 if !samples.is_empty() {
                     let sample_count = samples.len();

@@ -65,4 +65,12 @@ impl Ramp {
 
         *current_value
     }
+
+    pub fn copy_state_from(&mut self, other: &Ramp) {
+        self.current_value = other.current_value;
+        self.target_value = other.target_value;
+        self.start_value = other.start_value;
+        self.start_time = other.start_time;
+        self.new_target = other.new_target;
+    }
 }

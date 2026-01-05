@@ -61,6 +61,14 @@ impl GateRamp {
         self.start_time = None;
     }
 
+    pub fn copy_state_from(&mut self, other: &GateRamp) {
+        self.value = other.value;
+        self.last_gate = other.last_gate;
+        self.active = other.active;
+        self.start_value = other.start_value;
+        self.start_time = other.start_time;
+    }
+
     pub fn output(&mut self, gate: f32, signal: &Signal) -> f32 {
         let pressed = gate > 0.5;
         let current_time = signal.position;

@@ -115,6 +115,22 @@ impl Reverb {
         let right = tank_outputs[1] - tank_outputs[3] + tank_outputs[5] + tank_outputs[7];
         (left + right) * 0.25
     }
+
+    pub fn copy_state_from(&mut self, other: &Reverb) {
+        for (new_d, old_d) in self
+            .input_diffusers
+            .iter_mut()
+            .zip(other.input_diffusers.iter())
+        {
+            new_d.copy_state_from(old_d);
+        }
+        for (new_d, old_d) in self.tank_delays.iter_mut().zip(other.tank_delays.iter()) {
+            new_d.copy_state_from(old_d);
+        }
+        for (new_f, old_f) in self.tank_damping.iter_mut().zip(other.tank_damping.iter()) {
+            new_f.state = old_f.state;
+        }
+    }
 }
 
 fn householder(arr: &mut [f32; NUM_TANK_CHANNELS]) {
@@ -158,6 +174,14 @@ impl AllpassDiffuser {
         }
 
         output
+    }
+
+    fn copy_state_from(&mut self, other: &AllpassDiffuser) {
+        let copy_len = self.buffer.len().min(other.buffer.len());
+        for i in 0..copy_len {
+            self.buffer[i] = other.buffer[i];
+        }
+        self.index = other.index % self.buffer.len();
     }
 }
 
@@ -234,6 +258,15 @@ impl ModulatedDelay {
         let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
 
         ((c3 * frac + c2) * frac + c1) * frac + c0
+    }
+
+    fn copy_state_from(&mut self, other: &ModulatedDelay) {
+        let copy_len = self.buffer.len().min(other.buffer.len());
+        for i in 0..copy_len {
+            self.buffer[i] = other.buffer[i];
+        }
+        self.write_index = other.write_index % self.buffer.len();
+        self.phase = other.phase;
     }
 }
 

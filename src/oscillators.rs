@@ -204,4 +204,9 @@ impl Osc {
 
         self.computed_sample = sample * self.attenuation;
     }
+
+    pub fn copy_phase_from(&mut self, other: &Osc) {
+        self.phase_accumulator = other.phase_accumulator;
+        self.noise_seed = other.noise_seed;
+    }
 }

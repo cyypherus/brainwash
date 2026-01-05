@@ -121,6 +121,10 @@ impl Default for Envelope {
     }
 }
 
+impl Envelope {
+    pub fn copy_state_from(&mut self, _other: &Envelope) {}
+}
+
 #[derive(Clone)]
 pub struct ADSR {
     attack_ratio: f32,
@@ -157,6 +161,12 @@ impl ADSR {
         self.release_start_value = 0.0;
         self.last_rise = 0.0;
         self.last_fall = 1.0;
+    }
+
+    pub fn copy_state_from(&mut self, other: &ADSR) {
+        self.release_start_value = other.release_start_value;
+        self.last_rise = other.last_rise;
+        self.last_fall = other.last_fall;
     }
 
     pub fn output(&mut self, rise: f32, fall: f32) -> f32 {

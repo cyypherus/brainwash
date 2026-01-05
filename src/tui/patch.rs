@@ -1,5 +1,5 @@
 use super::grid::{Cell, Grid, GridPos};
-use super::module::{Module, ModuleId, ModuleKind, SubPatchId};
+use super::module::{Module, ModuleId, ModuleKind, StandardModule, SubPatchId, SubpatchModule};
 use ratatui::style::Color;
 use std::collections::HashMap;
 
@@ -22,13 +22,13 @@ impl SubPatchDef {
     pub fn inputs(&self) -> impl Iterator<Item = &Module> {
         self.patch
             .all_modules()
-            .filter(|m| m.kind == ModuleKind::SubIn)
+            .filter(|m| m.kind == ModuleKind::Subpatch(SubpatchModule::SubIn))
     }
 
     pub fn outputs(&self) -> impl Iterator<Item = &Module> {
         self.patch
             .all_modules()
-            .filter(|m| m.kind == ModuleKind::SubOut)
+            .filter(|m| m.kind == ModuleKind::Subpatch(SubpatchModule::SubOut))
     }
 
     pub fn input_count(&self) -> usize {
@@ -131,7 +131,7 @@ impl Patch {
     }
 
     pub fn add_module(&mut self, kind: ModuleKind, pos: GridPos) -> Option<ModuleId> {
-        if kind == ModuleKind::Output && self.output_id.is_some() {
+        if kind == ModuleKind::Standard(StandardModule::Output) && self.output_id.is_some() {
             return None;
         }
 
@@ -148,7 +148,7 @@ impl Patch {
         self.positions.insert(id, pos);
         self.next_module_id += 1;
 
-        if kind == ModuleKind::Output {
+        if kind == ModuleKind::Standard(StandardModule::Output) {
             self.output_id = Some(id);
         }
 
@@ -157,7 +157,7 @@ impl Patch {
     }
 
     pub fn add_module_clone(&mut self, source: &Module, pos: GridPos) -> Option<ModuleId> {
-        if source.kind == ModuleKind::Output && self.output_id.is_some() {
+        if source.kind == ModuleKind::Standard(StandardModule::Output) && self.output_id.is_some() {
             return None;
         }
 
@@ -175,7 +175,7 @@ impl Patch {
         self.positions.insert(id, pos);
         self.next_module_id += 1;
 
-        if source.kind == ModuleKind::Output {
+        if source.kind == ModuleKind::Standard(StandardModule::Output) {
             self.output_id = Some(id);
         }
 
@@ -463,7 +463,10 @@ mod tests {
     #[test]
     fn test_add_remove_module() {
         let mut patch = Patch::new(10, 10);
-        let id = patch.add_module(ModuleKind::Freq, GridPos::new(0, 0));
+        let id = patch.add_module(
+            ModuleKind::Standard(StandardModule::Freq),
+            GridPos::new(0, 0),
+        );
         assert!(id.is_some());
         assert!(patch.remove_module(id.unwrap()));
     }
@@ -472,7 +475,10 @@ mod tests {
     fn test_move_module() {
         let mut patch = Patch::new(10, 10);
         let id = patch
-            .add_module(ModuleKind::Freq, GridPos::new(0, 0))
+            .add_module(
+                ModuleKind::Standard(StandardModule::Freq),
+                GridPos::new(0, 0),
+            )
             .unwrap();
         assert!(patch.move_module(id, GridPos::new(2, 2)));
         assert_eq!(patch.module_position(id), Some(GridPos::new(2, 2)));

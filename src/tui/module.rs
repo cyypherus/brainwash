@@ -86,7 +86,7 @@ impl WaveType {
             2 => WaveType::Tri,
             3 => WaveType::Saw,
             4 => WaveType::RSaw,
-            _ => WaveType::Noise,
+            5.. => WaveType::Noise,
         }
     }
 }
@@ -148,7 +148,7 @@ impl DistType {
             1 => DistType::Tape,
             2 => DistType::Fuzz,
             3 => DistType::Fold,
-            _ => DistType::Clip,
+            4.. => DistType::Clip,
         }
     }
 
@@ -164,7 +164,24 @@ impl DistType {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ModuleKind {
+pub enum RoutingModule {
+    LSplit,
+    TSplit,
+    RJoin,
+    DJoin,
+    TurnRD,
+    TurnDR,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SubpatchModule {
+    SubIn,
+    SubOut,
+    SubPatch(SubPatchId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StandardModule {
     Freq,
     Gate,
     Degree,
@@ -180,6 +197,7 @@ pub enum ModuleKind {
     Comb,
     Allpass,
     Delay,
+    DelayTap(ModuleId),
     Reverb,
     Distortion,
     Flanger,
@@ -192,190 +210,213 @@ pub enum ModuleKind {
     Sample,
     Probe,
     Output,
-    LSplit,
-    TSplit,
-    RJoin,
-    DJoin,
-    TurnRD,
-    TurnDR,
-    SubIn,
-    SubOut,
-    SubPatch(SubPatchId),
-    DelayTap(ModuleId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ModuleKind {
+    Routing(RoutingModule),
+    Subpatch(SubpatchModule),
+    Standard(StandardModule),
 }
 
 impl ModuleKind {
     pub fn name(&self) -> &'static str {
         match self {
-            ModuleKind::Freq => "Freq",
-            ModuleKind::Gate => "Gate",
-            ModuleKind::Degree => "Deg",
-            ModuleKind::DegreeGate => "DegG",
-            ModuleKind::Osc => "Osc",
-            ModuleKind::Rise => "Rise",
-            ModuleKind::Fall => "Fall",
-            ModuleKind::Ramp => "Ramp",
-            ModuleKind::Adsr => "ADSR",
-            ModuleKind::Envelope => "Env",
-            ModuleKind::Lpf => "LPF",
-            ModuleKind::Hpf => "HPF",
-            ModuleKind::Comb => "Comb",
-            ModuleKind::Allpass => "Allpass",
-            ModuleKind::Delay => "Delay",
-            ModuleKind::Reverb => "Verb",
-            ModuleKind::Distortion => "Dist",
-            ModuleKind::Flanger => "Flang",
-            ModuleKind::Mul => "Mul",
-            ModuleKind::Add => "Add",
-            ModuleKind::Gt => "Gt",
-            ModuleKind::Lt => "Lt",
-            ModuleKind::Switch => "Switch",
-            ModuleKind::Rng => "Rng",
-            ModuleKind::Sample => "Sample",
-            ModuleKind::Probe => "Probe",
-            ModuleKind::Output => "Out",
-            ModuleKind::LSplit => "LSplit ◁",
-            ModuleKind::TSplit => "USplit △",
-            ModuleKind::RJoin => "RJoin ▶",
-            ModuleKind::DJoin => "DJoin ▼",
-            ModuleKind::TurnRD => "Turn ┐",
-            ModuleKind::TurnDR => "Turn └",
-            ModuleKind::SubIn => "SubIn",
-            ModuleKind::SubOut => "SubOut",
-            ModuleKind::SubPatch(_) => "Sub",
-            ModuleKind::DelayTap(_) => "Tap",
+            ModuleKind::Routing(r) => match r {
+                RoutingModule::LSplit => "LSplit ◁",
+                RoutingModule::TSplit => "USplit △",
+                RoutingModule::RJoin => "RJoin ▶",
+                RoutingModule::DJoin => "DJoin ▼",
+                RoutingModule::TurnRD => "Turn ┐",
+                RoutingModule::TurnDR => "Turn └",
+            },
+            ModuleKind::Subpatch(s) => match s {
+                SubpatchModule::SubIn => "SubIn",
+                SubpatchModule::SubOut => "SubOut",
+                SubpatchModule::SubPatch(_) => "Sub",
+            },
+            ModuleKind::Standard(s) => match s {
+                StandardModule::Freq => "Freq",
+                StandardModule::Gate => "Gate",
+                StandardModule::Degree => "Deg",
+                StandardModule::DegreeGate => "DegG",
+                StandardModule::Osc => "Osc",
+                StandardModule::Rise => "Rise",
+                StandardModule::Fall => "Fall",
+                StandardModule::Ramp => "Ramp",
+                StandardModule::Adsr => "ADSR",
+                StandardModule::Envelope => "Env",
+                StandardModule::Lpf => "LPF",
+                StandardModule::Hpf => "HPF",
+                StandardModule::Comb => "Comb",
+                StandardModule::Allpass => "Allpass",
+                StandardModule::Delay => "Delay",
+                StandardModule::DelayTap(_) => "Tap",
+                StandardModule::Reverb => "Verb",
+                StandardModule::Distortion => "Dist",
+                StandardModule::Flanger => "Flang",
+                StandardModule::Mul => "Mul",
+                StandardModule::Add => "Add",
+                StandardModule::Gt => "Gt",
+                StandardModule::Lt => "Lt",
+                StandardModule::Switch => "Switch",
+                StandardModule::Rng => "Rng",
+                StandardModule::Sample => "Sample",
+                StandardModule::Probe => "Probe",
+                StandardModule::Output => "Out",
+            },
         }
     }
 
     pub fn short_name(&self) -> &'static str {
         match self {
-            ModuleKind::Freq => "FRQ",
-            ModuleKind::Gate => "GAT",
-            ModuleKind::Degree => "DEG",
-            ModuleKind::DegreeGate => "DGG",
-            ModuleKind::Osc => "OSC",
-            ModuleKind::Rise => "RIS",
-            ModuleKind::Fall => "FAL",
-            ModuleKind::Ramp => "RMP",
-            ModuleKind::Adsr => "ADS",
-            ModuleKind::Envelope => "ENV",
-            ModuleKind::Lpf => "LPF",
-            ModuleKind::Hpf => "HPF",
-            ModuleKind::Comb => "CMB",
-            ModuleKind::Allpass => "APF",
-            ModuleKind::Delay => "DLY",
-            ModuleKind::Reverb => "VRB",
-            ModuleKind::Distortion => "DST",
-            ModuleKind::Flanger => "FLG",
-            ModuleKind::Mul => "MUL",
-            ModuleKind::Add => "ADD",
-            ModuleKind::Gt => " > ",
-            ModuleKind::Lt => " < ",
-            ModuleKind::Switch => "SWT",
-            ModuleKind::Rng => "RNG",
-            ModuleKind::Sample => "SMP",
-            ModuleKind::Probe => "PRB",
-            ModuleKind::Output => "OUT",
-            ModuleKind::LSplit => " ◁ ",
-            ModuleKind::TSplit => " △ ",
-            ModuleKind::RJoin => " ▶ ",
-            ModuleKind::DJoin => " ▼ ",
-            ModuleKind::TurnRD => " ┐ ",
-            ModuleKind::TurnDR => " └ ",
-            ModuleKind::SubIn => "SIN",
-            ModuleKind::SubOut => "SOT",
-            ModuleKind::SubPatch(_) => "SUB",
-            ModuleKind::DelayTap(_) => "TAP",
+            ModuleKind::Routing(r) => match r {
+                RoutingModule::LSplit => " ◁ ",
+                RoutingModule::TSplit => " △ ",
+                RoutingModule::RJoin => " ▶ ",
+                RoutingModule::DJoin => " ▼ ",
+                RoutingModule::TurnRD => " ┐ ",
+                RoutingModule::TurnDR => " └ ",
+            },
+            ModuleKind::Subpatch(s) => match s {
+                SubpatchModule::SubIn => "SIN",
+                SubpatchModule::SubOut => "SOT",
+                SubpatchModule::SubPatch(_) => "SUB",
+            },
+            ModuleKind::Standard(s) => match s {
+                StandardModule::Freq => "FRQ",
+                StandardModule::Gate => "GAT",
+                StandardModule::Degree => "DEG",
+                StandardModule::DegreeGate => "DGG",
+                StandardModule::Osc => "OSC",
+                StandardModule::Rise => "RIS",
+                StandardModule::Fall => "FAL",
+                StandardModule::Ramp => "RMP",
+                StandardModule::Adsr => "ADS",
+                StandardModule::Envelope => "ENV",
+                StandardModule::Lpf => "LPF",
+                StandardModule::Hpf => "HPF",
+                StandardModule::Comb => "CMB",
+                StandardModule::Allpass => "APF",
+                StandardModule::Delay => "DLY",
+                StandardModule::DelayTap(_) => "TAP",
+                StandardModule::Reverb => "VRB",
+                StandardModule::Distortion => "DST",
+                StandardModule::Flanger => "FLG",
+                StandardModule::Mul => "MUL",
+                StandardModule::Add => "ADD",
+                StandardModule::Gt => " > ",
+                StandardModule::Lt => " < ",
+                StandardModule::Switch => "SWT",
+                StandardModule::Rng => "RNG",
+                StandardModule::Sample => "SMP",
+                StandardModule::Probe => "PRB",
+                StandardModule::Output => "OUT",
+            },
         }
     }
 
     pub fn description(&self) -> &'static str {
         match self {
-            ModuleKind::Freq => "Note frequency from track",
-            ModuleKind::Gate => "Note gate - on / off",
-            ModuleKind::Degree => "Scale degree from track",
-            ModuleKind::DegreeGate => "Gate when degree matches",
-            ModuleKind::Osc => "Oscillator - makes noise!",
-            ModuleKind::Rise => "Ramps 0->1 while gate high",
-            ModuleKind::Fall => "Ramps 0->1 while gate low",
-            ModuleKind::Ramp => "Smoothly ramps to target value",
-            ModuleKind::Adsr => "Attack/decay/sustain/release",
-            ModuleKind::Envelope => "Custom envelope from points",
-            ModuleKind::Lpf => "Low-pass filter",
-            ModuleKind::Hpf => "High-pass filter",
-            ModuleKind::Comb => "Comb filter (resonant delay)",
-            ModuleKind::Allpass => "Allpass filter (phase shift)",
-            ModuleKind::Delay => "Sample delay line",
-            ModuleKind::Reverb => "FDN reverb with modulation",
-            ModuleKind::Distortion => "Soft-clip distortion",
-            ModuleKind::Flanger => "Flanger/chorus effect",
-            ModuleKind::Mul => "Multiply A * B",
-            ModuleKind::Add => "Add A + B",
-            ModuleKind::Gt => "1 if A > B, else 0",
-            ModuleKind::Lt => "1 if A < B, else 0",
-            ModuleKind::Switch => "Output A if Sel<=0.5, else B",
-            ModuleKind::Rng => "Random 0-1 on gate rising edge",
-            ModuleKind::Sample => "Play WAV file by position 0-1",
-            ModuleKind::Probe => "Display signal value",
-            ModuleKind::Output => "Final audio output",
-            ModuleKind::LSplit => "In from left, out down+right",
-            ModuleKind::TSplit => "In from top, out down+right",
-            ModuleKind::RJoin => "In from left+top, out right",
-            ModuleKind::DJoin => "In from left+top, out down",
-            ModuleKind::TurnRD => "In from left, out down",
-            ModuleKind::TurnDR => "In from top, out right",
-            ModuleKind::SubIn => "Subpatch input port",
-            ModuleKind::SubOut => "Subpatch output port",
-            ModuleKind::SubPatch(_) => "Subpatch instance",
-            ModuleKind::DelayTap(_) => "Read from delay (feedback)",
+            ModuleKind::Routing(r) => match r {
+                RoutingModule::LSplit => "In from left, out down+right",
+                RoutingModule::TSplit => "In from top, out down+right",
+                RoutingModule::RJoin => "In from left+top, out right",
+                RoutingModule::DJoin => "In from left+top, out down",
+                RoutingModule::TurnRD => "In from left, out down",
+                RoutingModule::TurnDR => "In from top, out right",
+            },
+            ModuleKind::Subpatch(s) => match s {
+                SubpatchModule::SubIn => "Subpatch input port",
+                SubpatchModule::SubOut => "Subpatch output port",
+                SubpatchModule::SubPatch(_) => "Subpatch instance",
+            },
+            ModuleKind::Standard(s) => match s {
+                StandardModule::Freq => "Note frequency from track",
+                StandardModule::Gate => "Note gate - on / off",
+                StandardModule::Degree => "Scale degree from track",
+                StandardModule::DegreeGate => "Gate when degree matches",
+                StandardModule::Osc => "Oscillator - makes noise!",
+                StandardModule::Rise => "Ramps 0->1 while gate high",
+                StandardModule::Fall => "Ramps 0->1 while gate low",
+                StandardModule::Ramp => "Smoothly ramps to target value",
+                StandardModule::Adsr => "Attack/decay/sustain/release",
+                StandardModule::Envelope => "Custom envelope from points",
+                StandardModule::Lpf => "Low-pass filter",
+                StandardModule::Hpf => "High-pass filter",
+                StandardModule::Comb => "Comb filter (resonant delay)",
+                StandardModule::Allpass => "Allpass filter (phase shift)",
+                StandardModule::Delay => "Sample delay line",
+                StandardModule::DelayTap(_) => "Read from delay (feedback)",
+                StandardModule::Reverb => "FDN reverb with modulation",
+                StandardModule::Distortion => "Soft-clip distortion",
+                StandardModule::Flanger => "Flanger/chorus effect",
+                StandardModule::Mul => "Multiply A * B",
+                StandardModule::Add => "Add A + B",
+                StandardModule::Gt => "1 if A > B, else 0",
+                StandardModule::Lt => "1 if A < B, else 0",
+                StandardModule::Switch => "Output A if Sel<=0.5, else B",
+                StandardModule::Rng => "Random 0-1 on gate rising edge",
+                StandardModule::Sample => "Play WAV file by position 0-1",
+                StandardModule::Probe => "Display signal value",
+                StandardModule::Output => "Final audio output",
+            },
         }
     }
 
     pub fn color(&self) -> Color {
         match self {
-            ModuleKind::Freq | ModuleKind::Gate | ModuleKind::Degree | ModuleKind::DegreeGate => {
-                Color::Rgb(100, 200, 100)
-            }
-            ModuleKind::Osc | ModuleKind::Sample => Color::Rgb(100, 150, 255),
-            ModuleKind::Rise
-            | ModuleKind::Fall
-            | ModuleKind::Ramp
-            | ModuleKind::Adsr
-            | ModuleKind::Envelope => Color::Rgb(255, 200, 100),
-            ModuleKind::Lpf | ModuleKind::Hpf | ModuleKind::Comb | ModuleKind::Allpass => {
-                Color::Rgb(150, 200, 255)
-            }
-            ModuleKind::Delay
-            | ModuleKind::Reverb
-            | ModuleKind::Distortion
-            | ModuleKind::Flanger => Color::Rgb(200, 100, 255),
-            ModuleKind::Mul
-            | ModuleKind::Add
-            | ModuleKind::Gt
-            | ModuleKind::Lt
-            | ModuleKind::Switch
-            | ModuleKind::Rng
-            | ModuleKind::Probe => Color::Rgb(100, 220, 220),
-            ModuleKind::Output => Color::Rgb(255, 100, 100),
-            ModuleKind::LSplit
-            | ModuleKind::TSplit
-            | ModuleKind::RJoin
-            | ModuleKind::DJoin
-            | ModuleKind::TurnRD
-            | ModuleKind::TurnDR => Color::Rgb(180, 180, 180),
-            ModuleKind::SubIn | ModuleKind::SubOut => Color::Rgb(255, 180, 100),
-            ModuleKind::SubPatch(_) => Color::Rgb(255, 150, 50),
-            ModuleKind::DelayTap(_) => Color::Rgb(200, 100, 255),
+            ModuleKind::Routing(_) => Color::Rgb(180, 180, 180),
+            ModuleKind::Subpatch(s) => match s {
+                SubpatchModule::SubIn | SubpatchModule::SubOut => Color::Rgb(255, 180, 100),
+                SubpatchModule::SubPatch(_) => Color::Rgb(255, 150, 50),
+            },
+            ModuleKind::Standard(s) => match s {
+                StandardModule::Freq
+                | StandardModule::Gate
+                | StandardModule::Degree
+                | StandardModule::DegreeGate => Color::Rgb(100, 200, 100),
+                StandardModule::Osc | StandardModule::Sample => Color::Rgb(100, 150, 255),
+                StandardModule::Rise
+                | StandardModule::Fall
+                | StandardModule::Ramp
+                | StandardModule::Adsr
+                | StandardModule::Envelope => Color::Rgb(255, 200, 100),
+                StandardModule::Lpf
+                | StandardModule::Hpf
+                | StandardModule::Comb
+                | StandardModule::Allpass => Color::Rgb(150, 200, 255),
+                StandardModule::Delay
+                | StandardModule::DelayTap(_)
+                | StandardModule::Reverb
+                | StandardModule::Distortion
+                | StandardModule::Flanger => Color::Rgb(200, 100, 255),
+                StandardModule::Mul
+                | StandardModule::Add
+                | StandardModule::Gt
+                | StandardModule::Lt
+                | StandardModule::Switch
+                | StandardModule::Rng
+                | StandardModule::Probe => Color::Rgb(100, 220, 220),
+                StandardModule::Output => Color::Rgb(255, 100, 100),
+            },
         }
     }
 
     pub fn port_count(&self) -> usize {
         match self {
-            ModuleKind::LSplit | ModuleKind::TSplit | ModuleKind::TurnRD | ModuleKind::TurnDR => 1,
-            ModuleKind::RJoin | ModuleKind::DJoin => 2,
-            ModuleKind::SubIn => 0,
-            ModuleKind::SubOut => 1,
-            _ => self
+            ModuleKind::Routing(r) => match r {
+                RoutingModule::LSplit
+                | RoutingModule::TSplit
+                | RoutingModule::TurnRD
+                | RoutingModule::TurnDR => 1,
+                RoutingModule::RJoin | RoutingModule::DJoin => 2,
+            },
+            ModuleKind::Subpatch(s) => match s {
+                SubpatchModule::SubIn => 0,
+                SubpatchModule::SubOut | SubpatchModule::SubPatch(_) => 1,
+            },
+            ModuleKind::Standard(_) => self
                 .param_defs()
                 .iter()
                 .filter(|d| d.kind.is_port())
@@ -394,118 +435,178 @@ impl ModuleKind {
 
     pub fn output_count(&self) -> usize {
         match self {
-            ModuleKind::Output | ModuleKind::SubOut => 0,
-            ModuleKind::LSplit | ModuleKind::TSplit => 2,
-            _ => 1,
+            ModuleKind::Routing(r) => match r {
+                RoutingModule::LSplit | RoutingModule::TSplit => 2,
+                RoutingModule::RJoin
+                | RoutingModule::DJoin
+                | RoutingModule::TurnRD
+                | RoutingModule::TurnDR => 1,
+            },
+            ModuleKind::Subpatch(s) => match s {
+                SubpatchModule::SubOut => 0,
+                SubpatchModule::SubIn | SubpatchModule::SubPatch(_) => 1,
+            },
+            ModuleKind::Standard(s) => match s {
+                StandardModule::Output => 0,
+                StandardModule::Freq
+                | StandardModule::Gate
+                | StandardModule::Degree
+                | StandardModule::DegreeGate
+                | StandardModule::Osc
+                | StandardModule::Rise
+                | StandardModule::Fall
+                | StandardModule::Ramp
+                | StandardModule::Adsr
+                | StandardModule::Envelope
+                | StandardModule::Lpf
+                | StandardModule::Hpf
+                | StandardModule::Comb
+                | StandardModule::Allpass
+                | StandardModule::Delay
+                | StandardModule::DelayTap(_)
+                | StandardModule::Reverb
+                | StandardModule::Distortion
+                | StandardModule::Flanger
+                | StandardModule::Mul
+                | StandardModule::Add
+                | StandardModule::Gt
+                | StandardModule::Lt
+                | StandardModule::Switch
+                | StandardModule::Rng
+                | StandardModule::Sample
+                | StandardModule::Probe => 1,
+            },
         }
     }
 
     pub fn is_routing(&self) -> bool {
-        matches!(
-            self,
-            ModuleKind::LSplit
-                | ModuleKind::TSplit
-                | ModuleKind::RJoin
-                | ModuleKind::DJoin
-                | ModuleKind::TurnRD
-                | ModuleKind::TurnDR
-        )
+        matches!(self, ModuleKind::Routing(_))
     }
 
     pub fn has_special_editor(&self) -> bool {
-        matches!(
-            self,
-            ModuleKind::Envelope | ModuleKind::Sample | ModuleKind::Probe
-        )
+        match self {
+            ModuleKind::Standard(s) => matches!(
+                s,
+                StandardModule::Envelope | StandardModule::Sample | StandardModule::Probe
+            ),
+            ModuleKind::Routing(_) | ModuleKind::Subpatch(_) => false,
+        }
     }
 
     pub fn special_editor_name(&self) -> Option<&'static str> {
         match self {
-            ModuleKind::Envelope => Some("Envelope Editor"),
-            ModuleKind::Sample => Some("Waveform View"),
-            ModuleKind::Probe => Some("Probe View"),
-            _ => None,
+            ModuleKind::Standard(s) => match s {
+                StandardModule::Envelope => Some("Envelope Editor"),
+                StandardModule::Sample => Some("Waveform View"),
+                StandardModule::Probe => Some("Probe View"),
+                StandardModule::Freq
+                | StandardModule::Gate
+                | StandardModule::Degree
+                | StandardModule::DegreeGate
+                | StandardModule::Osc
+                | StandardModule::Rise
+                | StandardModule::Fall
+                | StandardModule::Ramp
+                | StandardModule::Adsr
+                | StandardModule::Lpf
+                | StandardModule::Hpf
+                | StandardModule::Comb
+                | StandardModule::Allpass
+                | StandardModule::Delay
+                | StandardModule::DelayTap(_)
+                | StandardModule::Reverb
+                | StandardModule::Distortion
+                | StandardModule::Flanger
+                | StandardModule::Mul
+                | StandardModule::Add
+                | StandardModule::Gt
+                | StandardModule::Lt
+                | StandardModule::Switch
+                | StandardModule::Rng
+                | StandardModule::Output => None,
+            },
+            ModuleKind::Routing(_) | ModuleKind::Subpatch(_) => None,
         }
     }
 
     pub fn category(&self) -> ModuleCategory {
         match self {
-            ModuleKind::Freq | ModuleKind::Gate | ModuleKind::Degree | ModuleKind::DegreeGate => {
-                ModuleCategory::Track
-            }
-            ModuleKind::Osc | ModuleKind::Sample => ModuleCategory::Generator,
-            ModuleKind::Rise
-            | ModuleKind::Fall
-            | ModuleKind::Ramp
-            | ModuleKind::Adsr
-            | ModuleKind::Envelope => ModuleCategory::Envelope,
-            ModuleKind::Lpf | ModuleKind::Hpf | ModuleKind::Comb | ModuleKind::Allpass => {
-                ModuleCategory::Filter
-            }
-            ModuleKind::Delay
-            | ModuleKind::DelayTap(_)
-            | ModuleKind::Reverb
-            | ModuleKind::Distortion
-            | ModuleKind::Flanger => ModuleCategory::Effect,
-            ModuleKind::Mul
-            | ModuleKind::Add
-            | ModuleKind::Gt
-            | ModuleKind::Lt
-            | ModuleKind::Switch
-            | ModuleKind::Rng
-            | ModuleKind::Probe => ModuleCategory::Math,
-            ModuleKind::Output => ModuleCategory::Output,
-            ModuleKind::LSplit
-            | ModuleKind::TSplit
-            | ModuleKind::RJoin
-            | ModuleKind::DJoin
-            | ModuleKind::TurnRD
-            | ModuleKind::TurnDR => ModuleCategory::Routing,
-            ModuleKind::SubIn | ModuleKind::SubOut | ModuleKind::SubPatch(_) => {
-                ModuleCategory::Subpatch
-            }
+            ModuleKind::Routing(_) => ModuleCategory::Routing,
+            ModuleKind::Subpatch(_) => ModuleCategory::Subpatch,
+            ModuleKind::Standard(s) => match s {
+                StandardModule::Freq
+                | StandardModule::Gate
+                | StandardModule::Degree
+                | StandardModule::DegreeGate => ModuleCategory::Track,
+                StandardModule::Osc | StandardModule::Sample => ModuleCategory::Generator,
+                StandardModule::Rise
+                | StandardModule::Fall
+                | StandardModule::Ramp
+                | StandardModule::Adsr
+                | StandardModule::Envelope => ModuleCategory::Envelope,
+                StandardModule::Lpf
+                | StandardModule::Hpf
+                | StandardModule::Comb
+                | StandardModule::Allpass => ModuleCategory::Filter,
+                StandardModule::Delay
+                | StandardModule::DelayTap(_)
+                | StandardModule::Reverb
+                | StandardModule::Distortion
+                | StandardModule::Flanger => ModuleCategory::Effect,
+                StandardModule::Mul
+                | StandardModule::Add
+                | StandardModule::Gt
+                | StandardModule::Lt
+                | StandardModule::Switch
+                | StandardModule::Rng
+                | StandardModule::Probe => ModuleCategory::Math,
+                StandardModule::Output => ModuleCategory::Output,
+            },
         }
     }
 
     pub fn all() -> &'static [ModuleKind] {
+        use RoutingModule::*;
+        use StandardModule::*;
+        use SubpatchModule::*;
         &[
-            ModuleKind::Freq,
-            ModuleKind::Gate,
-            ModuleKind::Degree,
-            ModuleKind::DegreeGate,
-            ModuleKind::Osc,
-            ModuleKind::Rise,
-            ModuleKind::Fall,
-            ModuleKind::Ramp,
-            ModuleKind::Adsr,
-            ModuleKind::Envelope,
-            ModuleKind::Lpf,
-            ModuleKind::Hpf,
-            ModuleKind::Comb,
-            ModuleKind::Allpass,
-            ModuleKind::Delay,
-            ModuleKind::DelayTap(ModuleId(0)),
-            ModuleKind::Reverb,
-            ModuleKind::Distortion,
-            ModuleKind::Flanger,
-            ModuleKind::Mul,
-            ModuleKind::Add,
-            ModuleKind::Gt,
-            ModuleKind::Lt,
-            ModuleKind::Switch,
-            ModuleKind::Rng,
-            ModuleKind::Sample,
-            ModuleKind::Probe,
-            ModuleKind::Output,
-            ModuleKind::TurnRD,
-            ModuleKind::TurnDR,
-            ModuleKind::LSplit,
-            ModuleKind::TSplit,
-            ModuleKind::RJoin,
-            ModuleKind::DJoin,
-            ModuleKind::SubIn,
-            ModuleKind::SubOut,
-            ModuleKind::SubPatch(SubPatchId(0)),
+            ModuleKind::Standard(Freq),
+            ModuleKind::Standard(Gate),
+            ModuleKind::Standard(Degree),
+            ModuleKind::Standard(DegreeGate),
+            ModuleKind::Standard(Osc),
+            ModuleKind::Standard(Rise),
+            ModuleKind::Standard(Fall),
+            ModuleKind::Standard(Ramp),
+            ModuleKind::Standard(Adsr),
+            ModuleKind::Standard(Envelope),
+            ModuleKind::Standard(Lpf),
+            ModuleKind::Standard(Hpf),
+            ModuleKind::Standard(Comb),
+            ModuleKind::Standard(Allpass),
+            ModuleKind::Standard(Delay),
+            ModuleKind::Standard(DelayTap(ModuleId(0))),
+            ModuleKind::Standard(Reverb),
+            ModuleKind::Standard(Distortion),
+            ModuleKind::Standard(Flanger),
+            ModuleKind::Standard(Mul),
+            ModuleKind::Standard(Add),
+            ModuleKind::Standard(Gt),
+            ModuleKind::Standard(Lt),
+            ModuleKind::Standard(Switch),
+            ModuleKind::Standard(Rng),
+            ModuleKind::Standard(Sample),
+            ModuleKind::Standard(Probe),
+            ModuleKind::Standard(Output),
+            ModuleKind::Routing(TurnRD),
+            ModuleKind::Routing(TurnDR),
+            ModuleKind::Routing(LSplit),
+            ModuleKind::Routing(TSplit),
+            ModuleKind::Routing(RJoin),
+            ModuleKind::Routing(DJoin),
+            ModuleKind::Subpatch(SubIn),
+            ModuleKind::Subpatch(SubOut),
+            ModuleKind::Subpatch(SubPatch(SubPatchId(0))),
         ]
     }
 
@@ -614,21 +715,19 @@ impl Module {
         let input_count = self.input_port_count() as usize;
         let output_count = self.output_port_count() as usize;
 
-        let (input_edges, output_edges): (Vec<Edge>, Vec<Edge>) = if self.kind.is_routing() {
-            match self.kind {
-                ModuleKind::LSplit => (vec![Edge::Left], vec![Edge::Bottom, Edge::Right]),
-                ModuleKind::TSplit => (vec![Edge::Top], vec![Edge::Bottom, Edge::Right]),
-                ModuleKind::RJoin => (vec![Edge::Left, Edge::Top], vec![Edge::Right]),
-                ModuleKind::DJoin => (vec![Edge::Left, Edge::Top], vec![Edge::Bottom]),
-                ModuleKind::TurnRD => (vec![Edge::Left], vec![Edge::Bottom]),
-                ModuleKind::TurnDR => (vec![Edge::Top], vec![Edge::Right]),
-                _ => (vec![], vec![]),
-            }
-        } else {
-            match self.orientation {
+        let (input_edges, output_edges): (Vec<Edge>, Vec<Edge>) = match &self.kind {
+            ModuleKind::Routing(r) => match r {
+                RoutingModule::LSplit => (vec![Edge::Left], vec![Edge::Bottom, Edge::Right]),
+                RoutingModule::TSplit => (vec![Edge::Top], vec![Edge::Bottom, Edge::Right]),
+                RoutingModule::RJoin => (vec![Edge::Left, Edge::Top], vec![Edge::Right]),
+                RoutingModule::DJoin => (vec![Edge::Left, Edge::Top], vec![Edge::Bottom]),
+                RoutingModule::TurnRD => (vec![Edge::Left], vec![Edge::Bottom]),
+                RoutingModule::TurnDR => (vec![Edge::Top], vec![Edge::Right]),
+            },
+            ModuleKind::Subpatch(_) | ModuleKind::Standard(_) => match self.orientation {
                 Orientation::Horizontal => (vec![Edge::Left], vec![Edge::Right]),
                 Orientation::Vertical => (vec![Edge::Top], vec![Edge::Bottom]),
-            }
+            },
         };
 
         let input_edges = if input_count == 0 {
@@ -653,9 +752,10 @@ impl Module {
             .map(|i| {
                 if let Some(&(param_idx, def)) = port_params.get(i) {
                     let connected = match def.kind {
-                        ParamKind::Input => true,
-                        ParamKind::Float { .. } => self.params.is_connected(param_idx),
-                        _ => true,
+                        ParamKind::Input | ParamKind::Float { .. } | ParamKind::Time => {
+                            self.params.is_connected(param_idx)
+                        }
+                        ParamKind::Int { .. } | ParamKind::Enum | ParamKind::Toggle => true,
                     };
                     PortInfo {
                         label: def.name.chars().next().unwrap_or(' '),
@@ -727,11 +827,19 @@ impl Module {
         if self.input_port_count() == 0 {
             return false;
         }
-        match self.kind {
-            ModuleKind::LSplit | ModuleKind::TurnRD | ModuleKind::SubIn => false,
-            ModuleKind::TSplit | ModuleKind::TurnDR => true,
-            ModuleKind::RJoin | ModuleKind::DJoin => true,
-            _ => self.orientation == Orientation::Vertical,
+        match &self.kind {
+            ModuleKind::Routing(r) => match r {
+                RoutingModule::LSplit | RoutingModule::TurnRD => false,
+                RoutingModule::TSplit | RoutingModule::TurnDR => true,
+                RoutingModule::RJoin | RoutingModule::DJoin => true,
+            },
+            ModuleKind::Subpatch(s) => match s {
+                SubpatchModule::SubIn => false,
+                SubpatchModule::SubOut | SubpatchModule::SubPatch(_) => {
+                    self.orientation == Orientation::Vertical
+                }
+            },
+            ModuleKind::Standard(_) => self.orientation == Orientation::Vertical,
         }
     }
 
@@ -739,11 +847,19 @@ impl Module {
         if self.input_port_count() == 0 {
             return false;
         }
-        match self.kind {
-            ModuleKind::LSplit | ModuleKind::TurnRD => true,
-            ModuleKind::TSplit | ModuleKind::TurnDR | ModuleKind::SubIn => false,
-            ModuleKind::RJoin | ModuleKind::DJoin => true,
-            _ => self.orientation == Orientation::Horizontal,
+        match &self.kind {
+            ModuleKind::Routing(r) => match r {
+                RoutingModule::LSplit | RoutingModule::TurnRD => true,
+                RoutingModule::TSplit | RoutingModule::TurnDR => false,
+                RoutingModule::RJoin | RoutingModule::DJoin => true,
+            },
+            ModuleKind::Subpatch(s) => match s {
+                SubpatchModule::SubIn => false,
+                SubpatchModule::SubOut | SubpatchModule::SubPatch(_) => {
+                    self.orientation == Orientation::Horizontal
+                }
+            },
+            ModuleKind::Standard(_) => self.orientation == Orientation::Horizontal,
         }
     }
 
@@ -751,11 +867,19 @@ impl Module {
         if self.output_port_count() == 0 {
             return false;
         }
-        match self.kind {
-            ModuleKind::LSplit | ModuleKind::TSplit | ModuleKind::TurnRD => true,
-            ModuleKind::RJoin | ModuleKind::TurnDR | ModuleKind::SubOut => false,
-            ModuleKind::DJoin => true,
-            _ => self.orientation == Orientation::Vertical,
+        match &self.kind {
+            ModuleKind::Routing(r) => match r {
+                RoutingModule::LSplit | RoutingModule::TSplit | RoutingModule::TurnRD => true,
+                RoutingModule::RJoin | RoutingModule::TurnDR => false,
+                RoutingModule::DJoin => true,
+            },
+            ModuleKind::Subpatch(s) => match s {
+                SubpatchModule::SubOut => false,
+                SubpatchModule::SubIn | SubpatchModule::SubPatch(_) => {
+                    self.orientation == Orientation::Vertical
+                }
+            },
+            ModuleKind::Standard(_) => self.orientation == Orientation::Vertical,
         }
     }
 
@@ -763,11 +887,19 @@ impl Module {
         if self.output_port_count() == 0 {
             return false;
         }
-        match self.kind {
-            ModuleKind::LSplit | ModuleKind::TSplit | ModuleKind::TurnDR => true,
-            ModuleKind::RJoin => true,
-            ModuleKind::DJoin | ModuleKind::TurnRD | ModuleKind::SubOut => false,
-            _ => self.orientation == Orientation::Horizontal,
+        match &self.kind {
+            ModuleKind::Routing(r) => match r {
+                RoutingModule::LSplit | RoutingModule::TSplit | RoutingModule::TurnDR => true,
+                RoutingModule::RJoin => true,
+                RoutingModule::DJoin | RoutingModule::TurnRD => false,
+            },
+            ModuleKind::Subpatch(s) => match s {
+                SubpatchModule::SubOut => false,
+                SubpatchModule::SubIn | SubpatchModule::SubPatch(_) => {
+                    self.orientation == Orientation::Horizontal
+                }
+            },
+            ModuleKind::Standard(_) => self.orientation == Orientation::Horizontal,
         }
     }
 
@@ -781,7 +913,30 @@ impl Module {
                 WaveType::RSaw => "RSW",
                 WaveType::Noise => "NSE",
             },
-            _ => self.kind.short_name(),
+            ModuleParams::None
+            | ModuleParams::DegreeGate { .. }
+            | ModuleParams::Rise { .. }
+            | ModuleParams::Fall { .. }
+            | ModuleParams::Ramp { .. }
+            | ModuleParams::Adsr { .. }
+            | ModuleParams::Envelope { .. }
+            | ModuleParams::Filter { .. }
+            | ModuleParams::Comb { .. }
+            | ModuleParams::Allpass { .. }
+            | ModuleParams::Delay { .. }
+            | ModuleParams::Reverb { .. }
+            | ModuleParams::Distortion { .. }
+            | ModuleParams::Flanger { .. }
+            | ModuleParams::Mul { .. }
+            | ModuleParams::Add { .. }
+            | ModuleParams::Gt { .. }
+            | ModuleParams::Lt { .. }
+            | ModuleParams::Switch { .. }
+            | ModuleParams::Sample { .. }
+            | ModuleParams::Probe { .. }
+            | ModuleParams::Output { .. }
+            | ModuleParams::SubPatch { .. }
+            | ModuleParams::DelayTap { .. } => self.kind.short_name(),
         }
     }
 
@@ -1082,116 +1237,515 @@ impl ParamDef {
 impl ModuleKind {
     pub fn param_defs(&self) -> &'static [ParamDef] {
         match self {
-            ModuleKind::Freq | ModuleKind::Gate | ModuleKind::Degree => &[],
-            ModuleKind::DegreeGate => &[ParamDef {
-                name: "Deg",
-                kind: ParamKind::Int { min: 0, max: 12 },
-                desc: None,
-            }],
-            ModuleKind::Osc => &[
-                ParamDef {
-                    name: "Wave",
-                    kind: ParamKind::Enum,
+            ModuleKind::Routing(_) => &[],
+            ModuleKind::Subpatch(s) => match s {
+                SubpatchModule::SubIn | SubpatchModule::SubPatch(_) => &[],
+                SubpatchModule::SubOut => &[ParamDef {
+                    name: "In",
+                    kind: ParamKind::Input,
                     desc: None,
-                },
-                ParamDef {
-                    name: "Freq",
-                    kind: ParamKind::Time,
+                }],
+            },
+            ModuleKind::Standard(s) => match s {
+                StandardModule::Freq | StandardModule::Gate | StandardModule::Degree => &[],
+                StandardModule::DegreeGate => &[ParamDef {
+                    name: "Deg",
+                    kind: ParamKind::Int { min: 0, max: 12 },
                     desc: None,
-                },
-                ParamDef {
-                    name: "Shift",
-                    kind: ParamKind::Float {
-                        min: -24.0,
-                        max: 24.0,
-                        step: 1.0,
+                }],
+                StandardModule::Osc => &[
+                    ParamDef {
+                        name: "Wave",
+                        kind: ParamKind::Enum,
+                        desc: None,
                     },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Gain",
+                    ParamDef {
+                        name: "Freq",
+                        kind: ParamKind::Time,
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Shift",
+                        kind: ParamKind::Float {
+                            min: -24.0,
+                            max: 24.0,
+                            step: 1.0,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Gain",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 1.0,
+                            step: 0.05,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Uni",
+                        kind: ParamKind::Toggle,
+                        desc: None,
+                    },
+                ],
+                StandardModule::Rise | StandardModule::Fall => &[
+                    ParamDef {
+                        name: "Gate",
+                        kind: ParamKind::Input,
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Time",
+                        kind: ParamKind::Time,
+                        desc: None,
+                    },
+                ],
+                StandardModule::Ramp => &[
+                    ParamDef {
+                        name: "Val",
+                        kind: ParamKind::Float {
+                            min: -1000.0,
+                            max: 1000.0,
+                            step: 0.1,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Time",
+                        kind: ParamKind::Time,
+                        desc: None,
+                    },
+                ],
+                StandardModule::Adsr => &[
+                    ParamDef {
+                        name: "Rise",
+                        kind: ParamKind::Input,
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Fall",
+                        kind: ParamKind::Input,
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Atk",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 1.0,
+                            step: 0.05,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Sus",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 1.0,
+                            step: 0.05,
+                        },
+                        desc: None,
+                    },
+                ],
+                StandardModule::Envelope => &[ParamDef {
+                    name: "Phase",
                     kind: ParamKind::Float {
                         min: 0.0,
                         max: 1.0,
-                        step: 0.05,
+                        step: 0.01,
                     },
                     desc: None,
-                },
-                ParamDef {
-                    name: "Uni",
-                    kind: ParamKind::Toggle,
-                    desc: None,
-                },
-            ],
-            ModuleKind::Rise | ModuleKind::Fall => &[
-                ParamDef {
+                }],
+                StandardModule::Lpf => &[
+                    ParamDef {
+                        name: "In",
+                        kind: ParamKind::Float {
+                            min: -1.0,
+                            max: 1.0,
+                            step: 0.01,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Freq",
+                        kind: ParamKind::Float {
+                            min: 0.001,
+                            max: 0.99,
+                            step: 0.01,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Q",
+                        kind: ParamKind::Float {
+                            min: 0.1,
+                            max: 10.0,
+                            step: 0.1,
+                        },
+                        desc: None,
+                    },
+                ],
+                StandardModule::Hpf => &[
+                    ParamDef {
+                        name: "In",
+                        kind: ParamKind::Float {
+                            min: -1.0,
+                            max: 1.0,
+                            step: 0.01,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Freq",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 1.0,
+                            step: 0.01,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Q",
+                        kind: ParamKind::Float {
+                            min: 0.1,
+                            max: 10.0,
+                            step: 0.1,
+                        },
+                        desc: None,
+                    },
+                ],
+                StandardModule::Comb => &[
+                    ParamDef {
+                        name: "In",
+                        kind: ParamKind::Float {
+                            min: -1.0,
+                            max: 1.0,
+                            step: 0.01,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Time",
+                        kind: ParamKind::Time,
+                        desc: Some("Delay time (sets pitch)"),
+                    },
+                    ParamDef {
+                        name: "Fdbk",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 0.99,
+                            step: 0.01,
+                        },
+                        desc: Some("Feedback (resonance)"),
+                    },
+                    ParamDef {
+                        name: "Damp",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 1.0,
+                            step: 0.01,
+                        },
+                        desc: Some("HF damping in feedback"),
+                    },
+                ],
+                StandardModule::Allpass => &[
+                    ParamDef {
+                        name: "In",
+                        kind: ParamKind::Float {
+                            min: -1.0,
+                            max: 1.0,
+                            step: 0.01,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Time",
+                        kind: ParamKind::Time,
+                        desc: Some("Delay time"),
+                    },
+                    ParamDef {
+                        name: "Fdbk",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 0.99,
+                            step: 0.01,
+                        },
+                        desc: Some("Coefficient (diffusion)"),
+                    },
+                ],
+                StandardModule::Delay => &[
+                    ParamDef {
+                        name: "In",
+                        kind: ParamKind::Float {
+                            min: -1.0,
+                            max: 1.0,
+                            step: 0.01,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Time",
+                        kind: ParamKind::Time,
+                        desc: None,
+                    },
+                ],
+                StandardModule::DelayTap(_) => &[
+                    ParamDef {
+                        name: "Src",
+                        kind: ParamKind::Enum,
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Gain",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 0.7,
+                            step: 0.05,
+                        },
+                        desc: None,
+                    },
+                ],
+                StandardModule::Reverb => &[
+                    ParamDef {
+                        name: "In",
+                        kind: ParamKind::Float {
+                            min: -1.0,
+                            max: 1.0,
+                            step: 0.01,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Room",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 1.0,
+                            step: 0.05,
+                        },
+                        desc: Some("Decay time / tail length"),
+                    },
+                    ParamDef {
+                        name: "Damp",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 1.0,
+                            step: 0.05,
+                        },
+                        desc: Some("HF decay (air absorption)"),
+                    },
+                    ParamDef {
+                        name: "Mod",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 1.0,
+                            step: 0.05,
+                        },
+                        desc: Some("Delay wobble (kills ringing)"),
+                    },
+                    ParamDef {
+                        name: "Diff",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 1.0,
+                            step: 0.05,
+                        },
+                        desc: Some("Echo smear (density)"),
+                    },
+                ],
+                StandardModule::Distortion => &[
+                    ParamDef {
+                        name: "In",
+                        kind: ParamKind::Float {
+                            min: -1.0,
+                            max: 1.0,
+                            step: 0.01,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Type",
+                        kind: ParamKind::Enum,
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Drive",
+                        kind: ParamKind::Float {
+                            min: 0.1,
+                            max: 20.0,
+                            step: 0.1,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Asym",
+                        kind: ParamKind::Float {
+                            min: -1.0,
+                            max: 1.0,
+                            step: 0.05,
+                        },
+                        desc: None,
+                    },
+                ],
+                StandardModule::Flanger => &[
+                    ParamDef {
+                        name: "In",
+                        kind: ParamKind::Float {
+                            min: -1.0,
+                            max: 1.0,
+                            step: 0.01,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Rate",
+                        kind: ParamKind::Float {
+                            min: 0.1,
+                            max: 10.0,
+                            step: 0.1,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Depth",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 1.0,
+                            step: 0.05,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Fdbk",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 0.95,
+                            step: 0.05,
+                        },
+                        desc: None,
+                    },
+                ],
+                StandardModule::Mul => &[
+                    ParamDef {
+                        name: "A",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 100.0,
+                            step: 0.05,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "B",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 100.0,
+                            step: 0.05,
+                        },
+                        desc: None,
+                    },
+                ],
+                StandardModule::Add => &[
+                    ParamDef {
+                        name: "A",
+                        kind: ParamKind::Float {
+                            min: -1000.0,
+                            max: 1000.0,
+                            step: 0.05,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "B",
+                        kind: ParamKind::Float {
+                            min: -1000.0,
+                            max: 1000.0,
+                            step: 0.05,
+                        },
+                        desc: None,
+                    },
+                ],
+                StandardModule::Gt => &[
+                    ParamDef {
+                        name: "A",
+                        kind: ParamKind::Float {
+                            min: -1000.0,
+                            max: 1000.0,
+                            step: 0.05,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "B",
+                        kind: ParamKind::Float {
+                            min: -1000.0,
+                            max: 1000.0,
+                            step: 0.05,
+                        },
+                        desc: None,
+                    },
+                ],
+                StandardModule::Lt => &[
+                    ParamDef {
+                        name: "A",
+                        kind: ParamKind::Float {
+                            min: -1000.0,
+                            max: 1000.0,
+                            step: 0.05,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "B",
+                        kind: ParamKind::Float {
+                            min: -1000.0,
+                            max: 1000.0,
+                            step: 0.05,
+                        },
+                        desc: None,
+                    },
+                ],
+                StandardModule::Switch => &[
+                    ParamDef {
+                        name: "Sel",
+                        kind: ParamKind::Input,
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "A",
+                        kind: ParamKind::Float {
+                            min: -1000.0,
+                            max: 1000.0,
+                            step: 0.1,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "B",
+                        kind: ParamKind::Float {
+                            min: -1000.0,
+                            max: 1000.0,
+                            step: 0.1,
+                        },
+                        desc: None,
+                    },
+                ],
+                StandardModule::Rng => &[ParamDef {
                     name: "Gate",
                     kind: ParamKind::Input,
                     desc: None,
-                },
-                ParamDef {
-                    name: "Time",
-                    kind: ParamKind::Time,
-                    desc: None,
-                },
-            ],
-            ModuleKind::Ramp => &[
-                ParamDef {
-                    name: "Val",
-                    kind: ParamKind::Float {
-                        min: -1000.0,
-                        max: 1000.0,
-                        step: 0.1,
+                }],
+                StandardModule::Sample => &[
+                    ParamDef {
+                        name: "File",
+                        kind: ParamKind::Enum,
+                        desc: None,
                     },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Time",
-                    kind: ParamKind::Time,
-                    desc: None,
-                },
-            ],
-            ModuleKind::Adsr => &[
-                ParamDef {
-                    name: "Rise",
-                    kind: ParamKind::Input,
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Fall",
-                    kind: ParamKind::Input,
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Atk",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 1.0,
-                        step: 0.05,
+                    ParamDef {
+                        name: "Pos",
+                        kind: ParamKind::Input,
+                        desc: None,
                     },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Sus",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 1.0,
-                        step: 0.05,
-                    },
-                    desc: None,
-                },
-            ],
-            ModuleKind::Envelope => &[ParamDef {
-                name: "Phase",
-                kind: ParamKind::Float {
-                    min: 0.0,
-                    max: 1.0,
-                    step: 0.01,
-                },
-                desc: None,
-            }],
-            ModuleKind::Lpf => &[
-                ParamDef {
+                ],
+                StandardModule::Probe => &[ParamDef {
                     name: "In",
                     kind: ParamKind::Float {
                         min: -1.0,
@@ -1199,28 +1753,8 @@ impl ModuleKind {
                         step: 0.01,
                     },
                     desc: None,
-                },
-                ParamDef {
-                    name: "Freq",
-                    kind: ParamKind::Float {
-                        min: 0.001,
-                        max: 0.99,
-                        step: 0.01,
-                    },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Q",
-                    kind: ParamKind::Float {
-                        min: 0.1,
-                        max: 10.0,
-                        step: 0.1,
-                    },
-                    desc: None,
-                },
-            ],
-            ModuleKind::Hpf => &[
-                ParamDef {
+                }],
+                StandardModule::Output => &[ParamDef {
                     name: "In",
                     kind: ParamKind::Float {
                         min: -1.0,
@@ -1228,384 +1762,8 @@ impl ModuleKind {
                         step: 0.01,
                     },
                     desc: None,
-                },
-                ParamDef {
-                    name: "Freq",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 1.0,
-                        step: 0.01,
-                    },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Q",
-                    kind: ParamKind::Float {
-                        min: 0.1,
-                        max: 10.0,
-                        step: 0.1,
-                    },
-                    desc: None,
-                },
-            ],
-            ModuleKind::Comb => &[
-                ParamDef {
-                    name: "In",
-                    kind: ParamKind::Float {
-                        min: -1.0,
-                        max: 1.0,
-                        step: 0.01,
-                    },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Time",
-                    kind: ParamKind::Time,
-                    desc: Some("Delay time (sets pitch)"),
-                },
-                ParamDef {
-                    name: "Fdbk",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 0.99,
-                        step: 0.01,
-                    },
-                    desc: Some("Feedback (resonance)"),
-                },
-                ParamDef {
-                    name: "Damp",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 1.0,
-                        step: 0.01,
-                    },
-                    desc: Some("HF damping in feedback"),
-                },
-            ],
-            ModuleKind::Allpass => &[
-                ParamDef {
-                    name: "In",
-                    kind: ParamKind::Float {
-                        min: -1.0,
-                        max: 1.0,
-                        step: 0.01,
-                    },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Time",
-                    kind: ParamKind::Time,
-                    desc: Some("Delay time"),
-                },
-                ParamDef {
-                    name: "Fdbk",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 0.99,
-                        step: 0.01,
-                    },
-                    desc: Some("Coefficient (diffusion)"),
-                },
-            ],
-            ModuleKind::Delay => &[
-                ParamDef {
-                    name: "In",
-                    kind: ParamKind::Float {
-                        min: -1.0,
-                        max: 1.0,
-                        step: 0.01,
-                    },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Time",
-                    kind: ParamKind::Time,
-                    desc: None,
-                },
-            ],
-            ModuleKind::Reverb => &[
-                ParamDef {
-                    name: "In",
-                    kind: ParamKind::Float {
-                        min: -1.0,
-                        max: 1.0,
-                        step: 0.01,
-                    },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Room",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 1.0,
-                        step: 0.05,
-                    },
-                    desc: Some("Decay time / tail length"),
-                },
-                ParamDef {
-                    name: "Damp",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 1.0,
-                        step: 0.05,
-                    },
-                    desc: Some("HF decay (air absorption)"),
-                },
-                ParamDef {
-                    name: "Mod",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 1.0,
-                        step: 0.05,
-                    },
-                    desc: Some("Delay wobble (kills ringing)"),
-                },
-                ParamDef {
-                    name: "Diff",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 1.0,
-                        step: 0.05,
-                    },
-                    desc: Some("Echo smear (density)"),
-                },
-            ],
-            ModuleKind::Distortion => &[
-                ParamDef {
-                    name: "In",
-                    kind: ParamKind::Float {
-                        min: -1.0,
-                        max: 1.0,
-                        step: 0.01,
-                    },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Type",
-                    kind: ParamKind::Enum,
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Drive",
-                    kind: ParamKind::Float {
-                        min: 0.1,
-                        max: 20.0,
-                        step: 0.1,
-                    },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Asym",
-                    kind: ParamKind::Float {
-                        min: -1.0,
-                        max: 1.0,
-                        step: 0.05,
-                    },
-                    desc: None,
-                },
-            ],
-            ModuleKind::Flanger => &[
-                ParamDef {
-                    name: "In",
-                    kind: ParamKind::Float {
-                        min: -1.0,
-                        max: 1.0,
-                        step: 0.01,
-                    },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Rate",
-                    kind: ParamKind::Float {
-                        min: 0.1,
-                        max: 10.0,
-                        step: 0.1,
-                    },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Depth",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 1.0,
-                        step: 0.05,
-                    },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Fdbk",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 0.95,
-                        step: 0.05,
-                    },
-                    desc: None,
-                },
-            ],
-            ModuleKind::Mul => &[
-                ParamDef {
-                    name: "A",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 100.0,
-                        step: 0.05,
-                    },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "B",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 100.0,
-                        step: 0.05,
-                    },
-                    desc: None,
-                },
-            ],
-            ModuleKind::Add => &[
-                ParamDef {
-                    name: "A",
-                    kind: ParamKind::Float {
-                        min: -1000.0,
-                        max: 1000.0,
-                        step: 0.05,
-                    },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "B",
-                    kind: ParamKind::Float {
-                        min: -1000.0,
-                        max: 1000.0,
-                        step: 0.05,
-                    },
-                    desc: None,
-                },
-            ],
-
-            ModuleKind::Gt => &[
-                ParamDef {
-                    name: "A",
-                    kind: ParamKind::Float {
-                        min: -1000.0,
-                        max: 1000.0,
-                        step: 0.05,
-                    },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "B",
-                    kind: ParamKind::Float {
-                        min: -1000.0,
-                        max: 1000.0,
-                        step: 0.05,
-                    },
-                    desc: None,
-                },
-            ],
-            ModuleKind::Lt => &[
-                ParamDef {
-                    name: "A",
-                    kind: ParamKind::Float {
-                        min: -1000.0,
-                        max: 1000.0,
-                        step: 0.05,
-                    },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "B",
-                    kind: ParamKind::Float {
-                        min: -1000.0,
-                        max: 1000.0,
-                        step: 0.05,
-                    },
-                    desc: None,
-                },
-            ],
-            ModuleKind::Switch => &[
-                ParamDef {
-                    name: "Sel",
-                    kind: ParamKind::Input,
-                    desc: None,
-                },
-                ParamDef {
-                    name: "A",
-                    kind: ParamKind::Float {
-                        min: -1000.0,
-                        max: 1000.0,
-                        step: 0.1,
-                    },
-                    desc: None,
-                },
-                ParamDef {
-                    name: "B",
-                    kind: ParamKind::Float {
-                        min: -1000.0,
-                        max: 1000.0,
-                        step: 0.1,
-                    },
-                    desc: None,
-                },
-            ],
-            ModuleKind::Rng => &[ParamDef {
-                name: "Gate",
-                kind: ParamKind::Input,
-                desc: None,
-            }],
-            ModuleKind::Sample => &[
-                ParamDef {
-                    name: "File",
-                    kind: ParamKind::Enum,
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Pos",
-                    kind: ParamKind::Input,
-                    desc: None,
-                },
-            ],
-            ModuleKind::Probe => &[ParamDef {
-                name: "In",
-                kind: ParamKind::Float {
-                    min: -1.0,
-                    max: 1.0,
-                    step: 0.01,
-                },
-                desc: None,
-            }],
-            ModuleKind::Output => &[ParamDef {
-                name: "In",
-                kind: ParamKind::Float {
-                    min: -1.0,
-                    max: 1.0,
-                    step: 0.01,
-                },
-                desc: None,
-            }],
-            ModuleKind::SubIn => &[],
-            ModuleKind::SubOut => &[ParamDef {
-                name: "In",
-                kind: ParamKind::Input,
-                desc: None,
-            }],
-            ModuleKind::DelayTap(_) => &[
-                ParamDef {
-                    name: "Src",
-                    kind: ParamKind::Enum,
-                    desc: None,
-                },
-                ParamDef {
-                    name: "Gain",
-                    kind: ParamKind::Float {
-                        min: 0.0,
-                        max: 0.7,
-                        step: 0.05,
-                    },
-                    desc: None,
-                },
-            ],
-            _ => &[],
+                }],
+            },
         }
     }
 }
@@ -1742,141 +1900,135 @@ pub enum ModuleParams {
 impl ModuleParams {
     pub fn default_for(kind: ModuleKind) -> Self {
         match kind {
-            ModuleKind::Freq | ModuleKind::Gate | ModuleKind::Degree => ModuleParams::None,
-            ModuleKind::DegreeGate => ModuleParams::DegreeGate { degree: 0 },
-            ModuleKind::Osc => ModuleParams::Osc {
-                wave: WaveType::Sin,
-                freq: TimeValue::from_hz(440.0),
-                shift: 0.0,
-                gain: 1.0,
-                uni: false,
-                connected: 0xFF,
+            ModuleKind::Routing(_) => ModuleParams::None,
+            ModuleKind::Subpatch(s) => match s {
+                SubpatchModule::SubIn | SubpatchModule::SubOut => ModuleParams::None,
+                SubpatchModule::SubPatch(_) => ModuleParams::SubPatch {
+                    inputs: 0,
+                    outputs: 0,
+                },
             },
-            ModuleKind::Rise => ModuleParams::Rise {
-                time: TimeValue::from_seconds(0.1),
-                connected: 0xFF,
+            ModuleKind::Standard(s) => match s {
+                StandardModule::Freq | StandardModule::Gate | StandardModule::Degree => {
+                    ModuleParams::None
+                }
+                StandardModule::DegreeGate => ModuleParams::DegreeGate { degree: 0 },
+                StandardModule::Osc => ModuleParams::Osc {
+                    wave: WaveType::Sin,
+                    freq: TimeValue::from_hz(440.0),
+                    shift: 0.0,
+                    gain: 1.0,
+                    uni: false,
+                    connected: 0xFF,
+                },
+                StandardModule::Rise => ModuleParams::Rise {
+                    time: TimeValue::from_seconds(0.1),
+                    connected: 0xFF,
+                },
+                StandardModule::Fall => ModuleParams::Fall {
+                    time: TimeValue::from_seconds(0.1),
+                    connected: 0xFF,
+                },
+                StandardModule::Ramp => ModuleParams::Ramp {
+                    value: 0.0,
+                    time: TimeValue::from_seconds(0.1),
+                    connected: 0xFF,
+                },
+                StandardModule::Adsr => ModuleParams::Adsr {
+                    attack_ratio: 0.5,
+                    sustain: 0.7,
+                    connected: 0xFF,
+                },
+                StandardModule::Envelope => ModuleParams::Envelope {
+                    points: vec![
+                        EnvPoint {
+                            time: 0.0,
+                            value: 0.0,
+                            curve: false,
+                        },
+                        EnvPoint {
+                            time: 1.0,
+                            value: 1.0,
+                            curve: false,
+                        },
+                    ],
+                    connected: 0xFF,
+                },
+                StandardModule::Lpf | StandardModule::Hpf => ModuleParams::Filter {
+                    freq: 0.5,
+                    q: 0.707,
+                    connected: 0xFF,
+                },
+                StandardModule::Comb => ModuleParams::Comb {
+                    time: TimeValue::from_samples(441.0),
+                    feedback: 0.8,
+                    damp: 0.2,
+                    connected: 0xFF,
+                },
+                StandardModule::Allpass => ModuleParams::Allpass {
+                    time: TimeValue::from_samples(441.0),
+                    feedback: 0.5,
+                    connected: 0xFF,
+                },
+                StandardModule::Delay => ModuleParams::Delay {
+                    time: TimeValue::from_samples(4410.0),
+                    connected: 0xFF,
+                },
+                StandardModule::DelayTap(_) => ModuleParams::DelayTap { gain: 0.3 },
+                StandardModule::Reverb => ModuleParams::Reverb {
+                    room: 0.5,
+                    damp: 0.3,
+                    mod_depth: 0.5,
+                    diffusion: 0.75,
+                    connected: 0xFF,
+                },
+                StandardModule::Distortion => ModuleParams::Distortion {
+                    dist_type: DistType::Tube,
+                    drive: 2.0,
+                    asymmetry: 0.0,
+                    connected: 0xFF,
+                },
+                StandardModule::Flanger => ModuleParams::Flanger {
+                    rate: 0.5,
+                    depth: 0.5,
+                    feedback: 0.3,
+                    connected: 0xFF,
+                },
+                StandardModule::Mul => ModuleParams::Mul {
+                    a: 1.0,
+                    b: 1.0,
+                    connected: 0xFF,
+                },
+                StandardModule::Add => ModuleParams::Add {
+                    a: 0.0,
+                    b: 0.0,
+                    connected: 0xFF,
+                },
+                StandardModule::Gt => ModuleParams::Gt {
+                    a: 0.0,
+                    b: 0.0,
+                    connected: 0xFF,
+                },
+                StandardModule::Lt => ModuleParams::Lt {
+                    a: 0.0,
+                    b: 0.0,
+                    connected: 0xFF,
+                },
+                StandardModule::Switch => ModuleParams::Switch {
+                    a: 0.0,
+                    b: 0.0,
+                    connected: 0xFF,
+                },
+                StandardModule::Rng => ModuleParams::None,
+                StandardModule::Sample => ModuleParams::Sample {
+                    file_idx: 0,
+                    file_name: String::new(),
+                    samples: std::sync::Arc::new(Vec::new()),
+                    connected: 0xFF,
+                },
+                StandardModule::Probe => ModuleParams::Probe { connected: 0xFF },
+                StandardModule::Output => ModuleParams::Output { connected: 0xFF },
             },
-            ModuleKind::Fall => ModuleParams::Fall {
-                time: TimeValue::from_seconds(0.1),
-                connected: 0xFF,
-            },
-            ModuleKind::Ramp => ModuleParams::Ramp {
-                value: 0.0,
-                time: TimeValue::from_seconds(0.1),
-                connected: 0xFF,
-            },
-            ModuleKind::Adsr => ModuleParams::Adsr {
-                attack_ratio: 0.5,
-                sustain: 0.7,
-                connected: 0xFF,
-            },
-            ModuleKind::Envelope => ModuleParams::Envelope {
-                points: vec![
-                    EnvPoint {
-                        time: 0.0,
-                        value: 0.0,
-                        curve: false,
-                    },
-                    EnvPoint {
-                        time: 1.0,
-                        value: 1.0,
-                        curve: false,
-                    },
-                ],
-                connected: 0xFF,
-            },
-            ModuleKind::Lpf => ModuleParams::Filter {
-                freq: 0.5,
-                q: 0.707,
-                connected: 0xFF,
-            },
-            ModuleKind::Hpf => ModuleParams::Filter {
-                freq: 0.5,
-                q: 0.707,
-                connected: 0xFF,
-            },
-            ModuleKind::Comb => ModuleParams::Comb {
-                time: TimeValue::from_samples(441.0),
-                feedback: 0.8,
-                damp: 0.2,
-                connected: 0xFF,
-            },
-            ModuleKind::Allpass => ModuleParams::Allpass {
-                time: TimeValue::from_samples(441.0),
-                feedback: 0.5,
-                connected: 0xFF,
-            },
-            ModuleKind::Delay => ModuleParams::Delay {
-                time: TimeValue::from_samples(4410.0),
-                connected: 0xFF,
-            },
-            ModuleKind::Reverb => ModuleParams::Reverb {
-                room: 0.5,
-                damp: 0.3,
-                mod_depth: 0.5,
-                diffusion: 0.75,
-                connected: 0xFF,
-            },
-            ModuleKind::Distortion => ModuleParams::Distortion {
-                dist_type: DistType::Tube,
-                drive: 2.0,
-                asymmetry: 0.0,
-                connected: 0xFF,
-            },
-            ModuleKind::Flanger => ModuleParams::Flanger {
-                rate: 0.5,
-                depth: 0.5,
-                feedback: 0.3,
-                connected: 0xFF,
-            },
-            ModuleKind::Mul => ModuleParams::Mul {
-                a: 1.0,
-                b: 1.0,
-                connected: 0xFF,
-            },
-            ModuleKind::Add => ModuleParams::Add {
-                a: 0.0,
-                b: 0.0,
-                connected: 0xFF,
-            },
-
-            ModuleKind::Gt => ModuleParams::Gt {
-                a: 0.0,
-                b: 0.0,
-                connected: 0xFF,
-            },
-            ModuleKind::Lt => ModuleParams::Lt {
-                a: 0.0,
-                b: 0.0,
-                connected: 0xFF,
-            },
-            ModuleKind::Switch => ModuleParams::Switch {
-                a: 0.0,
-                b: 0.0,
-                connected: 0xFF,
-            },
-            ModuleKind::Rng => ModuleParams::None,
-            ModuleKind::Sample => ModuleParams::Sample {
-                file_idx: 0,
-                file_name: String::new(),
-                samples: std::sync::Arc::new(Vec::new()),
-                connected: 0xFF,
-            },
-            ModuleKind::Probe => ModuleParams::Probe { connected: 0xFF },
-            ModuleKind::Output => ModuleParams::Output { connected: 0xFF },
-            ModuleKind::LSplit
-            | ModuleKind::TSplit
-            | ModuleKind::RJoin
-            | ModuleKind::DJoin
-            | ModuleKind::TurnRD
-            | ModuleKind::TurnDR
-            | ModuleKind::SubIn
-            | ModuleKind::SubOut => ModuleParams::None,
-            ModuleKind::SubPatch(_) => ModuleParams::SubPatch {
-                inputs: 0,
-                outputs: 0,
-            },
-            ModuleKind::DelayTap(_) => ModuleParams::DelayTap { gain: 0.3 },
         }
     }
 

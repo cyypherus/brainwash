@@ -1,5 +1,5 @@
 use super::grid::GridPos;
-use super::module::{ModuleKind, ModuleParams, Orientation, SubPatchId};
+use super::module::{ModuleKind, ModuleParams, Orientation, StandardModule, SubPatchId};
 use super::patch::{Patch, PatchSet, SubPatchDef};
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
@@ -157,7 +157,7 @@ fn modules_to_patch(modules: &[ModuleDef], width: u16, height: u16) -> Patch {
     let tap_updates: Vec<_> = patch
         .all_modules()
         .filter_map(|m| {
-            if let ModuleKind::DelayTap(old_delay_id) = m.kind {
+            if let ModuleKind::Standard(StandardModule::DelayTap(old_delay_id)) = m.kind {
                 let new_delay_id = id_map.get(&old_delay_id.0).copied()?;
                 Some((m.id, new_delay_id))
             } else {
@@ -168,7 +168,7 @@ fn modules_to_patch(modules: &[ModuleDef], width: u16, height: u16) -> Patch {
 
     for (tap_id, new_delay_id) in tap_updates {
         if let Some(m) = patch.module_mut(tap_id) {
-            m.kind = ModuleKind::DelayTap(new_delay_id);
+            m.kind = ModuleKind::Standard(StandardModule::DelayTap(new_delay_id));
         }
     }
 
@@ -284,16 +284,21 @@ mod tests {
     #[test]
     fn test_ron_format() {
         let mut patches = PatchSet::new(20, 20);
-        patches
-            .root
-            .add_module(ModuleKind::Freq, GridPos::new(0, 0));
+        patches.root.add_module(
+            ModuleKind::Standard(StandardModule::Freq),
+            GridPos::new(0, 0),
+        );
         let osc_id = patches
             .root
-            .add_module(ModuleKind::Osc, GridPos::new(0, 2))
+            .add_module(
+                ModuleKind::Standard(StandardModule::Osc),
+                GridPos::new(0, 2),
+            )
             .unwrap();
-        patches
-            .root
-            .add_module(ModuleKind::Output, GridPos::new(0, 7));
+        patches.root.add_module(
+            ModuleKind::Standard(StandardModule::Output),
+            GridPos::new(0, 7),
+        );
 
         if let Some(osc) = patches.root.module_mut(osc_id) {
             osc.params = ModuleParams::Osc {
@@ -319,19 +324,31 @@ mod tests {
 
         let _freq_id = patches
             .root
-            .add_module(ModuleKind::Freq, GridPos::new(0, 0))
+            .add_module(
+                ModuleKind::Standard(StandardModule::Freq),
+                GridPos::new(0, 0),
+            )
             .unwrap();
         let osc_id = patches
             .root
-            .add_module(ModuleKind::Osc, GridPos::new(0, 2))
+            .add_module(
+                ModuleKind::Standard(StandardModule::Osc),
+                GridPos::new(0, 2),
+            )
             .unwrap();
         let env_id = patches
             .root
-            .add_module(ModuleKind::Envelope, GridPos::new(2, 0))
+            .add_module(
+                ModuleKind::Standard(StandardModule::Envelope),
+                GridPos::new(2, 0),
+            )
             .unwrap();
         let _out_id = patches
             .root
-            .add_module(ModuleKind::Output, GridPos::new(0, 7))
+            .add_module(
+                ModuleKind::Standard(StandardModule::Output),
+                GridPos::new(0, 7),
+            )
             .unwrap();
 
         if let Some(osc) = patches.root.module_mut(osc_id) {
@@ -390,7 +407,10 @@ mod tests {
         let modules: Vec<_> = result.patches.root.all_modules().collect();
         assert_eq!(modules.len(), 4);
 
-        let osc2 = modules.iter().find(|m| m.kind == ModuleKind::Osc).unwrap();
+        let osc2 = modules
+            .iter()
+            .find(|m| m.kind == ModuleKind::Standard(StandardModule::Osc))
+            .unwrap();
         assert_eq!(osc2.orientation, Orientation::Vertical);
         if let ModuleParams::Osc {
             wave,
@@ -413,9 +433,74 @@ mod tests {
 
         let env2 = modules
             .iter()
-            .find(|m| m.kind == ModuleKind::Envelope)
+            .find(|m| m.kind == ModuleKind::Standard(StandardModule::Envelope))
             .unwrap();
         assert_eq!(env2.params.env_points().unwrap().len(), 3);
         assert!(env2.params.env_points().unwrap()[1].curve);
+    }
+
+    #[test]
+    fn test_subpatch_serialization() {
+        use crate::tui::module::{RoutingModule, SubpatchModule};
+        use ratatui::style::Color;
+
+        let mut patches = PatchSet::new(20, 20);
+
+        patches.root.add_module(
+            ModuleKind::Standard(StandardModule::Freq),
+            GridPos::new(0, 0),
+        );
+
+        let sub_id = patches.create_subpatch("TestSub".into(), Color::Rgb(100, 150, 200));
+
+        if let Some(sub) = patches.subpatch_mut(sub_id) {
+            sub.patch.add_module(
+                ModuleKind::Subpatch(SubpatchModule::SubIn),
+                GridPos::new(0, 0),
+            );
+            sub.patch.add_module(
+                ModuleKind::Standard(StandardModule::Mul),
+                GridPos::new(1, 0),
+            );
+            sub.patch.add_module(
+                ModuleKind::Subpatch(SubpatchModule::SubOut),
+                GridPos::new(2, 0),
+            );
+        }
+
+        patches.root.add_module(
+            ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
+            GridPos::new(1, 0),
+        );
+        patches.root.add_module(
+            ModuleKind::Routing(RoutingModule::LSplit),
+            GridPos::new(3, 0),
+        );
+        patches.root.add_module(
+            ModuleKind::Standard(StandardModule::Output),
+            GridPos::new(5, 0),
+        );
+
+        let pf = patchset_to_file(&patches, 120.0, 1.0, 0, None);
+
+        let serialized =
+            ron::ser::to_string_pretty(&pf, ron::ser::PrettyConfig::default()).unwrap();
+
+        let pf2: PatchFile = ron::from_str(&serialized).unwrap();
+        let result = file_to_patchset(&pf2);
+
+        assert_eq!(result.patches.root.all_modules().count(), 4);
+        assert_eq!(result.patches.subpatches.len(), 1);
+
+        let sub = result.patches.subpatch(sub_id).unwrap();
+        assert_eq!(sub.patch.all_modules().count(), 3);
+        assert!(sub
+            .patch
+            .all_modules()
+            .any(|m| m.kind == ModuleKind::Subpatch(SubpatchModule::SubIn)));
+        assert!(sub
+            .patch
+            .all_modules()
+            .any(|m| m.kind == ModuleKind::Subpatch(SubpatchModule::SubOut)));
     }
 }

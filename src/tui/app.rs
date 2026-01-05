@@ -8,7 +8,8 @@ use super::engine::{
 use super::grid::GridPos;
 use super::instrument::Instrument;
 use super::module::{
-    Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind, SubPatchId,
+    Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind, StandardModule,
+    SubPatchId, SubpatchModule,
 };
 use super::patch::{Patch, PatchSet};
 use super::persist;
@@ -904,12 +905,11 @@ impl App {
         match &self.mode {
             Mode::Normal => &self.bindings.normal,
             Mode::Palette => &self.bindings.palette,
-            Mode::Move { .. } | Mode::Copy { .. } | Mode::CopySelection { .. } => {
-                &self.bindings.move_mode
-            }
-            Mode::Select { .. } | Mode::MouseSelect { .. } | Mode::SelectMove { .. } => {
-                &self.bindings.select
-            }
+            Mode::Move { .. }
+            | Mode::Copy { .. }
+            | Mode::CopySelection { .. }
+            | Mode::SelectMove { .. } => &self.bindings.move_mode,
+            Mode::Select { .. } | Mode::MouseSelect { .. } => &self.bindings.select,
             Mode::Edit { .. } | Mode::AdsrEdit { .. } => &self.bindings.edit,
             Mode::ProbeEdit { .. } => &self.bindings.probe,
             Mode::SampleView { .. } => &self.bindings.sample,
@@ -1134,8 +1134,12 @@ impl App {
                     .module_id_at(self.cursor())
                     .and_then(|id| self.patch().module(id))
                     .and_then(|m| match m.kind {
-                        ModuleKind::SubPatch(sub_id) => Some(sub_id),
-                        _ => None,
+                        ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)) => Some(sub_id),
+                        ModuleKind::Routing(_)
+                        | ModuleKind::Standard(_)
+                        | ModuleKind::Subpatch(SubpatchModule::SubIn | SubpatchModule::SubOut) => {
+                            None
+                        }
                     });
                 if let Some(sub_id) = on_subpatch {
                     let name = self
@@ -1272,14 +1276,19 @@ impl App {
             Action::Confirm => {
                 let cursor = self.cursor();
                 if let Some(kind) = modules.get(palette_module) {
-                    if *kind == ModuleKind::Output && self.patch().output_id().is_some() {
+                    if *kind == ModuleKind::Standard(StandardModule::Output)
+                        && self.patch().output_id().is_some()
+                    {
                         self.message = Some("Output exists".into());
-                    } else if matches!(kind, ModuleKind::SubPatch(_)) {
+                    } else if matches!(kind, ModuleKind::Subpatch(SubpatchModule::SubPatch(_))) {
                         let color = subpatch_color(self.patches().subpatches.len());
                         let sub_id = self.patches_mut().create_subpatch("Sub".into(), color);
                         if self
                             .patch_mut()
-                            .add_module(ModuleKind::SubPatch(sub_id), cursor)
+                            .add_module(
+                                ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
+                                cursor,
+                            )
                             .is_some()
                         {
                             self.message = Some("SubPatch placed".into());
@@ -1287,16 +1296,19 @@ impl App {
                         } else {
                             self.message = Some("Can't place here".into());
                         }
-                    } else if matches!(kind, ModuleKind::DelayTap(_)) {
+                    } else if matches!(kind, ModuleKind::Standard(StandardModule::DelayTap(_))) {
                         let delay_id = self
                             .patch()
                             .all_modules()
-                            .find(|m| m.kind == ModuleKind::Delay)
+                            .find(|m| m.kind == ModuleKind::Standard(StandardModule::Delay))
                             .map(|m| m.id);
                         if let Some(delay_id) = delay_id {
                             if self
                                 .patch_mut()
-                                .add_module(ModuleKind::DelayTap(delay_id), cursor)
+                                .add_module(
+                                    ModuleKind::Standard(StandardModule::DelayTap(delay_id)),
+                                    cursor,
+                                )
                                 .is_some()
                             {
                                 self.message = Some("DelayTap placed".into());
@@ -1345,14 +1357,19 @@ impl App {
             KeyCode::Enter => {
                 let cursor = self.cursor();
                 if let Some(kind) = filtered.get(self.palette_filter_selection) {
-                    if *kind == ModuleKind::Output && self.patch().output_id().is_some() {
+                    if *kind == ModuleKind::Standard(StandardModule::Output)
+                        && self.patch().output_id().is_some()
+                    {
                         self.message = Some("Output exists".into());
-                    } else if matches!(kind, ModuleKind::SubPatch(_)) {
+                    } else if matches!(kind, ModuleKind::Subpatch(SubpatchModule::SubPatch(_))) {
                         let color = subpatch_color(self.patches().subpatches.len());
                         let sub_id = self.patches_mut().create_subpatch("Sub".into(), color);
                         if self
                             .patch_mut()
-                            .add_module(ModuleKind::SubPatch(sub_id), cursor)
+                            .add_module(
+                                ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
+                                cursor,
+                            )
                             .is_some()
                         {
                             self.message = Some("SubPatch placed".into());
@@ -1360,16 +1377,19 @@ impl App {
                         } else {
                             self.message = Some("Can't place here".into());
                         }
-                    } else if matches!(kind, ModuleKind::DelayTap(_)) {
+                    } else if matches!(kind, ModuleKind::Standard(StandardModule::DelayTap(_))) {
                         let delay_id = self
                             .patch()
                             .all_modules()
-                            .find(|m| m.kind == ModuleKind::Delay)
+                            .find(|m| m.kind == ModuleKind::Standard(StandardModule::Delay))
                             .map(|m| m.id);
                         if let Some(delay_id) = delay_id {
                             if self
                                 .patch_mut()
-                                .add_module(ModuleKind::DelayTap(delay_id), cursor)
+                                .add_module(
+                                    ModuleKind::Standard(StandardModule::DelayTap(delay_id)),
+                                    cursor,
+                                )
                                 .is_some()
                             {
                                 self.message = Some("DelayTap placed".into());
@@ -1649,8 +1669,10 @@ impl App {
         }
 
         let place_pos = GridPos::new(min_x, min_y);
-        self.patch_mut()
-            .add_module(ModuleKind::SubPatch(sub_id), place_pos);
+        self.patch_mut().add_module(
+            ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
+            place_pos,
+        );
 
         self.sync_subpatch_ports(sub_id);
         self.mode = Mode::Normal;
@@ -1669,7 +1691,7 @@ impl App {
             .patches()
             .root
             .all_modules()
-            .filter(|m| m.kind == ModuleKind::SubPatch(sub_id))
+            .filter(|m| m.kind == ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)))
             .map(|m| m.id)
             .collect();
 
@@ -1754,33 +1776,41 @@ impl App {
             Action::Confirm => {
                 if has_special && param_idx == special_idx {
                     match module.kind {
-                        ModuleKind::Envelope => {
+                        ModuleKind::Standard(StandardModule::Envelope) => {
                             self.mode = Mode::EnvEdit {
                                 module_id,
                                 point_idx: 0,
                                 editing: false,
                             };
                         }
-                        ModuleKind::Probe => {
+                        ModuleKind::Standard(StandardModule::Probe) => {
                             self.mode = Mode::ProbeEdit { module_id };
                         }
-                        ModuleKind::Sample => {
+                        ModuleKind::Standard(StandardModule::Sample) => {
                             self.mode = Mode::SampleView {
                                 module_id,
                                 zoom: 1.0,
                                 offset: 0.0,
                             };
                         }
-                        _ => {}
+                        ModuleKind::Routing(_)
+                        | ModuleKind::Subpatch(_)
+                        | ModuleKind::Standard(_) => {}
                     }
                 }
             }
             Action::ValueDown => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
-                    if matches!(module.kind, ModuleKind::DelayTap(_)) && param_idx == 0 {
+                    if matches!(
+                        module.kind,
+                        ModuleKind::Standard(StandardModule::DelayTap(_))
+                    ) && param_idx == 0
+                    {
                         self.cycle_delay_tap_source(module_id, false);
-                    } else if matches!(module.kind, ModuleKind::Sample) && param_idx == 0 {
+                    } else if matches!(module.kind, ModuleKind::Standard(StandardModule::Sample))
+                        && param_idx == 0
+                    {
                         self.cycle_sample_file(module_id, false);
                     } else {
                         let step = self.step_value();
@@ -1817,9 +1847,15 @@ impl App {
             Action::ValueUp => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
-                    if matches!(module.kind, ModuleKind::DelayTap(_)) && param_idx == 0 {
+                    if matches!(
+                        module.kind,
+                        ModuleKind::Standard(StandardModule::DelayTap(_))
+                    ) && param_idx == 0
+                    {
                         self.cycle_delay_tap_source(module_id, true);
-                    } else if matches!(module.kind, ModuleKind::Sample) && param_idx == 0 {
+                    } else if matches!(module.kind, ModuleKind::Standard(StandardModule::Sample))
+                        && param_idx == 0
+                    {
                         self.cycle_sample_file(module_id, true);
                     } else {
                         let step = self.step_value();
@@ -2061,7 +2097,7 @@ impl App {
         let delays: Vec<ModuleId> = self
             .patch()
             .all_modules()
-            .filter(|m| m.kind == ModuleKind::Delay)
+            .filter(|m| m.kind == ModuleKind::Standard(StandardModule::Delay))
             .map(|m| m.id)
             .collect();
 
@@ -2070,7 +2106,7 @@ impl App {
         }
 
         let current_delay = if let Some(m) = self.patch().module(tap_id) {
-            if let ModuleKind::DelayTap(id) = m.kind {
+            if let ModuleKind::Standard(StandardModule::DelayTap(id)) = m.kind {
                 Some(id)
             } else {
                 None
@@ -2094,7 +2130,7 @@ impl App {
         };
 
         if let Some(m) = self.patch_mut().module_mut(tap_id) {
-            m.kind = ModuleKind::DelayTap(delays[new_idx]);
+            m.kind = ModuleKind::Standard(StandardModule::DelayTap(delays[new_idx]));
         }
     }
 

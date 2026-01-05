@@ -84,6 +84,13 @@ impl LowpassFilter {
         self.a1 = a1 / a0;
         self.a2 = a2 / a0;
     }
+
+    pub fn copy_state_from(&mut self, other: &LowpassFilter) {
+        self.x1 = other.x1;
+        self.x2 = other.x2;
+        self.y1 = other.y1;
+        self.y2 = other.y2;
+    }
 }
 
 pub struct HighpassFilter {
@@ -169,6 +176,13 @@ impl HighpassFilter {
         self.b2 = b2 / a0;
         self.a1 = a1 / a0;
         self.a2 = a2 / a0;
+    }
+
+    pub fn copy_state_from(&mut self, other: &HighpassFilter) {
+        self.x1 = other.x1;
+        self.x2 = other.x2;
+        self.y1 = other.y1;
+        self.y2 = other.y2;
     }
 }
 

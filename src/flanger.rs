@@ -81,4 +81,9 @@ impl Flanger {
         self.max_delay_samples =
             MIN_DELAY_SAMPLES as f32 + (MAX_DELAY_SAMPLES - MIN_DELAY_SAMPLES) as f32 * self.depth;
     }
+
+    pub fn copy_state_from(&mut self, other: &Flanger) {
+        self.delay.copy_state_from(&other.delay);
+        self.lfo.copy_phase_from(&other.lfo);
+    }
 }

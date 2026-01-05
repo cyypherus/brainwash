@@ -63,4 +63,12 @@ impl Delay {
             self.write_index = 0;
         }
     }
+
+    pub fn copy_state_from(&mut self, other: &Delay) {
+        let copy_len = self.buffer_size.min(other.buffer_size);
+        for i in 0..copy_len {
+            self.buffer[i] = other.buffer[i];
+        }
+        self.write_index = other.write_index % self.buffer_size;
+    }
 }

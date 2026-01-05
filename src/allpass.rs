@@ -32,4 +32,12 @@ impl AllpassFilter {
         self.feedback = feedback;
         self
     }
+
+    pub fn copy_state_from(&mut self, other: &AllpassFilter) {
+        let copy_len = self.buffer_size.min(other.buffer_size);
+        for i in 0..copy_len {
+            self.buffer[i] = other.buffer[i];
+        }
+        self.buffer_index = other.buffer_index % self.buffer_size;
+    }
 }
