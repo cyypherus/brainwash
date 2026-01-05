@@ -5,70 +5,54 @@ const TABLE_SIZE: usize = 1024;
 const MAX_HARMONICS: usize = 32;
 
 fn generate_sine_table() -> [f32; TABLE_SIZE] {
-    let mut table = [0.0; TABLE_SIZE];
-    for i in 0..TABLE_SIZE {
+    std::array::from_fn(|i| {
         let phase = (i as f32) * 2.0 * std::f32::consts::PI / (TABLE_SIZE as f32);
-        table[i] = phase.sin();
-    }
-    table
+        phase.sin()
+    })
 }
 
 fn generate_cosine_table() -> [f32; TABLE_SIZE] {
-    let mut table = [0.0; TABLE_SIZE];
-    for i in 0..TABLE_SIZE {
+    std::array::from_fn(|i| {
         let phase = (i as f32) * 2.0 * std::f32::consts::PI / (TABLE_SIZE as f32);
-        table[i] = phase.cos();
-    }
-    table
+        phase.cos()
+    })
 }
 
 fn generate_sawtooth_table() -> [f32; TABLE_SIZE] {
-    let mut table = [0.0; TABLE_SIZE];
-    for i in 0..TABLE_SIZE {
-        let mut sample = 0.0;
+    std::array::from_fn(|i| {
         let phase = (i as f32) * 2.0 * std::f32::consts::PI / (TABLE_SIZE as f32);
-
+        let mut sample = 0.0;
         for h in 1..=MAX_HARMONICS {
             let harmonic_amp = 1.0 / (h as f32);
             sample += harmonic_amp * (phase * h as f32).sin();
         }
-
-        table[i] = sample * 0.5;
-    }
-    table
+        sample * 0.5
+    })
 }
 
 fn generate_square_table() -> [f32; TABLE_SIZE] {
-    let mut table = [0.0; TABLE_SIZE];
-    for i in 0..TABLE_SIZE {
-        let mut sample = 0.0;
+    std::array::from_fn(|i| {
         let phase = (i as f32) * 2.0 * std::f32::consts::PI / (TABLE_SIZE as f32);
-
+        let mut sample = 0.0;
         for h in (1..=MAX_HARMONICS).step_by(2) {
             let harmonic_amp = 1.0 / (h as f32);
             sample += harmonic_amp * (phase * h as f32).sin();
         }
-
-        table[i] = sample * 0.8;
-    }
-    table
+        sample * 0.8
+    })
 }
 
 fn generate_triangle_table() -> [f32; TABLE_SIZE] {
-    let mut table = [0.0; TABLE_SIZE];
-    for i in 0..TABLE_SIZE {
-        let mut sample = 0.0;
+    std::array::from_fn(|i| {
         let phase = (i as f32) * 2.0 * std::f32::consts::PI / (TABLE_SIZE as f32);
-
+        let mut sample = 0.0;
         for h in (1..=MAX_HARMONICS).step_by(2) {
             let harmonic_amp = 1.0 / ((h * h) as f32);
             let sign = if ((h - 1) / 2) % 2 == 0 { 1.0 } else { -1.0 };
             sample += sign * harmonic_amp * (phase * h as f32).sin();
         }
-
-        table[i] = sample * 0.8;
-    }
-    table
+        sample * 0.8
+    })
 }
 
 fn write_table_file(table: &[f32; TABLE_SIZE], filename: &str) -> std::io::Result<()> {

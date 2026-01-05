@@ -6,7 +6,7 @@ use crate::clock::Clock;
 use crate::comb::CombFilter;
 use crate::delay::Delay;
 use crate::distortion::Distortion;
-use crate::envelopes::{Envelope, EnvelopePoint, PointType, ADSR};
+use crate::envelopes::{ADSR, Envelope, EnvelopePoint, PointType};
 use crate::filters::{HighpassFilter, LowpassFilter};
 use crate::flanger::Flanger;
 use crate::gate_ramp::GateRamp;
@@ -871,33 +871,33 @@ fn flatten_patchset(patches: &PatchSet) -> (Vec<Module>, Vec<(ModuleId, ModuleId
             continue;
         };
 
-        if module.has_output_bottom() {
-            if let Some((target_id, port_idx)) = trace_down(
+        if module.has_output_bottom()
+            && let Some((target_id, port_idx)) = trace_down(
                 patches.root.grid(),
                 &patches.root,
                 pos.x,
                 pos.y + module.height() as u16,
-            ) {
-                let src = id_map.get(&(None, module.id)).copied();
-                let dst = id_map.get(&(None, target_id)).copied();
-                if let (Some(s), Some(d)) = (src, dst) {
-                    connections.push((s, d, port_idx));
-                }
+            )
+        {
+            let src = id_map.get(&(None, module.id)).copied();
+            let dst = id_map.get(&(None, target_id)).copied();
+            if let (Some(s), Some(d)) = (src, dst) {
+                connections.push((s, d, port_idx));
             }
         }
 
-        if module.has_output_right() {
-            if let Some((target_id, port_idx)) = trace_right(
+        if module.has_output_right()
+            && let Some((target_id, port_idx)) = trace_right(
                 patches.root.grid(),
                 &patches.root,
                 pos.x + module.width() as u16,
                 pos.y,
-            ) {
-                let src = id_map.get(&(None, module.id)).copied();
-                let dst = id_map.get(&(None, target_id)).copied();
-                if let (Some(s), Some(d)) = (src, dst) {
-                    connections.push((s, d, port_idx));
-                }
+            )
+        {
+            let src = id_map.get(&(None, module.id)).copied();
+            let dst = id_map.get(&(None, target_id)).copied();
+            if let (Some(s), Some(d)) = (src, dst) {
+                connections.push((s, d, port_idx));
             }
         }
     }
@@ -983,41 +983,39 @@ fn trace_subpatch_connections(
                 continue;
             };
 
-            if src.has_output_right() && module.has_input_left() {
-                let start_x = src_pos.x + src.width() as u16;
-                if let Some((target_id, port_idx)) =
-                    trace_right(patches.root.grid(), &patches.root, start_x, src_pos.y)
-                {
-                    if target_id == module.id {
-                        if let Some(&(_, sub_in_id)) =
-                            sub_inputs.iter().find(|(idx, _)| *idx == port_idx)
-                        {
-                            let flat_src = id_map.get(&(None, src.id)).copied();
-                            let flat_dst = id_map.get(&(Some(sub_id), sub_in_id)).copied();
-                            if let (Some(s), Some(d)) = (flat_src, flat_dst) {
-                                connections.push((s, d, 0));
-                            }
-                        }
-                    }
+            if src.has_output_right()
+                && module.has_input_left()
+                && let Some((target_id, port_idx)) = trace_right(
+                    patches.root.grid(),
+                    &patches.root,
+                    src_pos.x + src.width() as u16,
+                    src_pos.y,
+                )
+                && target_id == module.id
+                && let Some(&(_, sub_in_id)) = sub_inputs.iter().find(|(idx, _)| *idx == port_idx)
+            {
+                let flat_src = id_map.get(&(None, src.id)).copied();
+                let flat_dst = id_map.get(&(Some(sub_id), sub_in_id)).copied();
+                if let (Some(s), Some(d)) = (flat_src, flat_dst) {
+                    connections.push((s, d, 0));
                 }
             }
 
-            if src.has_output_bottom() && module.has_input_top() {
-                let start_y = src_pos.y + src.height() as u16;
-                if let Some((target_id, port_idx)) =
-                    trace_down(patches.root.grid(), &patches.root, src_pos.x, start_y)
-                {
-                    if target_id == module.id {
-                        if let Some(&(_, sub_in_id)) =
-                            sub_inputs.iter().find(|(idx, _)| *idx == port_idx)
-                        {
-                            let flat_src = id_map.get(&(None, src.id)).copied();
-                            let flat_dst = id_map.get(&(Some(sub_id), sub_in_id)).copied();
-                            if let (Some(s), Some(d)) = (flat_src, flat_dst) {
-                                connections.push((s, d, 0));
-                            }
-                        }
-                    }
+            if src.has_output_bottom()
+                && module.has_input_top()
+                && let Some((target_id, port_idx)) = trace_down(
+                    patches.root.grid(),
+                    &patches.root,
+                    src_pos.x,
+                    src_pos.y + src.height() as u16,
+                )
+                && target_id == module.id
+                && let Some(&(_, sub_in_id)) = sub_inputs.iter().find(|(idx, _)| *idx == port_idx)
+            {
+                let flat_src = id_map.get(&(None, src.id)).copied();
+                let flat_dst = id_map.get(&(Some(sub_id), sub_in_id)).copied();
+                if let (Some(s), Some(d)) = (flat_src, flat_dst) {
+                    connections.push((s, d, 0));
                 }
             }
         }
@@ -1062,33 +1060,33 @@ fn trace_subpatch_connections(
                 continue;
             };
 
-            if internal.has_output_bottom() {
-                if let Some((target_id, port_idx)) = trace_down(
+            if internal.has_output_bottom()
+                && let Some((target_id, port_idx)) = trace_down(
                     sub.patch.grid(),
                     &sub.patch,
                     pos.x,
                     pos.y + internal.height() as u16,
-                ) {
-                    let flat_src = id_map.get(&(Some(sub_id), internal.id)).copied();
-                    let flat_dst = id_map.get(&(Some(sub_id), target_id)).copied();
-                    if let (Some(s), Some(d)) = (flat_src, flat_dst) {
-                        connections.push((s, d, port_idx));
-                    }
+                )
+            {
+                let flat_src = id_map.get(&(Some(sub_id), internal.id)).copied();
+                let flat_dst = id_map.get(&(Some(sub_id), target_id)).copied();
+                if let (Some(s), Some(d)) = (flat_src, flat_dst) {
+                    connections.push((s, d, port_idx));
                 }
             }
 
-            if internal.has_output_right() {
-                if let Some((target_id, port_idx)) = trace_right(
+            if internal.has_output_right()
+                && let Some((target_id, port_idx)) = trace_right(
                     sub.patch.grid(),
                     &sub.patch,
                     pos.x + internal.width() as u16,
                     pos.y,
-                ) {
-                    let flat_src = id_map.get(&(Some(sub_id), internal.id)).copied();
-                    let flat_dst = id_map.get(&(Some(sub_id), target_id)).copied();
-                    if let (Some(s), Some(d)) = (flat_src, flat_dst) {
-                        connections.push((s, d, port_idx));
-                    }
+                )
+            {
+                let flat_src = id_map.get(&(Some(sub_id), internal.id)).copied();
+                let flat_dst = id_map.get(&(Some(sub_id), target_id)).copied();
+                if let (Some(s), Some(d)) = (flat_src, flat_dst) {
+                    connections.push((s, d, port_idx));
                 }
             }
         }
@@ -1131,26 +1129,21 @@ fn compile_voice(
     }
 
     for module in modules {
-        if let ModuleKind::Standard(StandardModule::DelayTap(delay_module_id)) = module.kind {
-            if let Some(&tap_node_idx) = module_to_node.get(&module.id) {
-                if let Some(&delay_node_idx) = module_to_node.get(&delay_module_id) {
-                    if let NodeKind::DelayTap { delay_node, .. } =
-                        &mut voice.nodes[tap_node_idx].kind
-                    {
-                        *delay_node = delay_node_idx;
-                    }
-                }
-            }
+        if let ModuleKind::Standard(StandardModule::DelayTap(delay_module_id)) = module.kind
+            && let Some(&tap_node_idx) = module_to_node.get(&module.id)
+            && let Some(&delay_node_idx) = module_to_node.get(&delay_module_id)
+            && let NodeKind::DelayTap { delay_node, .. } = &mut voice.nodes[tap_node_idx].kind
+        {
+            *delay_node = delay_node_idx;
         }
     }
 
     for (src_id, dst_id, port_idx) in connections {
         if let (Some(&src_node), Some(&dst_node)) =
             (module_to_node.get(src_id), module_to_node.get(dst_id))
+            && *port_idx < voice.nodes[dst_node].input_sources.len()
         {
-            if *port_idx < voice.nodes[dst_node].input_sources.len() {
-                voice.nodes[dst_node].input_sources[*port_idx] = Some(src_node);
-            }
+            voice.nodes[dst_node].input_sources[*port_idx] = Some(src_node);
         }
     }
 
@@ -1289,18 +1282,18 @@ fn create_node_kind(module: &Module, ctx: &CompileContext) -> NodeKind {
         (ModuleKind::Standard(StandardModule::Rise), ModuleParams::Rise { time, .. }) => {
             let mut ramp = GateRamp::default();
             ramp.rise();
-            ramp.time(time.to_seconds(ctx.bpm, ctx.bars));
+            ramp.time(time.as_seconds(ctx.bpm, ctx.bars));
             NodeKind::Rise(ramp)
         }
         (ModuleKind::Standard(StandardModule::Fall), ModuleParams::Fall { time, .. }) => {
             let mut ramp = GateRamp::default();
             ramp.fall();
-            ramp.time(time.to_seconds(ctx.bpm, ctx.bars));
+            ramp.time(time.as_seconds(ctx.bpm, ctx.bars));
             NodeKind::Fall(ramp)
         }
         (ModuleKind::Standard(StandardModule::Ramp), ModuleParams::Ramp { time, .. }) => {
             let mut ramp = Ramp::default();
-            ramp.time(time.to_seconds(ctx.bpm, ctx.bars));
+            ramp.time(time.as_seconds(ctx.bpm, ctx.bars));
             NodeKind::Ramp(ramp)
         }
         (
@@ -1351,7 +1344,7 @@ fn create_node_kind(module: &Module, ctx: &CompileContext) -> NodeKind {
                 ..
             },
         ) => {
-            let size = time.to_samples(ctx.sample_rate, ctx.bpm, ctx.bars) as usize;
+            let size = time.as_samples(ctx.sample_rate, ctx.bpm, ctx.bars) as usize;
             let mut comb = CombFilter::new(size.max(1));
             comb.feedback(*feedback).damp(*damp);
             NodeKind::Comb(comb)
@@ -1360,14 +1353,14 @@ fn create_node_kind(module: &Module, ctx: &CompileContext) -> NodeKind {
             ModuleKind::Standard(StandardModule::Allpass),
             ModuleParams::Allpass { time, feedback, .. },
         ) => {
-            let size = time.to_samples(ctx.sample_rate, ctx.bpm, ctx.bars) as usize;
+            let size = time.as_samples(ctx.sample_rate, ctx.bpm, ctx.bars) as usize;
             let mut allpass = AllpassFilter::new(size.max(1));
             allpass.feedback(*feedback);
             NodeKind::Allpass(allpass)
         }
         (ModuleKind::Standard(StandardModule::Delay), ModuleParams::Delay { time, .. }) => {
             let mut delay = Delay::default();
-            delay.delay(time.to_samples(ctx.sample_rate, ctx.bpm, ctx.bars));
+            delay.delay(time.as_samples(ctx.sample_rate, ctx.bpm, ctx.bars));
             NodeKind::Delay(delay)
         }
         (ModuleKind::Standard(StandardModule::DelayTap(_)), ModuleParams::DelayTap { gain }) => {
@@ -1486,7 +1479,7 @@ fn get_input_defaults(module: &Module, ctx: &CompileContext) -> Vec<f32> {
                 module
                     .params
                     .get_time(i)
-                    .map(|t| t.to_hz(ctx.bpm, ctx.bars))
+                    .map(|t| t.as_hz(ctx.bpm, ctx.bars))
                     .unwrap_or(440.0)
             } else {
                 module.params.get_float(i).unwrap_or(0.0)
@@ -1569,25 +1562,37 @@ mod tests {
 
         assert_eq!(modules.len(), 5);
 
-        assert!(modules
-            .iter()
-            .any(|m| m.kind == ModuleKind::Standard(StandardModule::Freq)));
-        assert!(modules
-            .iter()
-            .any(|m| m.kind == ModuleKind::Subpatch(SubpatchModule::SubIn)));
-        assert!(modules
-            .iter()
-            .any(|m| m.kind == ModuleKind::Standard(StandardModule::Mul)));
-        assert!(modules
-            .iter()
-            .any(|m| m.kind == ModuleKind::Subpatch(SubpatchModule::SubOut)));
-        assert!(modules
-            .iter()
-            .any(|m| m.kind == ModuleKind::Standard(StandardModule::Output)));
+        assert!(
+            modules
+                .iter()
+                .any(|m| m.kind == ModuleKind::Standard(StandardModule::Freq))
+        );
+        assert!(
+            modules
+                .iter()
+                .any(|m| m.kind == ModuleKind::Subpatch(SubpatchModule::SubIn))
+        );
+        assert!(
+            modules
+                .iter()
+                .any(|m| m.kind == ModuleKind::Standard(StandardModule::Mul))
+        );
+        assert!(
+            modules
+                .iter()
+                .any(|m| m.kind == ModuleKind::Subpatch(SubpatchModule::SubOut))
+        );
+        assert!(
+            modules
+                .iter()
+                .any(|m| m.kind == ModuleKind::Standard(StandardModule::Output))
+        );
 
-        assert!(!modules
-            .iter()
-            .any(|m| matches!(m.kind, ModuleKind::Subpatch(SubpatchModule::SubPatch(_)))));
+        assert!(
+            !modules
+                .iter()
+                .any(|m| matches!(m.kind, ModuleKind::Subpatch(SubpatchModule::SubPatch(_))))
+        );
     }
 
     #[test]

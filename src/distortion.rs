@@ -105,8 +105,8 @@ impl HalfbandFilter {
 const HIIR_8: [f64; 4] = [
     0.07711507983241622,
     0.22823651466538192,
-    0.42197804294498020,
-    0.69059275868261588,
+    0.421_978_042_944_980_2,
+    0.690_592_758_682_615_8,
 ];
 
 pub struct Distortion {
@@ -201,9 +201,7 @@ impl Distortion {
         let driven = x * self.drive;
         let threshold = 1.0;
         if driven > threshold || driven < -threshold {
-            let folded = ((driven - threshold).abs() % (threshold * 4.0) - threshold * 2.0).abs()
-                - threshold;
-            folded
+            ((driven - threshold).abs() % (threshold * 4.0) - threshold * 2.0).abs() - threshold
         } else {
             driven
         }

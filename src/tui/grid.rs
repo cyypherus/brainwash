@@ -143,10 +143,10 @@ impl Grid {
 
     pub fn remove_module(&mut self, id: ModuleId) {
         for cell in &mut self.cells {
-            if let Cell::Module { id: cid, .. } = cell {
-                if *cid == id {
-                    *cell = Cell::Empty;
-                }
+            if let Cell::Module { id: cid, .. } = cell
+                && *cid == id
+            {
+                *cell = Cell::Empty;
             }
         }
     }

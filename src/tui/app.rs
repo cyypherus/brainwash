@@ -1,9 +1,9 @@
-use super::bindings::{lookup, Action, Binding};
+use super::bindings::{Action, Binding, lookup};
 use super::config::Bindings;
 use super::engine::{
-    command_channel, compile_patch, compile_voices, meter_channel, output_channel, AudioCommand,
-    AudioEngine, CommandSender, CompileContext, CompiledPatch, MeterReceiver, OutputReceiver,
-    TrackState, OUTPUT_INTERVAL,
+    AudioCommand, AudioEngine, CommandSender, CompileContext, CompiledPatch, MeterReceiver,
+    OUTPUT_INTERVAL, OutputReceiver, TrackState, command_channel, compile_patch, compile_voices,
+    meter_channel, output_channel,
 };
 use super::grid::GridPos;
 use super::instrument::Instrument;
@@ -17,14 +17,14 @@ use super::render::{
     AdsrWidget, EditWidget, EnvelopeWidget, GridWidget, HelpWidget, PaletteWidget, ProbeWidget,
     SampleWidget, StatusWidget,
 };
+use crate::Signal;
 use crate::live::AudioPlayer;
 use crate::scale::{
-    amaj, amin, asharpmaj, asharpmin, bmaj, bmin, chromatic, cmaj, cmin, csharpmaj, csharpmin,
-    dmaj, dmin, dsharpmaj, dsharpmin, emaj, emin, fmaj, fmin, fsharpmaj, fsharpmin, gmaj, gmin,
-    gsharpmaj, gsharpmin, Scale,
+    Scale, amaj, amin, asharpmaj, asharpmin, bmaj, bmin, chromatic, cmaj, cmin, csharpmaj,
+    csharpmin, dmaj, dmin, dsharpmaj, dsharpmin, emaj, emin, fmaj, fmin, fsharpmaj, fsharpmin,
+    gmaj, gmin, gsharpmaj, gsharpmin,
 };
 use crate::track::Track;
-use crate::Signal;
 use cpal::traits::StreamTrait;
 use lilt::{Animated, Easing};
 use ratatui::crossterm::{
@@ -33,14 +33,14 @@ use ratatui::crossterm::{
         MouseEventKind,
     },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     widgets::{Block, Borders, Clear},
-    Frame, Terminal,
 };
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -135,10 +135,7 @@ const BRAND_FONT: &[(&str, [&str; 6])] = &[
 fn render_brand(text: &str, gap: usize) -> Vec<String> {
     let mut rows = vec![String::new(); 6];
     for (i, c) in text.chars().enumerate() {
-        if let Some((_, glyph)) = BRAND_FONT
-            .iter()
-            .find(|(ch, _)| ch.chars().next() == Some(c))
-        {
+        if let Some((_, glyph)) = BRAND_FONT.iter().find(|(ch, _)| ch.starts_with(c)) {
             for (row_idx, row) in glyph.iter().enumerate() {
                 if i > 0 {
                     for _ in 0..gap {
@@ -672,15 +669,15 @@ impl App {
         let grid = self.patch().grid();
         let origin_x = if self.view_center().x < half_cols {
             0
-        } else if self.view_center().x + half_cols >= grid.width() as u16 {
-            (grid.width() as u16).saturating_sub(visible_cols)
+        } else if self.view_center().x + half_cols >= grid.width() {
+            grid.width().saturating_sub(visible_cols)
         } else {
             self.view_center().x - half_cols
         };
         let origin_y = if self.view_center().y < half_rows {
             0
-        } else if self.view_center().y + half_rows >= grid.height() as u16 {
-            (grid.height() as u16).saturating_sub(visible_rows)
+        } else if self.view_center().y + half_rows >= grid.height() {
+            grid.height().saturating_sub(visible_rows)
         } else {
             self.view_center().y - half_rows
         };
@@ -690,7 +687,7 @@ impl App {
         let gx = origin_x + vx;
         let gy = origin_y + vy;
 
-        if gx < grid.width() as u16 && gy < grid.height() as u16 {
+        if gx < grid.width() && gy < grid.height() {
             Some(GridPos::new(gx, gy))
         } else {
             None
@@ -747,15 +744,15 @@ impl App {
                             self.set_cursor(pos);
                         }
                     }
-                } else if let Some(start_pos) = self.select_start {
-                    if let Some(pos) = self.screen_to_grid(col, row) {
-                        let dx = (pos.x as i32 - start_pos.x as i32).abs();
-                        let dy = (pos.y as i32 - start_pos.y as i32).abs();
-                        if dx > 0 || dy > 0 {
-                            self.select_start = None;
-                            self.mode = Mode::MouseSelect { anchor: start_pos };
-                            self.set_cursor(pos);
-                        }
+                } else if let Some(start_pos) = self.select_start
+                    && let Some(pos) = self.screen_to_grid(col, row)
+                {
+                    let dx = (pos.x as i32 - start_pos.x as i32).abs();
+                    let dy = (pos.y as i32 - start_pos.y as i32).abs();
+                    if dx > 0 || dy > 0 {
+                        self.select_start = None;
+                        self.mode = Mode::MouseSelect { anchor: start_pos };
+                        self.set_cursor(pos);
                     }
                 }
             }
@@ -799,25 +796,21 @@ impl App {
         let (min_x, max_x) = (anchor.x.min(extent.x), anchor.x.max(extent.x));
         let (min_y, max_y) = (anchor.y.min(extent.y), anchor.y.max(extent.y));
 
-        match kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(pos) = self.screen_to_grid(col, row) {
-                    let in_selection =
-                        pos.x >= min_x && pos.x <= max_x && pos.y >= min_y && pos.y <= max_y;
-                    if in_selection {
-                        self.mode = Mode::SelectMove {
-                            anchor: GridPos::new(min_x, min_y),
-                            extent: GridPos::new(max_x, max_y),
-                            move_origin: pos,
-                        };
-                        self.set_cursor(pos);
-                    } else {
-                        self.mode = Mode::Normal;
-                        self.set_cursor(pos);
-                    }
-                }
+        if let MouseEventKind::Down(MouseButton::Left) = kind
+            && let Some(pos) = self.screen_to_grid(col, row)
+        {
+            let in_selection = pos.x >= min_x && pos.x <= max_x && pos.y >= min_y && pos.y <= max_y;
+            if in_selection {
+                self.mode = Mode::SelectMove {
+                    anchor: GridPos::new(min_x, min_y),
+                    extent: GridPos::new(max_x, max_y),
+                    move_origin: pos,
+                };
+                self.set_cursor(pos);
+            } else {
+                self.mode = Mode::Normal;
+                self.set_cursor(pos);
             }
-            _ => {}
         }
     }
 
@@ -1038,43 +1031,43 @@ impl App {
                 }
             }
             Action::Delete => {
-                if let Some(id) = self.patch().module_id_at(self.cursor()) {
-                    if self.patch_mut().remove_module(id) {
-                        self.message = Some("Deleted".into());
-                        self.commit_patch();
-                    }
+                if let Some(id) = self.patch().module_id_at(self.cursor())
+                    && self.patch_mut().remove_module(id)
+                {
+                    self.message = Some("Deleted".into());
+                    self.commit_patch();
                 }
             }
             Action::Rotate => {
-                if let Some(id) = self.patch().module_id_at(self.cursor()) {
-                    if let Some(m) = self.patch().module(id) {
-                        if m.kind.is_routing() {
-                            self.message = Some("Cannot rotate".into());
-                        } else if self.patch_mut().rotate_module(id) {
-                            self.message = Some("Rotated".into());
-                            self.commit_patch();
-                        } else {
-                            self.message = Some("No room to rotate".into());
-                        }
+                if let Some(id) = self.patch().module_id_at(self.cursor())
+                    && let Some(m) = self.patch().module(id)
+                {
+                    if m.kind.is_routing() {
+                        self.message = Some("Cannot rotate".into());
+                    } else if self.patch_mut().rotate_module(id) {
+                        self.message = Some("Rotated".into());
+                        self.commit_patch();
+                    } else {
+                        self.message = Some("No room to rotate".into());
                     }
                 }
             }
             Action::Edit => {
-                if let Some(id) = self.patch().module_id_at(self.cursor()) {
-                    if self.patch().module(id).is_some() {
-                        self.mode = Mode::Edit {
-                            module_id: id,
-                            param_idx: 0,
-                        };
-                    }
+                if let Some(id) = self.patch().module_id_at(self.cursor())
+                    && self.patch().module(id).is_some()
+                {
+                    self.mode = Mode::Edit {
+                        module_id: id,
+                        param_idx: 0,
+                    };
                 }
             }
             Action::Copy => {
-                if let Some(id) = self.patch().module_id_at(self.cursor()) {
-                    if let Some(m) = self.patch().module(id).cloned() {
-                        self.mode = Mode::Copy { module: m };
-                        self.message = Some("Place copy with space/enter".into());
-                    }
+                if let Some(id) = self.patch().module_id_at(self.cursor())
+                    && let Some(m) = self.patch().module(id).cloned()
+                {
+                    self.mode = Mode::Copy { module: m };
+                    self.message = Some("Place copy with space/enter".into());
                 }
             }
             Action::Palette(cat) => self.open_palette_category(cat),
@@ -1723,11 +1716,7 @@ impl App {
                     && mod_min_y <= sel_max_y
                     && mod_max_y >= sel_min_y;
 
-                if overlaps {
-                    Some(m.id)
-                } else {
-                    None
-                }
+                if overlaps { Some(m.id) } else { None }
             })
             .collect()
     }
@@ -1938,12 +1927,11 @@ impl App {
             Action::CycleUnit => {
                 if param_idx < defs.len() {
                     let def = &defs[param_idx];
-                    if matches!(def.kind, ParamKind::Time) {
-                        if let Some(m) = self.patch_mut().module_mut(module_id) {
-                            if let Some(t) = m.params.get_time_mut(param_idx) {
-                                t.unit = t.unit.next();
-                            }
-                        }
+                    if matches!(def.kind, ParamKind::Time)
+                        && let Some(m) = self.patch_mut().module_mut(module_id)
+                        && let Some(t) = m.params.get_time_mut(param_idx)
+                    {
+                        t.unit = t.unit.next();
                         self.commit_patch();
                     }
                 }
@@ -2064,12 +2052,10 @@ impl App {
 
         let new_idx = if forward {
             (current_idx + 1) % files.len()
+        } else if current_idx == 0 {
+            files.len() - 1
         } else {
-            if current_idx == 0 {
-                files.len() - 1
-            } else {
-                current_idx - 1
-            }
+            current_idx - 1
         };
 
         let new_name = files.get(new_idx).cloned().unwrap_or_default();
@@ -2078,18 +2064,17 @@ impl App {
             .map(|p| load_wav_samples(p))
             .unwrap_or_else(|| Arc::new(Vec::new()));
 
-        if let Some(m) = self.patch_mut().module_mut(module_id) {
-            if let ModuleParams::Sample {
+        if let Some(m) = self.patch_mut().module_mut(module_id)
+            && let ModuleParams::Sample {
                 file_idx,
                 file_name,
                 samples,
                 ..
             } = &mut m.params
-            {
-                *file_idx = new_idx;
-                *file_name = new_name;
-                *samples = new_samples;
-            }
+        {
+            *file_idx = new_idx;
+            *file_name = new_name;
+            *samples = new_samples;
         }
     }
 
@@ -2121,12 +2106,10 @@ impl App {
 
         let new_idx = if forward {
             (current_idx + 1) % delays.len()
+        } else if current_idx == 0 {
+            delays.len() - 1
         } else {
-            if current_idx == 0 {
-                delays.len() - 1
-            } else {
-                current_idx - 1
-            }
+            current_idx - 1
         };
 
         if let Some(m) = self.patch_mut().module_mut(tap_id) {
@@ -2274,7 +2257,7 @@ impl App {
             bpm,
             bars,
         };
-        compile_patch(&mut compiled, &self.patches(), NUM_VOICES, &ctx);
+        compile_patch(&mut compiled, self.patches(), NUM_VOICES, &ctx);
 
         let mut track_state = TrackState::new(NUM_VOICES);
         track_state.clock.bpm(bpm).bars(bars);
@@ -2337,7 +2320,7 @@ impl App {
 
         match persist::save_patchset(
             &path,
-            &self.patches(),
+            self.patches(),
             self.bpm,
             bars,
             self.scale_idx(),
@@ -2432,69 +2415,65 @@ impl App {
                 };
             }
             Action::ValueUp => {
-                if let Some(m) = self.patch_mut().module_mut(module_id) {
-                    if let super::module::ModuleParams::Adsr {
+                if let Some(m) = self.patch_mut().module_mut(module_id)
+                    && let super::module::ModuleParams::Adsr {
                         attack_ratio,
                         sustain,
                         ..
                     } = &mut m.params
-                    {
-                        match param_idx {
-                            0 => *attack_ratio = (*attack_ratio + 0.05).min(1.0),
-                            1 => *sustain = (*sustain + 0.05).min(1.0),
-                            _ => {}
-                        }
+                {
+                    match param_idx {
+                        0 => *attack_ratio = (*attack_ratio + 0.05).min(1.0),
+                        1 => *sustain = (*sustain + 0.05).min(1.0),
+                        _ => {}
                     }
                 }
                 self.commit_patch();
             }
             Action::ValueDown => {
-                if let Some(m) = self.patch_mut().module_mut(module_id) {
-                    if let super::module::ModuleParams::Adsr {
+                if let Some(m) = self.patch_mut().module_mut(module_id)
+                    && let super::module::ModuleParams::Adsr {
                         attack_ratio,
                         sustain,
                         ..
                     } = &mut m.params
-                    {
-                        match param_idx {
-                            0 => *attack_ratio = (*attack_ratio - 0.05).max(0.0),
-                            1 => *sustain = (*sustain - 0.05).max(0.0),
-                            _ => {}
-                        }
+                {
+                    match param_idx {
+                        0 => *attack_ratio = (*attack_ratio - 0.05).max(0.0),
+                        1 => *sustain = (*sustain - 0.05).max(0.0),
+                        _ => {}
                     }
                 }
                 self.commit_patch();
             }
             Action::ValueUpFast => {
-                if let Some(m) = self.patch_mut().module_mut(module_id) {
-                    if let super::module::ModuleParams::Adsr {
+                if let Some(m) = self.patch_mut().module_mut(module_id)
+                    && let super::module::ModuleParams::Adsr {
                         attack_ratio,
                         sustain,
                         ..
                     } = &mut m.params
-                    {
-                        match param_idx {
-                            0 => *attack_ratio = 1.0,
-                            1 => *sustain = 1.0,
-                            _ => {}
-                        }
+                {
+                    match param_idx {
+                        0 => *attack_ratio = 1.0,
+                        1 => *sustain = 1.0,
+                        _ => {}
                     }
                 }
                 self.commit_patch();
             }
             Action::ValueDownFast => {
-                if let Some(m) = self.patch_mut().module_mut(module_id) {
-                    if let super::module::ModuleParams::Adsr {
+                if let Some(m) = self.patch_mut().module_mut(module_id)
+                    && let super::module::ModuleParams::Adsr {
                         attack_ratio,
                         sustain,
                         ..
                     } = &mut m.params
-                    {
-                        match param_idx {
-                            0 => *attack_ratio = 0.0,
-                            1 => *sustain = 0.0,
-                            _ => {}
-                        }
+                {
+                    match param_idx {
+                        0 => *attack_ratio = 0.0,
+                        1 => *sustain = 0.0,
+                        _ => {}
                     }
                 }
                 self.commit_patch();
@@ -2572,42 +2551,38 @@ impl App {
                     self.commit_patch();
                 }
                 Action::Up => {
-                    if let Some(m) = self.patch_mut().module_mut(module_id) {
-                        if let Some(points) = m.params.env_points_mut() {
-                            if let Some(p) = points.get_mut(point_idx) {
-                                p.value = (p.value + step).min(1.0);
-                            }
-                        }
+                    if let Some(m) = self.patch_mut().module_mut(module_id)
+                        && let Some(points) = m.params.env_points_mut()
+                        && let Some(p) = points.get_mut(point_idx)
+                    {
+                        p.value = (p.value + step).min(1.0);
                     }
                     self.commit_patch();
                 }
                 Action::Down => {
-                    if let Some(m) = self.patch_mut().module_mut(module_id) {
-                        if let Some(points) = m.params.env_points_mut() {
-                            if let Some(p) = points.get_mut(point_idx) {
-                                p.value = (p.value - step).max(-1.0);
-                            }
-                        }
+                    if let Some(m) = self.patch_mut().module_mut(module_id)
+                        && let Some(points) = m.params.env_points_mut()
+                        && let Some(p) = points.get_mut(point_idx)
+                    {
+                        p.value = (p.value - step).max(-1.0);
                     }
                     self.commit_patch();
                 }
                 Action::UpFast => {
-                    if let Some(m) = self.patch_mut().module_mut(module_id) {
-                        if let Some(points) = m.params.env_points_mut() {
-                            if let Some(p) = points.get_mut(point_idx) {
-                                p.value = 1.0;
-                            }
-                        }
+                    if let Some(m) = self.patch_mut().module_mut(module_id)
+                        && let Some(points) = m.params.env_points_mut()
+                        && let Some(p) = points.get_mut(point_idx)
+                    {
+                        p.value = 1.0;
                     }
                     self.commit_patch();
                 }
                 Action::DownFast => {
-                    if let Some(m) = self.patch_mut().module_mut(module_id) {
-                        if let Some(points) = m.params.env_points_mut() {
-                            if let Some(p) = points.get_mut(point_idx) {
-                                p.value = -1.0;
-                            }
-                        }
+                    if let Some(m) = self.patch_mut().module_mut(module_id)
+                        && let Some(points) = m.params.env_points_mut()
+                        && let Some(p) = points.get_mut(point_idx)
+                    {
+                        p.value = -1.0;
                     }
                     self.commit_patch();
                 }
@@ -2650,59 +2625,58 @@ impl App {
                     };
                 }
                 Action::ToggleCurve => {
-                    if let Some(m) = self.patch_mut().module_mut(module_id) {
-                        if let Some(points) = m.params.env_points_mut() {
-                            if let Some(p) = points.get_mut(point_idx) {
-                                p.curve = !p.curve;
-                            }
-                        }
+                    if let Some(m) = self.patch_mut().module_mut(module_id)
+                        && let Some(points) = m.params.env_points_mut()
+                        && let Some(p) = points.get_mut(point_idx)
+                    {
+                        p.curve = !p.curve;
                     }
                     self.commit_patch();
                 }
                 Action::AddPoint => {
-                    if let Some(m) = self.patch_mut().module_mut(module_id) {
-                        if let Some(points) = m.params.env_points_mut() {
-                            let new_time = if points.is_empty() {
-                                0.5
-                            } else if point_idx + 1 < points.len() {
-                                (points[point_idx].time + points[point_idx + 1].time) / 2.0
-                            } else {
-                                (points[point_idx].time + 1.0) / 2.0
-                            };
-                            let new_value = points.get(point_idx).map(|p| p.value).unwrap_or(0.5);
-                            points.push(super::module::EnvPoint {
-                                time: new_time,
-                                value: new_value,
-                                curve: false,
-                            });
-                            points.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
-                            let new_idx = points
-                                .iter()
-                                .position(|p| (p.time - new_time).abs() < 0.001)
-                                .unwrap_or(point_idx);
+                    if let Some(m) = self.patch_mut().module_mut(module_id)
+                        && let Some(points) = m.params.env_points_mut()
+                    {
+                        let new_time = if points.is_empty() {
+                            0.5
+                        } else if point_idx + 1 < points.len() {
+                            (points[point_idx].time + points[point_idx + 1].time) / 2.0
+                        } else {
+                            (points[point_idx].time + 1.0) / 2.0
+                        };
+                        let new_value = points.get(point_idx).map(|p| p.value).unwrap_or(0.5);
+                        points.push(super::module::EnvPoint {
+                            time: new_time,
+                            value: new_value,
+                            curve: false,
+                        });
+                        points.sort_by(|a, b| a.time.partial_cmp(&b.time).unwrap());
+                        let new_idx = points
+                            .iter()
+                            .position(|p| (p.time - new_time).abs() < 0.001)
+                            .unwrap_or(point_idx);
+                        self.mode = Mode::EnvEdit {
+                            module_id,
+                            point_idx: new_idx,
+                            editing: false,
+                        };
+                    }
+                    self.commit_patch();
+                }
+                Action::DeletePoint => {
+                    if let Some(m) = self.patch_mut().module_mut(module_id)
+                        && let Some(points) = m.params.env_points_mut()
+                    {
+                        if points.len() > 2 {
+                            points.remove(point_idx);
+                            let new_idx = point_idx.min(points.len() - 1);
                             self.mode = Mode::EnvEdit {
                                 module_id,
                                 point_idx: new_idx,
                                 editing: false,
                             };
-                        }
-                    }
-                    self.commit_patch();
-                }
-                Action::DeletePoint => {
-                    if let Some(m) = self.patch_mut().module_mut(module_id) {
-                        if let Some(points) = m.params.env_points_mut() {
-                            if points.len() > 2 {
-                                points.remove(point_idx);
-                                let new_idx = point_idx.min(points.len() - 1);
-                                self.mode = Mode::EnvEdit {
-                                    module_id,
-                                    point_idx: new_idx,
-                                    editing: false,
-                                };
-                            } else {
-                                self.message = Some("Need at least 2 points".into());
-                            }
+                        } else {
+                            self.message = Some("Need at least 2 points".into());
                         }
                     }
                     self.commit_patch();
@@ -3118,7 +3092,7 @@ impl App {
         let scale = scale_from_idx(self.scale_idx());
         let mut scale_pitches: Vec<u8> = (-49..49i32)
             .map(|deg| scale.note(deg))
-            .filter(|&p| p >= 12 && p <= 120)
+            .filter(|&p| (12..=120).contains(&p))
             .map(|p| p as u8)
             .collect();
         scale_pitches.dedup();
@@ -3237,103 +3211,100 @@ impl App {
             module_id,
             param_idx,
         } = self.mode
+            && let Some(module) = self.patch().module(module_id)
         {
-            if let Some(module) = self.patch().module(module_id) {
-                let edit_width = 36;
-                let extra = if module.kind.has_special_editor() {
-                    2
-                } else {
-                    0
-                };
-                let edit_height = (module.kind.param_defs().len() + 8 + extra) as u16;
-                let edit_x = (f.area().width.saturating_sub(edit_width)) / 2;
-                let edit_y = (f.area().height.saturating_sub(edit_height)) / 2;
-                let edit_area = Rect::new(edit_x, edit_y, edit_width, edit_height);
+            let edit_width = 36;
+            let extra = if module.kind.has_special_editor() {
+                2
+            } else {
+                0
+            };
+            let edit_height = (module.kind.param_defs().len() + 8 + extra) as u16;
+            let edit_x = (f.area().width.saturating_sub(edit_width)) / 2;
+            let edit_y = (f.area().height.saturating_sub(edit_height)) / 2;
+            let edit_area = Rect::new(edit_x, edit_y, edit_width, edit_height);
 
-                f.render_widget(Clear, edit_area);
+            f.render_widget(Clear, edit_area);
 
-                let edit_block = Block::default()
-                    .title(" Edit ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(module.kind.color()));
-                f.render_widget(edit_block, edit_area);
+            let edit_block = Block::default()
+                .title(" Edit ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(module.kind.color()));
+            f.render_widget(edit_block, edit_area);
 
-                let inner = Rect::new(
-                    edit_area.x + 1,
-                    edit_area.y + 1,
-                    edit_area.width.saturating_sub(2),
-                    edit_area.height.saturating_sub(2),
-                );
-                let edit_widget =
-                    EditWidget::new(module, param_idx, self.patch()).step_label(self.step_label());
-                f.render_widget(edit_widget, inner);
-            }
+            let inner = Rect::new(
+                edit_area.x + 1,
+                edit_area.y + 1,
+                edit_area.width.saturating_sub(2),
+                edit_area.height.saturating_sub(2),
+            );
+            let edit_widget =
+                EditWidget::new(module, param_idx, self.patch()).step_label(self.step_label());
+            f.render_widget(edit_widget, inner);
         }
 
         if let Mode::ValueInput {
             module_id,
             param_idx,
         } = self.mode
+            && let Some(module) = self.patch().module(module_id)
         {
-            if let Some(module) = self.patch().module(module_id) {
-                let defs = module.kind.param_defs();
-                let param_name = defs.get(param_idx).map(|d| d.name).unwrap_or("Value");
+            let defs = module.kind.param_defs();
+            let param_name = defs.get(param_idx).map(|d| d.name).unwrap_or("Value");
 
-                let input_width = 24u16;
-                let input_height = 3u16;
-                let input_x = (f.area().width.saturating_sub(input_width)) / 2;
-                let input_y = (f.area().height.saturating_sub(input_height)) / 2;
-                let input_area = Rect::new(input_x, input_y, input_width, input_height);
+            let input_width = 24u16;
+            let input_height = 3u16;
+            let input_x = (f.area().width.saturating_sub(input_width)) / 2;
+            let input_y = (f.area().height.saturating_sub(input_height)) / 2;
+            let input_area = Rect::new(input_x, input_y, input_width, input_height);
 
-                f.render_widget(Clear, input_area);
+            f.render_widget(Clear, input_area);
 
-                let input_block = Block::default()
-                    .title(format!(" {} ", param_name))
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Yellow));
-                f.render_widget(input_block, input_area);
+            let input_block = Block::default()
+                .title(format!(" {} ", param_name))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow));
+            f.render_widget(input_block, input_area);
 
-                let inner = Rect::new(
-                    input_area.x + 1,
-                    input_area.y + 1,
-                    input_area.width.saturating_sub(2),
-                    1,
-                );
-                let input_text = ratatui::widgets::Paragraph::new(self.value_input.value());
-                f.render_widget(input_text, inner);
-                f.set_cursor_position((inner.x + self.value_input.visual_cursor() as u16, inner.y));
-            }
+            let inner = Rect::new(
+                input_area.x + 1,
+                input_area.y + 1,
+                input_area.width.saturating_sub(2),
+                1,
+            );
+            let input_text = ratatui::widgets::Paragraph::new(self.value_input.value());
+            f.render_widget(input_text, inner);
+            f.set_cursor_position((inner.x + self.value_input.visual_cursor() as u16, inner.y));
         }
 
         if let Mode::AdsrEdit {
             module_id,
             param_idx,
         } = self.mode
+            && let Some(module) = self.patch().module(module_id)
         {
-            if let Some(module) = self.patch().module(module_id) {
-                let env_width = grid_area.width.saturating_sub(4);
-                let env_height = grid_area.height.saturating_sub(4);
-                let env_x = grid_area.x + 2;
-                let env_y = grid_area.y + 2;
-                let env_area = Rect::new(env_x, env_y, env_width, env_height);
+            let env_width = grid_area.width.saturating_sub(4);
+            let env_height = grid_area.height.saturating_sub(4);
+            let env_x = grid_area.x + 2;
+            let env_y = grid_area.y + 2;
+            let env_area = Rect::new(env_x, env_y, env_width, env_height);
 
-                f.render_widget(Clear, env_area);
+            f.render_widget(Clear, env_area);
 
-                let env_block = Block::default()
-                    .title(" ADSR ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(module.kind.color()));
-                f.render_widget(env_block, env_area);
+            let env_block = Block::default()
+                .title(" ADSR ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(module.kind.color()));
+            f.render_widget(env_block, env_area);
 
-                let inner = Rect::new(
-                    env_area.x + 1,
-                    env_area.y + 1,
-                    env_area.width.saturating_sub(2),
-                    env_area.height.saturating_sub(2),
-                );
-                let adsr_widget = AdsrWidget::new(module, param_idx);
-                f.render_widget(adsr_widget, inner);
-            }
+            let inner = Rect::new(
+                env_area.x + 1,
+                env_area.y + 1,
+                env_area.width.saturating_sub(2),
+                env_area.height.saturating_sub(2),
+            );
+            let adsr_widget = AdsrWidget::new(module, param_idx);
+            f.render_widget(adsr_widget, inner);
         }
 
         if let Mode::EnvEdit {
@@ -3341,81 +3312,80 @@ impl App {
             point_idx,
             editing,
         } = self.mode
+            && let Some(module) = self.patch().module(module_id)
         {
-            if let Some(module) = self.patch().module(module_id) {
-                let env_width = grid_area.width.saturating_sub(4);
-                let env_height = grid_area.height.saturating_sub(4);
-                let env_x = grid_area.x + 2;
-                let env_y = grid_area.y + 2;
-                let env_area = Rect::new(env_x, env_y, env_width, env_height);
+            let env_width = grid_area.width.saturating_sub(4);
+            let env_height = grid_area.height.saturating_sub(4);
+            let env_x = grid_area.x + 2;
+            let env_y = grid_area.y + 2;
+            let env_area = Rect::new(env_x, env_y, env_width, env_height);
 
-                f.render_widget(Clear, env_area);
+            f.render_widget(Clear, env_area);
 
-                let title = if editing {
-                    " Envelope [MOVE] "
-                } else {
-                    " Envelope "
-                };
-                let env_block = Block::default()
-                    .title(title)
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(module.kind.color()));
-                f.render_widget(env_block, env_area);
+            let title = if editing {
+                " Envelope [MOVE] "
+            } else {
+                " Envelope "
+            };
+            let env_block = Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(module.kind.color()));
+            f.render_widget(env_block, env_area);
 
-                let inner = Rect::new(
-                    env_area.x + 1,
-                    env_area.y + 1,
-                    env_area.width.saturating_sub(2),
-                    env_area.height.saturating_sub(2),
-                );
-                let env_widget = EnvelopeWidget::new(module, point_idx, editing);
-                f.render_widget(env_widget, inner);
-            }
+            let inner = Rect::new(
+                env_area.x + 1,
+                env_area.y + 1,
+                env_area.width.saturating_sub(2),
+                env_area.height.saturating_sub(2),
+            );
+            let env_widget = EnvelopeWidget::new(module, point_idx, editing);
+            f.render_widget(env_widget, inner);
         }
 
-        if let Mode::ProbeEdit { module_id, .. } = self.mode {
-            if let Some(module) = self.patch().module(module_id) {
-                let history: Vec<f32> = self
-                    .inst()
-                    .probe_histories
-                    .get(&module_id)
-                    .map(|h| h.iter().copied().collect())
-                    .unwrap_or_default();
-                let current = history.last().copied().unwrap_or(0.0);
+        if let Mode::ProbeEdit { module_id, .. } = self.mode
+            && let Some(module) = self.patch().module(module_id)
+        {
+            let history: Vec<f32> = self
+                .inst()
+                .probe_histories
+                .get(&module_id)
+                .map(|h| h.iter().copied().collect())
+                .unwrap_or_default();
+            let current = history.last().copied().unwrap_or(0.0);
 
-                let (auto_min, auto_max) = if history.is_empty() {
-                    (-1.0, 1.0)
-                } else {
-                    let min = history.iter().copied().fold(f32::INFINITY, f32::min);
-                    let max = history.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                    let padding = (max - min).abs() * 0.1;
-                    (min - padding, max + padding)
-                };
+            let (auto_min, auto_max) = if history.is_empty() {
+                (-1.0, 1.0)
+            } else {
+                let min = history.iter().copied().fold(f32::INFINITY, f32::min);
+                let max = history.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let padding = (max - min).abs() * 0.1;
+                (min - padding, max + padding)
+            };
 
-                let probe_width = grid_area.width.saturating_sub(4);
-                let probe_height = grid_area.height.saturating_sub(4);
-                let probe_x = grid_area.x + 2;
-                let probe_y = grid_area.y + 2;
-                let probe_area = Rect::new(probe_x, probe_y, probe_width, probe_height);
+            let probe_width = grid_area.width.saturating_sub(4);
+            let probe_height = grid_area.height.saturating_sub(4);
+            let probe_x = grid_area.x + 2;
+            let probe_y = grid_area.y + 2;
+            let probe_area = Rect::new(probe_x, probe_y, probe_width, probe_height);
 
-                f.render_widget(Clear, probe_area);
+            f.render_widget(Clear, probe_area);
 
-                let probe_block = Block::default()
-                    .title(" Probe ")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(module.kind.color()));
-                f.render_widget(probe_block, probe_area);
+            let probe_block = Block::default()
+                .title(" Probe ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(module.kind.color()));
+            f.render_widget(probe_block, probe_area);
 
-                let inner = Rect::new(
-                    probe_area.x + 1,
-                    probe_area.y + 1,
-                    probe_area.width.saturating_sub(2),
-                    probe_area.height.saturating_sub(2),
-                );
-                let probe_widget =
-                    ProbeWidget::new(&history, auto_min, auto_max, self.probe_len, current);
-                f.render_widget(probe_widget, inner);
-            }
+            let inner = Rect::new(
+                probe_area.x + 1,
+                probe_area.y + 1,
+                probe_area.width.saturating_sub(2),
+                probe_area.height.saturating_sub(2),
+            );
+            let probe_widget =
+                ProbeWidget::new(&history, auto_min, auto_max, self.probe_len, current);
+            f.render_widget(probe_widget, inner);
         }
 
         if let Mode::SampleView {
@@ -3423,33 +3393,31 @@ impl App {
             zoom,
             offset,
         } = self.mode
+            && let Some(module) = self.patch().module(module_id)
+            && let ModuleParams::Sample { samples, .. } = &module.params
         {
-            if let Some(module) = self.patch().module(module_id) {
-                if let ModuleParams::Sample { samples, .. } = &module.params {
-                    let sample_width = grid_area.width.saturating_sub(4);
-                    let sample_height = grid_area.height.saturating_sub(4);
-                    let sample_x = grid_area.x + 2;
-                    let sample_y = grid_area.y + 2;
-                    let sample_area = Rect::new(sample_x, sample_y, sample_width, sample_height);
+            let sample_width = grid_area.width.saturating_sub(4);
+            let sample_height = grid_area.height.saturating_sub(4);
+            let sample_x = grid_area.x + 2;
+            let sample_y = grid_area.y + 2;
+            let sample_area = Rect::new(sample_x, sample_y, sample_width, sample_height);
 
-                    f.render_widget(Clear, sample_area);
+            f.render_widget(Clear, sample_area);
 
-                    let sample_block = Block::default()
-                        .title(" Sample Waveform ")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(module.kind.color()));
-                    f.render_widget(sample_block, sample_area);
+            let sample_block = Block::default()
+                .title(" Sample Waveform ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(module.kind.color()));
+            f.render_widget(sample_block, sample_area);
 
-                    let inner = Rect::new(
-                        sample_area.x + 1,
-                        sample_area.y + 1,
-                        sample_area.width.saturating_sub(2),
-                        sample_area.height.saturating_sub(2),
-                    );
-                    let sample_widget = SampleWidget::new(samples, zoom, offset);
-                    f.render_widget(sample_widget, inner);
-                }
-            }
+            let inner = Rect::new(
+                sample_area.x + 1,
+                sample_area.y + 1,
+                sample_area.width.saturating_sub(2),
+                sample_area.height.saturating_sub(2),
+            );
+            let sample_widget = SampleWidget::new(samples, zoom, offset);
+            f.render_widget(sample_widget, inner);
         }
 
         if matches!(self.mode, Mode::SavePrompt | Mode::SaveConfirm) {
@@ -3726,13 +3694,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".into());
                     let status = Command::new(&editor).arg(&temp_path).status();
 
-                    if let Ok(s) = status {
-                        if s.success() {
-                            if let Ok(new_text) = fs::read_to_string(&temp_path) {
-                                app.inst_mut().track_text = new_text;
-                                app.reparse_track();
-                            }
-                        }
+                    if let Ok(s) = status
+                        && s.success()
+                        && let Ok(new_text) = fs::read_to_string(&temp_path)
+                    {
+                        app.inst_mut().track_text = new_text;
+                        app.reparse_track();
                     }
                     let _ = fs::remove_file(&temp_path);
 

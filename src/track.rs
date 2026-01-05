@@ -264,9 +264,8 @@ impl Track {
 
         for layer in &ast.layers {
             let num_bars = layer.bars.len();
-            let mut bar_idx = 0;
 
-            for bar in &layer.bars {
+            for (bar_idx, bar) in layer.bars.iter().enumerate() {
                 let bar_start = bar_idx as f32 / num_bars as f32;
                 let bar_end = (bar_idx + 1) as f32 / num_bars as f32;
                 let bar_span = bar_end - bar_start;
@@ -282,7 +281,6 @@ impl Track {
                     extract_notes(&division.item, div_start, div_end, &mut events, scale);
                     weight_idx += division.weight;
                 }
-                bar_idx += 1;
             }
         }
 

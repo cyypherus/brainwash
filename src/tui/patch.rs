@@ -372,35 +372,31 @@ impl Patch {
                         local_x,
                         local_y,
                     } = self.grid.get(target_pos)
+                        && target_id != *id
                     {
-                        if target_id != *id {
-                            if let Some(target_mod) = self.modules.get(&target_id) {
-                                if local_y == 0
-                                    && target_mod.has_input_top()
-                                    && target_mod.is_port_open(local_x as usize)
-                                {
-                                    for y in bottom_y..target_y {
-                                        let p = GridPos::new(pos.x, y);
-                                        match self.grid.get(p) {
-                                            Cell::Empty => {
-                                                self.grid.set(p, Cell::ChannelV { color })
-                                            }
-                                            Cell::ChannelH { color: color_h } => {
-                                                self.grid.set(
-                                                    p,
-                                                    Cell::ChannelCross {
-                                                        color_v: color,
-                                                        color_h,
-                                                    },
-                                                );
-                                            }
-                                            _ => {}
-                                        }
+                        if let Some(target_mod) = self.modules.get(&target_id)
+                            && local_y == 0
+                            && target_mod.has_input_top()
+                            && target_mod.is_port_open(local_x as usize)
+                        {
+                            for y in bottom_y..target_y {
+                                let p = GridPos::new(pos.x, y);
+                                match self.grid.get(p) {
+                                    Cell::Empty => self.grid.set(p, Cell::ChannelV { color }),
+                                    Cell::ChannelH { color: color_h } => {
+                                        self.grid.set(
+                                            p,
+                                            Cell::ChannelCross {
+                                                color_v: color,
+                                                color_h,
+                                            },
+                                        );
                                     }
+                                    _ => {}
                                 }
                             }
-                            break;
                         }
+                        break;
                     }
                 }
             }
@@ -414,35 +410,31 @@ impl Patch {
                         local_x,
                         local_y,
                     } = self.grid.get(target_pos)
+                        && target_id != *id
                     {
-                        if target_id != *id {
-                            if let Some(target_mod) = self.modules.get(&target_id) {
-                                if local_x == 0
-                                    && target_mod.has_input_left()
-                                    && target_mod.is_port_open(local_y as usize)
-                                {
-                                    for x in right_x..target_x {
-                                        let p = GridPos::new(x, out_y);
-                                        match self.grid.get(p) {
-                                            Cell::Empty => {
-                                                self.grid.set(p, Cell::ChannelH { color })
-                                            }
-                                            Cell::ChannelV { color: color_v } => {
-                                                self.grid.set(
-                                                    p,
-                                                    Cell::ChannelCross {
-                                                        color_v,
-                                                        color_h: color,
-                                                    },
-                                                );
-                                            }
-                                            _ => {}
-                                        }
+                        if let Some(target_mod) = self.modules.get(&target_id)
+                            && local_x == 0
+                            && target_mod.has_input_left()
+                            && target_mod.is_port_open(local_y as usize)
+                        {
+                            for x in right_x..target_x {
+                                let p = GridPos::new(x, out_y);
+                                match self.grid.get(p) {
+                                    Cell::Empty => self.grid.set(p, Cell::ChannelH { color }),
+                                    Cell::ChannelV { color: color_v } => {
+                                        self.grid.set(
+                                            p,
+                                            Cell::ChannelCross {
+                                                color_v,
+                                                color_h: color,
+                                            },
+                                        );
                                     }
+                                    _ => {}
                                 }
                             }
-                            break;
                         }
+                        break;
                     }
                 }
             }

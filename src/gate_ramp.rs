@@ -83,14 +83,12 @@ impl GateRamp {
                 }
                 self.last_gate = pressed;
 
-                if pressed {
-                    if let Some(start_time) = self.start_time {
-                        let elapsed = (current_time - start_time) as f32 / sample_rate;
-                        if elapsed >= self.time {
-                            self.value = 1.0;
-                        } else {
-                            self.value = elapsed / self.time;
-                        }
+                if pressed && let Some(start_time) = self.start_time {
+                    let elapsed = (current_time - start_time) as f32 / sample_rate;
+                    if elapsed >= self.time {
+                        self.value = 1.0;
+                    } else {
+                        self.value = elapsed / self.time;
                     }
                 }
 

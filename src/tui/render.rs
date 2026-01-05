@@ -395,16 +395,14 @@ impl<'a> GridWidget<'a> {
             } else {
                 "─────".to_string()
             }
+        } else if is_left && is_right {
+            "│   │".to_string()
+        } else if is_left {
+            "│    ".to_string()
+        } else if is_right {
+            "    │".to_string()
         } else {
-            if is_left && is_right {
-                "│   │".to_string()
-            } else if is_left {
-                "│    ".to_string()
-            } else if is_right {
-                "    │".to_string()
-            } else {
-                "     ".to_string()
-            }
+            "     ".to_string()
         };
 
         let mid_str = if is_left && is_right {
@@ -465,35 +463,33 @@ impl<'a> GridWidget<'a> {
                 Edge::Left => local_x == 0,
                 _ => false,
             };
-            if on_edge {
-                if let Some(port) = info.input_ports.get(input_idx) {
-                    let port_char = if port.connected { '●' } else { '✕' };
-                    let meter_val = meter_values
-                        .and_then(|m| m.get(input_idx).copied())
-                        .unwrap_or(0.0);
-                    match edge {
-                        Edge::Top => {
-                            if self.show_meters {
-                                let mc = meter_char(meter_val);
-                                let ms = meter_style(meter_val, color);
-                                set_cell(buf, cx - 1, sy, mc, ms);
-                            } else if port.label != ' ' {
-                                set_cell(buf, cx - 1, sy, port.label, port_style);
-                            }
-                            set_cell(buf, cx, sy, port_char, port_style);
+            if on_edge && let Some(port) = info.input_ports.get(input_idx) {
+                let port_char = if port.connected { '●' } else { '✕' };
+                let meter_val = meter_values
+                    .and_then(|m| m.get(input_idx).copied())
+                    .unwrap_or(0.0);
+                match edge {
+                    Edge::Top => {
+                        if self.show_meters {
+                            let mc = meter_char(meter_val);
+                            let ms = meter_style(meter_val, color);
+                            set_cell(buf, cx - 1, sy, mc, ms);
+                        } else if port.label != ' ' {
+                            set_cell(buf, cx - 1, sy, port.label, port_style);
                         }
-                        Edge::Left => {
-                            if self.show_meters {
-                                let mc = meter_char(meter_val);
-                                let ms = meter_style(meter_val, color);
-                                set_cell(buf, sx, cy - 1, mc, ms);
-                            } else if port.label != ' ' {
-                                set_cell(buf, sx, cy - 1, port.label, port_style);
-                            }
-                            set_cell(buf, sx, cy, port_char, port_style);
-                        }
-                        _ => {}
+                        set_cell(buf, cx, sy, port_char, port_style);
                     }
+                    Edge::Left => {
+                        if self.show_meters {
+                            let mc = meter_char(meter_val);
+                            let ms = meter_style(meter_val, color);
+                            set_cell(buf, sx, cy - 1, mc, ms);
+                        } else if port.label != ' ' {
+                            set_cell(buf, sx, cy - 1, port.label, port_style);
+                        }
+                        set_cell(buf, sx, cy, port_char, port_style);
+                    }
+                    _ => {}
                 }
             }
         } else {
@@ -1366,30 +1362,29 @@ impl Widget for EditWidget<'_> {
             y += 1;
         }
 
-        if let Some(def) = defs.get(self.selected_param) {
-            if let Some(desc) = def.desc {
-                y += 1;
-                if y < area.y + area.height {
-                    set_str(buf, area.x, y, desc, label_style);
-                }
+        if let Some(def) = defs.get(self.selected_param)
+            && let Some(desc) = def.desc
+        {
+            y += 1;
+            if y < area.y + area.height {
+                set_str(buf, area.x, y, desc, label_style);
             }
         }
 
-        if self.module.kind == ModuleKind::Standard(StandardModule::Sample) {
-            if let ModuleParams::Sample { samples, .. } = &self.module.params {
-                if !samples.is_empty() {
-                    let sample_count = samples.len();
-                    let duration = sample_count as f32 / 44100.0;
-                    y += 1;
-                    set_str(
-                        buf,
-                        area.x + 2,
-                        y,
-                        &format!("{} samp ({:.2}s)", sample_count, duration),
-                        label_style,
-                    );
-                }
-            }
+        if self.module.kind == ModuleKind::Standard(StandardModule::Sample)
+            && let ModuleParams::Sample { samples, .. } = &self.module.params
+            && !samples.is_empty()
+        {
+            let sample_count = samples.len();
+            let duration = sample_count as f32 / 44100.0;
+            y += 1;
+            set_str(
+                buf,
+                area.x + 2,
+                y,
+                &format!("{} samp ({:.2}s)", sample_count, duration),
+                label_style,
+            );
         }
 
         if let Some(editor_name) = self.module.kind.special_editor_name() {

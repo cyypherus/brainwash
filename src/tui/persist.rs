@@ -81,18 +81,16 @@ fn reload_samples_in_patch(patch: &mut Patch) -> Vec<String> {
     let mut missing = Vec::new();
     let ids: Vec<_> = patch.all_modules().map(|m| m.id).collect();
     for id in ids {
-        if let Some(m) = patch.module_mut(id) {
-            if let ModuleParams::Sample {
+        if let Some(m) = patch.module_mut(id)
+            && let ModuleParams::Sample {
                 file_name, samples, ..
             } = &mut m.params
-            {
-                if !file_name.is_empty() {
-                    if let Some(loaded) = load_wav_samples(file_name) {
-                        *samples = loaded;
-                    } else {
-                        missing.push(file_name.clone());
-                    }
-                }
+            && !file_name.is_empty()
+        {
+            if let Some(loaded) = load_wav_samples(file_name) {
+                *samples = loaded;
+            } else {
+                missing.push(file_name.clone());
             }
         }
     }
@@ -494,13 +492,15 @@ mod tests {
 
         let sub = result.patches.subpatch(sub_id).unwrap();
         assert_eq!(sub.patch.all_modules().count(), 3);
-        assert!(sub
-            .patch
-            .all_modules()
-            .any(|m| m.kind == ModuleKind::Subpatch(SubpatchModule::SubIn)));
-        assert!(sub
-            .patch
-            .all_modules()
-            .any(|m| m.kind == ModuleKind::Subpatch(SubpatchModule::SubOut)));
+        assert!(
+            sub.patch
+                .all_modules()
+                .any(|m| m.kind == ModuleKind::Subpatch(SubpatchModule::SubIn))
+        );
+        assert!(
+            sub.patch
+                .all_modules()
+                .any(|m| m.kind == ModuleKind::Subpatch(SubpatchModule::SubOut))
+        );
     }
 }

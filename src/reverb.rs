@@ -97,15 +97,13 @@ impl Reverb {
             diffused = diffuser.process(diffused);
         }
 
-        let mut tank_outputs = [0.0f32; NUM_TANK_CHANNELS];
-        for i in 0..NUM_TANK_CHANNELS {
-            tank_outputs[i] = self.tank_delays[i].read();
-        }
+        let mut tank_outputs: [f32; NUM_TANK_CHANNELS] =
+            std::array::from_fn(|i| self.tank_delays[i].read());
 
         householder(&mut tank_outputs);
 
-        for i in 0..NUM_TANK_CHANNELS {
-            let damped = self.tank_damping[i].process(tank_outputs[i]);
+        for (i, &output) in tank_outputs.iter().enumerate() {
+            let damped = self.tank_damping[i].process(output);
             let feedback = damped * self.decay;
             let tank_input = diffused + feedback;
             self.tank_delays[i].write(tank_input);

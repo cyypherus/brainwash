@@ -1060,11 +1060,11 @@ impl TimeValue {
         }
     }
 
-    pub fn to_hz(&self, bpm: f32, bars: f32) -> f32 {
-        1.0 / self.to_seconds(bpm, bars)
+    pub fn as_hz(self, bpm: f32, bars: f32) -> f32 {
+        1.0 / self.as_seconds(bpm, bars)
     }
 
-    pub fn to_samples(&self, sample_rate: f32, bpm: f32, bars: f32) -> f32 {
+    pub fn as_samples(self, sample_rate: f32, bpm: f32, bars: f32) -> f32 {
         match self.unit {
             TimeUnit::Seconds => self.seconds * sample_rate,
             TimeUnit::Samples => self.samples,
@@ -1077,7 +1077,7 @@ impl TimeValue {
         }
     }
 
-    pub fn to_seconds(&self, bpm: f32, bars: f32) -> f32 {
+    pub fn as_seconds(self, bpm: f32, bars: f32) -> f32 {
         match self.unit {
             TimeUnit::Seconds => self.seconds,
             TimeUnit::Samples => self.samples / 44100.0,
@@ -1161,13 +1161,11 @@ impl TimeValue {
                         self.bar_denom /= 2;
                         self.bar_num = 1;
                     }
-                } else {
-                    if self.bar_num > 1 {
-                        self.bar_num -= 1;
-                    } else if self.bar_denom < 64 {
-                        self.bar_denom *= 2;
-                        self.bar_num = self.bar_denom;
-                    }
+                } else if self.bar_num > 1 {
+                    self.bar_num -= 1;
+                } else if self.bar_denom < 64 {
+                    self.bar_denom *= 2;
+                    self.bar_num = self.bar_denom;
                 }
             }
             TimeUnit::Hz => {
@@ -2222,10 +2220,11 @@ impl ModuleParams {
                 _ => {}
             },
             ModuleParams::Rise { .. } | ModuleParams::Fall { .. } => {}
-            ModuleParams::Ramp { value, .. } => match idx {
-                0 => *value = val,
-                _ => {}
-            },
+            ModuleParams::Ramp { value, .. } => {
+                if idx == 0 {
+                    *value = val
+                }
+            }
             ModuleParams::Adsr {
                 attack_ratio,
                 sustain,
@@ -2298,19 +2297,21 @@ impl ModuleParams {
                 2 => *b = val,
                 _ => {}
             },
-            ModuleParams::DelayTap { gain } => match idx {
-                1 => *gain = val,
-                _ => {}
-            },
+            ModuleParams::DelayTap { gain } => {
+                if idx == 1 {
+                    *gain = val
+                }
+            }
             ModuleParams::Comb { feedback, damp, .. } => match idx {
                 2 => *feedback = val,
                 3 => *damp = val,
                 _ => {}
             },
-            ModuleParams::Allpass { feedback, .. } => match idx {
-                2 => *feedback = val,
-                _ => {}
-            },
+            ModuleParams::Allpass { feedback, .. } => {
+                if idx == 2 {
+                    *feedback = val
+                }
+            }
             _ => {}
         }
     }
@@ -2408,12 +2409,10 @@ impl ModuleParams {
     }
 
     pub fn toggle(&mut self, idx: usize) {
-        match self {
-            ModuleParams::Osc { uni, .. } => match idx {
-                4 => *uni = !*uni,
-                _ => {}
-            },
-            _ => {}
+        if let ModuleParams::Osc { uni, .. } = self
+            && idx == 4
+        {
+            *uni = !*uni
         }
     }
 
@@ -2428,12 +2427,10 @@ impl ModuleParams {
     }
 
     pub fn set_int(&mut self, idx: usize, val: i32) {
-        match self {
-            ModuleParams::DegreeGate { degree } => match idx {
-                0 => *degree = val,
-                _ => {}
-            },
-            _ => {}
+        if let ModuleParams::DegreeGate { degree } = self
+            && idx == 0
+        {
+            *degree = val
         }
     }
 

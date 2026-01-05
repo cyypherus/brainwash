@@ -1,3 +1,8 @@
+#![allow(clippy::type_complexity)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::enum_variant_names)]
+#![allow(clippy::large_enum_variant)]
+
 #[global_allocator]
 static A: rlsf::GlobalTlsf = rlsf::GlobalTlsf::new();
 

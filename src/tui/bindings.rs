@@ -1286,12 +1286,12 @@ pub fn hints(bindings: &[Binding]) -> Vec<(String, &'static str, u8)> {
     let mut result: Vec<(String, &'static str, Option<&'static str>, u8)> = Vec::new();
     for b in bindings {
         let hint = b.hint();
-        if let Some(group) = b.group {
-            if let Some(existing) = result.iter_mut().find(|(_, _, g, _)| *g == Some(group)) {
-                existing.0.push('/');
-                existing.0.push_str(key_str(b.key));
-                continue;
-            }
+        if let Some(group) = b.group
+            && let Some(existing) = result.iter_mut().find(|(_, _, g, _)| *g == Some(group))
+        {
+            existing.0.push('/');
+            existing.0.push_str(key_str(b.key));
+            continue;
         }
         if result
             .iter()
