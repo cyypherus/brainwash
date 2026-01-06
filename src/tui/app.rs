@@ -13,7 +13,7 @@ use super::module::{
 };
 use super::patch::{Patch, PatchSet};
 use super::persist;
-use super::render::{
+use super::widgets::{
     AdsrWidget, EditWidget, EnvelopeWidget, GridWidget, HelpWidget, PaletteWidget, ProbeWidget,
     SampleWidget, StatusWidget,
 };

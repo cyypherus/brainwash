@@ -7,7 +7,7 @@ mod instrument;
 mod module;
 mod patch;
 mod persist;
-mod render;
+mod widgets;
 
 pub use app::run;
 pub use engine::{CompiledPatch, compile_patch};
