@@ -838,6 +838,9 @@ fn flatten_patchset(patches: &PatchSet) -> (Vec<Module>, Vec<(ModuleId, ModuleId
     let mut next_id = max_root_id + 1;
 
     for module in patches.root().all_modules() {
+        if module.disabled {
+            continue;
+        }
         if let ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)) = module.kind {
             if let Some(sub) = patches.subpatch(sub_id) {
                 let sub_pos = patches.root().module_position(module.id);
@@ -1167,6 +1170,9 @@ fn trace_down(
                 local_y,
             } => {
                 let module = patch.module(id)?;
+                if module.disabled {
+                    return None;
+                }
                 if local_y == 0 && module.has_input_top() {
                     let port_idx = local_x as usize;
                     if module.is_port_open(port_idx) {
@@ -1197,6 +1203,9 @@ fn trace_right(
                 local_y,
             } => {
                 let module = patch.module(id)?;
+                if module.disabled {
+                    return None;
+                }
                 if local_x == 0 && module.has_input_left() {
                     let port_idx = local_y as usize;
                     if module.is_port_open(port_idx) {
@@ -1716,7 +1725,7 @@ mod tests {
                     color: (255, 150, 50),
                 };
             }
-            patches.root_mut().refit_module(id);
+            patches.root_mut().refit_module();
         }
     }
 

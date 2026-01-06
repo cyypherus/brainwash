@@ -252,8 +252,13 @@ impl Patch {
         let width = module.width();
         let height = module.height();
 
-        if !self.grid.place_module(id, pos, width, height) {
-            return false;
+        for dy in 0..height {
+            for dx in 0..width {
+                let p = GridPos::new(pos.x + dx as u16, pos.y + dy as u16);
+                if !self.grid.in_bounds(p) {
+                    return false;
+                }
+            }
         }
 
         if module.kind == ModuleKind::Standard(StandardModule::Output) {
@@ -262,6 +267,7 @@ impl Patch {
 
         self.modules.insert(id, module);
         self.positions.insert(id, pos);
+        self.update_disabled_states();
         self.rebuild_channels();
         true
     }
@@ -269,12 +275,12 @@ impl Patch {
     pub fn extract_module(&mut self, id: ModuleId) -> Option<(Module, GridPos)> {
         let module = self.modules.remove(&id)?;
         let pos = self.positions.remove(&id)?;
-        self.grid.remove_module(id);
 
         if self.output_id == Some(id) {
             self.output_id = None;
         }
 
+        self.update_disabled_states();
         self.rebuild_channels();
         Some((module, pos))
     }
@@ -284,7 +290,6 @@ impl Patch {
             return false;
         }
 
-        self.grid.remove_module(id);
         self.positions.remove(&id);
 
         if self.output_id == Some(id) {
@@ -292,6 +297,7 @@ impl Patch {
         }
 
         self.modules.remove(&id);
+        self.update_disabled_states();
         self.rebuild_channels();
         true
     }
@@ -303,39 +309,22 @@ impl Patch {
         let width = module.width();
         let height = module.height();
 
-        self.grid.clear_channels();
-
         for dy in 0..height {
             for dx in 0..width {
                 let p = GridPos::new(new_pos.x + dx as u16, new_pos.y + dy as u16);
                 if !self.grid.in_bounds(p) {
-                    self.rebuild_channels();
                     return false;
-                }
-                let cell = self.grid.get(p);
-                match cell {
-                    Cell::Empty => {}
-                    Cell::Module {
-                        id: existing_id, ..
-                    } if existing_id == id => {}
-                    _ => {
-                        self.rebuild_channels();
-                        return false;
-                    }
                 }
             }
         }
 
-        self.grid.remove_module(id);
-        self.grid.place_module(id, new_pos, width, height);
         self.positions.insert(id, new_pos);
+        self.update_disabled_states();
         self.rebuild_channels();
         true
     }
 
     pub fn move_modules(&mut self, moves: &[(ModuleId, GridPos)]) -> usize {
-        self.grid.clear_channels();
-
         let module_data: Vec<(ModuleId, GridPos, u8, u8)> = moves
             .iter()
             .filter_map(|(id, new_pos)| {
@@ -344,32 +333,22 @@ impl Patch {
             })
             .collect();
 
-        for &(id, _, _, _) in &module_data {
-            self.grid.remove_module(id);
-        }
-
         for &(_, new_pos, width, height) in &module_data {
             for dy in 0..height {
                 for dx in 0..width {
                     let p = GridPos::new(new_pos.x + dx as u16, new_pos.y + dy as u16);
-                    if !self.grid.in_bounds(p) || !self.grid.get(p).is_empty() {
-                        for &(id, _, width, height) in &module_data {
-                            if let Some(&old_pos) = self.positions.get(&id) {
-                                self.grid.place_module(id, old_pos, width, height);
-                            }
-                        }
-                        self.rebuild_channels();
+                    if !self.grid.in_bounds(p) {
                         return 0;
                     }
                 }
             }
         }
 
-        for &(id, new_pos, width, height) in &module_data {
-            self.grid.place_module(id, new_pos, width, height);
+        for &(id, new_pos, _, _) in &module_data {
             self.positions.insert(id, new_pos);
         }
 
+        self.update_disabled_states();
         self.rebuild_channels();
         module_data.len()
     }
@@ -391,65 +370,79 @@ impl Patch {
         let new_width = module.height();
         let new_height = module.width();
 
-        self.grid.clear_channels();
-        self.grid.remove_module(id);
-
         for dy in 0..new_height {
             for dx in 0..new_width {
                 let p = GridPos::new(pos.x + dx as u16, pos.y + dy as u16);
-                if !self.grid.in_bounds(p) || !self.grid.get(p).is_empty() {
-                    let module = self.modules.get(&id).unwrap();
-                    self.grid
-                        .place_module(id, pos, module.width(), module.height());
-                    self.rebuild_channels();
+                if !self.grid.in_bounds(p) {
                     return false;
                 }
             }
         }
 
         self.modules.get_mut(&id).unwrap().rotate();
-        let module = self.modules.get(&id).unwrap();
-        self.grid
-            .place_module(id, pos, module.width(), module.height());
+        self.update_disabled_states();
         self.rebuild_channels();
         true
     }
 
-    pub fn refit_module(&mut self, id: ModuleId) -> bool {
-        let Some(module) = self.modules.get(&id) else {
-            return false;
-        };
-        let Some(&pos) = self.positions.get(&id) else {
-            return false;
-        };
+    pub fn refit_module(&mut self) {
+        self.update_disabled_states();
+        self.rebuild_channels();
+    }
 
-        let new_width = module.width();
-        let new_height = module.height();
+    pub fn update_disabled_states(&mut self) {
+        let mut overlapping: std::collections::HashSet<ModuleId> = std::collections::HashSet::new();
 
-        self.grid.remove_module(id);
+        let module_bounds: Vec<_> = self
+            .modules
+            .iter()
+            .filter_map(|(&id, m)| {
+                self.positions
+                    .get(&id)
+                    .map(|&pos| (id, pos, m.width(), m.height()))
+            })
+            .collect();
 
-        for dy in 0..new_height {
-            for dx in 0..new_width {
-                let p = GridPos::new(pos.x + dx as u16, pos.y + dy as u16);
-                if !self.grid.in_bounds(p) || !self.grid.get(p).is_empty() {
-                    self.grid.place_module(id, pos, 1, 1);
-                    self.rebuild_channels();
-                    return false;
+        for (i, &(id_a, pos_a, w_a, h_a)) in module_bounds.iter().enumerate() {
+            for &(id_b, pos_b, w_b, h_b) in &module_bounds[i + 1..] {
+                let overlap_x = pos_a.x < pos_b.x + w_b as u16 && pos_b.x < pos_a.x + w_a as u16;
+                let overlap_y = pos_a.y < pos_b.y + h_b as u16 && pos_b.y < pos_a.y + h_a as u16;
+
+                if overlap_x && overlap_y {
+                    overlapping.insert(id_a);
+                    overlapping.insert(id_b);
                 }
             }
         }
 
-        self.grid.place_module(id, pos, new_width, new_height);
-        self.rebuild_channels();
-        true
+        for module in self.modules.values_mut() {
+            module.disabled = overlapping.contains(&module.id);
+        }
+    }
+
+    pub fn has_disabled_modules(&self) -> bool {
+        self.modules.values().any(|m| m.disabled)
+    }
+
+    pub fn rebuild_grid(&mut self) {
+        self.grid.clear_all();
+
+        for (&id, module) in &self.modules {
+            let Some(&pos) = self.positions.get(&id) else {
+                continue;
+            };
+            self.grid
+                .place_module(id, pos, module.width(), module.height());
+        }
     }
 
     pub fn rebuild_channels(&mut self) {
-        self.grid.clear_channels();
+        self.rebuild_grid();
 
         let module_data: Vec<_> = self
             .modules
             .iter()
+            .filter(|(_, m)| !m.disabled)
             .filter_map(|(id, m)| self.positions.get(id).map(|pos| (*id, *pos, m.clone())))
             .collect();
 
@@ -471,6 +464,7 @@ impl Patch {
                         && target_id != *id
                     {
                         if let Some(target_mod) = self.modules.get(&target_id)
+                            && !target_mod.disabled
                             && local_y == 0
                             && target_mod.has_input_top()
                             && target_mod.is_port_open(local_x as usize)
@@ -509,6 +503,7 @@ impl Patch {
                         && target_id != *id
                     {
                         if let Some(target_mod) = self.modules.get(&target_id)
+                            && !target_mod.disabled
                             && local_x == 0
                             && target_mod.has_input_left()
                             && target_mod.is_port_open(local_y as usize)

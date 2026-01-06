@@ -115,30 +115,22 @@ impl Grid {
         pos.x < self.width && pos.y < self.height
     }
 
-    pub fn place_module(&mut self, id: ModuleId, pos: GridPos, width: u8, height: u8) -> bool {
+    pub fn place_module(&mut self, id: ModuleId, pos: GridPos, width: u8, height: u8) {
         for dy in 0..height {
             for dx in 0..width {
                 let p = GridPos::new(pos.x + dx as u16, pos.y + dy as u16);
-                let cell = self.get(p);
-                if !self.in_bounds(p) || !(cell.is_empty() || cell.is_channel()) {
-                    return false;
+                if self.in_bounds(p) {
+                    self.set(
+                        p,
+                        Cell::Module {
+                            id,
+                            local_x: dx,
+                            local_y: dy,
+                        },
+                    );
                 }
             }
         }
-        for dy in 0..height {
-            for dx in 0..width {
-                let p = GridPos::new(pos.x + dx as u16, pos.y + dy as u16);
-                self.set(
-                    p,
-                    Cell::Module {
-                        id,
-                        local_x: dx,
-                        local_y: dy,
-                    },
-                );
-            }
-        }
-        true
     }
 
     pub fn remove_module(&mut self, id: ModuleId) {
@@ -149,6 +141,10 @@ impl Grid {
                 *cell = Cell::Empty;
             }
         }
+    }
+
+    pub fn clear_all(&mut self) {
+        self.cells.fill(Cell::Empty);
     }
 
     pub fn clear_channels(&mut self) {
@@ -176,7 +172,7 @@ mod tests {
     fn test_place_module() {
         let mut grid = Grid::new(10, 8);
         let id = ModuleId(0);
-        assert!(grid.place_module(id, GridPos::new(2, 2), 1, 2));
+        grid.place_module(id, GridPos::new(2, 2), 1, 2);
         assert_eq!(
             grid.get(GridPos::new(2, 2)),
             Cell::Module {

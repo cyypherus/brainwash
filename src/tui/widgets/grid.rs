@@ -25,6 +25,7 @@ pub struct GridWidget<'a> {
     meter_values: &'a HashMap<ModuleId, Vec<f32>>,
     show_meters: bool,
     selection: Option<(GridPos, GridPos)>,
+    disabled_pulse: f32,
 }
 
 impl<'a> GridWidget<'a> {
@@ -40,7 +41,13 @@ impl<'a> GridWidget<'a> {
             meter_values: &EMPTY_METERS,
             show_meters: false,
             selection: None,
+            disabled_pulse: 0.0,
         }
+    }
+
+    pub fn disabled_pulse(mut self, value: f32) -> Self {
+        self.disabled_pulse = value;
+        self
     }
 
     pub fn cursor(mut self, pos: GridPos) -> Self {
@@ -149,7 +156,14 @@ impl<'a> GridWidget<'a> {
         probe_value: Option<f32>,
         meter_values: Option<&Vec<f32>>,
     ) {
-        let color = module.color();
+        let color = if module.disabled {
+            let r = (50.0 + self.disabled_pulse * 150.0) as u8;
+            let g = (50.0 * (1.0 - self.disabled_pulse)) as u8;
+            let b = (50.0 * (1.0 - self.disabled_pulse)) as u8;
+            Color::Rgb(r, g, b)
+        } else {
+            module.color()
+        };
         let width = module.width();
         let height = module.height();
         let is_single_height = height == 1;

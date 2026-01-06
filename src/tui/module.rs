@@ -668,6 +668,7 @@ pub struct Module {
     pub kind: ModuleKind,
     pub orientation: Orientation,
     pub params: ModuleParams,
+    pub disabled: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -704,6 +705,7 @@ impl Module {
             kind,
             orientation: Orientation::default(),
             params: ModuleParams::default_for(kind),
+            disabled: false,
         }
     }
 

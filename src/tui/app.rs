@@ -277,6 +277,7 @@ struct App {
     step_size: usize,
     probe_voice: usize,
     brand_scroll: Animated<f32, Instant>,
+    disabled_pulse: Animated<f32, Instant>,
     help_scroll: usize,
     last_mode_for_help: std::mem::Discriminant<Mode>,
     active_pitches: Vec<u8>,
@@ -400,6 +401,12 @@ impl App {
             probe_voice: 0,
             brand_scroll: Animated::new(0.0)
                 .duration(8000.0)
+                .easing(Easing::EaseInOutCubic)
+                .repeat_forever()
+                .auto_reverse()
+                .auto_start(1.0, Instant::now()),
+            disabled_pulse: Animated::new(0.0)
+                .duration(500.0)
                 .easing(Easing::EaseInOutCubic)
                 .repeat_forever()
                 .auto_reverse()
@@ -1040,7 +1047,6 @@ impl App {
             Action::Quit => {
                 if self.dirty {
                     self.mode = Mode::QuitConfirm;
-                    self.message = Some("Unsaved changes. Quit? (y/n)".into());
                 } else {
                     self.should_quit = true;
                 }
@@ -2034,7 +2040,7 @@ impl App {
                     color,
                 };
             }
-            self.patches_mut().root_mut().refit_module(id);
+            self.patches_mut().root_mut().refit_module();
         }
     }
 
@@ -3351,7 +3357,8 @@ impl App {
                 .selection(selection)
                 .probe_values(self.probe_values())
                 .meter_values(self.meter_values())
-                .show_meters(self.show_meters);
+                .show_meters(self.show_meters)
+                .disabled_pulse(self.disabled_pulse.animate(|v| v, Instant::now()));
             f.render_widget(grid_widget, inner);
         } else {
             let grid_widget = GridWidget::new(display_patch)
@@ -3363,7 +3370,8 @@ impl App {
                 .selection(selection)
                 .probe_values(self.probe_values())
                 .meter_values(self.meter_values())
-                .show_meters(self.show_meters);
+                .show_meters(self.show_meters)
+                .disabled_pulse(self.disabled_pulse.animate(|v| v, Instant::now()));
             f.render_widget(grid_widget, grid_area);
         }
 
@@ -3815,6 +3823,32 @@ impl App {
             let text = ratatui::widgets::Paragraph::new(self.save_input.value());
             f.render_widget(text, inner);
             f.set_cursor_position((inner.x + self.save_input.visual_cursor() as u16, inner.y));
+        }
+
+        if matches!(self.mode, Mode::QuitConfirm) {
+            let prompt_width = 30u16;
+            let prompt_height = 3u16;
+            let prompt_x = (f.area().width.saturating_sub(prompt_width)) / 2;
+            let prompt_y = (f.area().height.saturating_sub(prompt_height)) / 2;
+            let prompt_area = Rect::new(prompt_x, prompt_y, prompt_width, prompt_height);
+
+            f.render_widget(Clear, prompt_area);
+
+            let prompt_block = Block::default()
+                .title(" Unsaved changes ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red));
+            f.render_widget(prompt_block, prompt_area);
+
+            let inner = Rect::new(
+                prompt_area.x + 1,
+                prompt_area.y + 1,
+                prompt_area.width.saturating_sub(2),
+                1,
+            );
+            let text = ratatui::widgets::Paragraph::new("Quit? (y/n)")
+                .alignment(ratatui::layout::Alignment::Center);
+            f.render_widget(text, inner);
         }
 
         if matches!(self.mode, Mode::ExportPrompt | Mode::ExportConfirm) {
