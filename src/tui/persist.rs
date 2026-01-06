@@ -1,5 +1,5 @@
 use super::grid::GridPos;
-use super::module::{ModuleKind, ModuleParams, Orientation, StandardModule, SubPatchId};
+use super::module::{Module, ModuleKind, ModuleParams, Orientation, StandardModule, SubPatchId};
 use super::patch::{Patch, PatchSet, SubPatchDef};
 use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
@@ -145,12 +145,11 @@ fn modules_to_patch(modules: &[ModuleDef], width: u16, height: u16, next_id: &mu
         let pos = GridPos::new(mdef.x, mdef.y);
         let new_id = ModuleId(*next_id);
         *next_id += 1;
-        if patch.add_module(new_id, mdef.kind, pos) {
+        let mut module = Module::new(new_id, mdef.kind);
+        module.orientation = mdef.orientation;
+        module.params = mdef.params.clone();
+        if patch.insert_module(module, pos) {
             id_map.insert(mdef.id, new_id);
-            if let Some(module) = patch.module_mut(new_id) {
-                module.orientation = mdef.orientation;
-                module.params = mdef.params.clone();
-            }
         }
     }
 
@@ -282,21 +281,21 @@ mod tests {
     fn test_ron_format() {
         let mut patches = PatchSet::new(20, 20);
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Freq),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Freq)),
             GridPos::new(0, 0),
         );
         let osc_id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            osc_id,
-            ModuleKind::Standard(StandardModule::Osc),
+        patches.add_module(
+            None,
+            Module::new(osc_id, ModuleKind::Standard(StandardModule::Osc)),
             GridPos::new(0, 2),
         );
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Output),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Output)),
             GridPos::new(0, 7),
         );
 
@@ -323,27 +322,27 @@ mod tests {
         let mut patches = PatchSet::new(20, 20);
 
         let _freq_id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            _freq_id,
-            ModuleKind::Standard(StandardModule::Freq),
+        patches.add_module(
+            None,
+            Module::new(_freq_id, ModuleKind::Standard(StandardModule::Freq)),
             GridPos::new(0, 0),
         );
         let osc_id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            osc_id,
-            ModuleKind::Standard(StandardModule::Osc),
+        patches.add_module(
+            None,
+            Module::new(osc_id, ModuleKind::Standard(StandardModule::Osc)),
             GridPos::new(0, 2),
         );
         let env_id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            env_id,
-            ModuleKind::Standard(StandardModule::Envelope),
+        patches.add_module(
+            None,
+            Module::new(env_id, ModuleKind::Standard(StandardModule::Envelope)),
             GridPos::new(2, 0),
         );
         let _out_id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            _out_id,
-            ModuleKind::Standard(StandardModule::Output),
+        patches.add_module(
+            None,
+            Module::new(_out_id, ModuleKind::Standard(StandardModule::Output)),
             GridPos::new(0, 7),
         );
 
@@ -443,9 +442,9 @@ mod tests {
         let mut patches = PatchSet::new(20, 20);
 
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Freq),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Freq)),
             GridPos::new(0, 0),
         );
 
@@ -453,41 +452,38 @@ mod tests {
         let id1 = patches.alloc_module_id();
         let id2 = patches.alloc_module_id();
         let id3 = patches.alloc_module_id();
-
-        if let Some(sub) = patches.subpatch_mut(sub_id) {
-            sub.patch.add_module(
-                id1,
-                ModuleKind::Subpatch(SubpatchModule::SubIn),
-                GridPos::new(0, 0),
-            );
-            sub.patch.add_module(
-                id2,
-                ModuleKind::Standard(StandardModule::Mul),
-                GridPos::new(1, 0),
-            );
-            sub.patch.add_module(
-                id3,
-                ModuleKind::Subpatch(SubpatchModule::SubOut),
-                GridPos::new(2, 0),
-            );
-        }
+        patches.add_module(
+            Some(sub_id),
+            Module::new(id1, ModuleKind::Subpatch(SubpatchModule::SubIn)),
+            GridPos::new(0, 0),
+        );
+        patches.add_module(
+            Some(sub_id),
+            Module::new(id2, ModuleKind::Standard(StandardModule::Mul)),
+            GridPos::new(1, 0),
+        );
+        patches.add_module(
+            Some(sub_id),
+            Module::new(id3, ModuleKind::Subpatch(SubpatchModule::SubOut)),
+            GridPos::new(2, 0),
+        );
 
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id))),
             GridPos::new(1, 0),
         );
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Routing(RoutingModule::LSplit),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Routing(RoutingModule::LSplit)),
             GridPos::new(3, 0),
         );
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Output),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Output)),
             GridPos::new(5, 0),
         );
 

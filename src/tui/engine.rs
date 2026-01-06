@@ -1500,21 +1500,21 @@ mod tests {
         let mut patches = PatchSet::new(20, 20);
 
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Freq),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Freq)),
             GridPos::new(0, 0),
         );
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Osc),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Osc)),
             GridPos::new(1, 0),
         );
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Output),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Output)),
             GridPos::new(5, 0),
         );
 
@@ -1534,45 +1534,42 @@ mod tests {
         let mut patches = PatchSet::new(20, 20);
 
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Freq),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Freq)),
             GridPos::new(0, 0),
         );
 
         let sub_id = patches.create_subpatch("Test".into(), Color::Red);
-        let id1 = patches.alloc_module_id();
-        let id2 = patches.alloc_module_id();
-        let id3 = patches.alloc_module_id();
-
-        if let Some(sub) = patches.subpatch_mut(sub_id) {
-            sub.patch.add_module(
-                id1,
-                ModuleKind::Subpatch(SubpatchModule::SubIn),
-                GridPos::new(0, 0),
-            );
-            sub.patch.add_module(
-                id2,
-                ModuleKind::Standard(StandardModule::Mul),
-                GridPos::new(0, 1),
-            );
-            sub.patch.add_module(
-                id3,
-                ModuleKind::Subpatch(SubpatchModule::SubOut),
-                GridPos::new(0, 3),
-            );
-        }
-
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
+        patches.add_module(
+            Some(sub_id),
+            Module::new(id, ModuleKind::Subpatch(SubpatchModule::SubIn)),
+            GridPos::new(0, 0),
+        );
+        let id = patches.alloc_module_id();
+        patches.add_module(
+            Some(sub_id),
+            Module::new(id, ModuleKind::Standard(StandardModule::Mul)),
             GridPos::new(0, 1),
         );
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Output),
+        patches.add_module(
+            Some(sub_id),
+            Module::new(id, ModuleKind::Subpatch(SubpatchModule::SubOut)),
+            GridPos::new(0, 3),
+        );
+
+        let id = patches.alloc_module_id();
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id))),
+            GridPos::new(0, 1),
+        );
+        let id = patches.alloc_module_id();
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Output)),
             GridPos::new(0, 3),
         );
 
@@ -1618,40 +1615,37 @@ mod tests {
         let mut patches = PatchSet::new(20, 20);
 
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Freq),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Freq)),
             GridPos::new(0, 0),
         );
 
         let sub_id = patches.create_subpatch("Test".into(), Color::Red);
-        let id1 = patches.alloc_module_id();
-        let id2 = patches.alloc_module_id();
-
-        if let Some(sub) = patches.subpatch_mut(sub_id) {
-            sub.patch.add_module(
-                id1,
-                ModuleKind::Subpatch(SubpatchModule::SubIn),
-                GridPos::new(0, 0),
-            );
-            sub.patch.add_module(
-                id2,
-                ModuleKind::Subpatch(SubpatchModule::SubOut),
-                GridPos::new(1, 0),
-            );
-        }
+        let id = patches.alloc_module_id();
+        patches.add_module(
+            Some(sub_id),
+            Module::new(id, ModuleKind::Subpatch(SubpatchModule::SubIn)),
+            GridPos::new(0, 0),
+        );
+        let id = patches.alloc_module_id();
+        patches.add_module(
+            Some(sub_id),
+            Module::new(id, ModuleKind::Subpatch(SubpatchModule::SubOut)),
+            GridPos::new(1, 0),
+        );
 
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id))),
             GridPos::new(1, 0),
         );
         sync_subpatch_params(&mut patches, sub_id);
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Output),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Output)),
             GridPos::new(2, 0),
         );
         patches.root_mut().rebuild_channels();
@@ -1732,34 +1726,33 @@ mod tests {
         let mut patches = PatchSet::new(20, 20);
 
         let sub_id = patches.create_subpatch("Test".into(), Color::Red);
-        let id1 = patches.alloc_module_id();
-        let id2 = patches.alloc_module_id();
-
+        let id = patches.alloc_module_id();
+        patches.add_module(
+            Some(sub_id),
+            Module::new(id, ModuleKind::Standard(StandardModule::Gate)),
+            GridPos::new(0, 0),
+        );
+        let id = patches.alloc_module_id();
+        patches.add_module(
+            Some(sub_id),
+            Module::new(id, ModuleKind::Subpatch(SubpatchModule::SubOut)),
+            GridPos::new(2, 0),
+        );
         if let Some(sub) = patches.subpatch_mut(sub_id) {
-            sub.patch.add_module(
-                id1,
-                ModuleKind::Standard(StandardModule::Gate),
-                GridPos::new(0, 0),
-            );
-            sub.patch.add_module(
-                id2,
-                ModuleKind::Subpatch(SubpatchModule::SubOut),
-                GridPos::new(2, 0),
-            );
             sub.patch.rebuild_channels();
         }
 
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id))),
             GridPos::new(0, 0),
         );
         sync_subpatch_params(&mut patches, sub_id);
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Output),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Output)),
             GridPos::new(2, 0),
         );
         patches.root_mut().rebuild_channels();
@@ -1824,34 +1817,33 @@ mod tests {
         let mut patches = PatchSet::new(20, 20);
 
         let sub_id = patches.create_subpatch("Test".into(), Color::Red);
-        let id1 = patches.alloc_module_id();
-        let id2 = patches.alloc_module_id();
-
+        let id = patches.alloc_module_id();
+        patches.add_module(
+            Some(sub_id),
+            Module::new(id, ModuleKind::Standard(StandardModule::Freq)),
+            GridPos::new(0, 0),
+        );
+        let id = patches.alloc_module_id();
+        patches.add_module(
+            Some(sub_id),
+            Module::new(id, ModuleKind::Subpatch(SubpatchModule::SubOut)),
+            GridPos::new(2, 0),
+        );
         if let Some(sub) = patches.subpatch_mut(sub_id) {
-            sub.patch.add_module(
-                id1,
-                ModuleKind::Standard(StandardModule::Freq),
-                GridPos::new(0, 0),
-            );
-            sub.patch.add_module(
-                id2,
-                ModuleKind::Subpatch(SubpatchModule::SubOut),
-                GridPos::new(2, 0),
-            );
             sub.patch.rebuild_channels();
         }
 
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id))),
             GridPos::new(0, 0),
         );
         sync_subpatch_params(&mut patches, sub_id);
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Output),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Output)),
             GridPos::new(2, 0),
         );
         patches.root_mut().rebuild_channels();
@@ -1882,21 +1874,21 @@ mod tests {
         let mut patches = PatchSet::new(20, 20);
 
         let delay_id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            delay_id,
-            ModuleKind::Standard(StandardModule::Delay),
+        patches.add_module(
+            None,
+            Module::new(delay_id, ModuleKind::Standard(StandardModule::Delay)),
             GridPos::new(0, 0),
         );
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::DelayTap(delay_id)),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::DelayTap(delay_id))),
             GridPos::new(3, 0),
         );
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Output),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Output)),
             GridPos::new(5, 0),
         );
 
@@ -1937,33 +1929,28 @@ mod tests {
         let mut patches = PatchSet::new(20, 20);
 
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Osc),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Osc)),
             GridPos::new(0, 0),
         );
         let delay_id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            delay_id,
-            ModuleKind::Standard(StandardModule::Delay),
-            GridPos::new(2, 0),
-        );
-        if let Some(m) = patches.root_mut().module_mut(delay_id) {
-            m.params = crate::tui::module::ModuleParams::Delay {
-                time: crate::tui::module::TimeValue::from_samples(100.0),
-                connected: 0xFF,
-            };
-        }
+        let mut delay = Module::new(delay_id, ModuleKind::Standard(StandardModule::Delay));
+        delay.params = crate::tui::module::ModuleParams::Delay {
+            time: crate::tui::module::TimeValue::from_samples(100.0),
+            connected: 0xFF,
+        };
+        patches.add_module(None, delay, GridPos::new(2, 0));
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::DelayTap(delay_id)),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::DelayTap(delay_id))),
             GridPos::new(4, 0),
         );
         let id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Output),
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Output)),
             GridPos::new(6, 0),
         );
         patches.root_mut().rebuild_channels();

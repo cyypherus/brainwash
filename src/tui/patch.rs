@@ -173,6 +173,18 @@ impl PatchSet {
         };
         patch.patch.insert_module(module, pos)
     }
+
+    pub fn add_module(
+        &mut self,
+        patch_id: Option<SubPatchId>,
+        module: Module,
+        pos: GridPos,
+    ) -> bool {
+        let Some(patch) = self.patches.get_mut(&patch_id) else {
+            return false;
+        };
+        patch.patch.insert_module(module, pos)
+    }
 }
 
 #[derive(Clone)]
@@ -229,55 +241,6 @@ impl Patch {
 
     pub fn output_id(&self) -> Option<ModuleId> {
         self.output_id
-    }
-
-    pub fn add_module(&mut self, id: ModuleId, kind: ModuleKind, pos: GridPos) -> bool {
-        if kind == ModuleKind::Standard(StandardModule::Output) && self.output_id.is_some() {
-            return false;
-        }
-
-        let module = Module::new(id, kind);
-        let width = module.width();
-        let height = module.height();
-
-        if !self.grid.place_module(id, pos, width, height) {
-            return false;
-        }
-
-        self.modules.insert(id, module);
-        self.positions.insert(id, pos);
-
-        if kind == ModuleKind::Standard(StandardModule::Output) {
-            self.output_id = Some(id);
-        }
-
-        self.rebuild_channels();
-        true
-    }
-
-    pub fn add_module_clone(&mut self, id: ModuleId, source: &Module, pos: GridPos) -> bool {
-        if source.kind == ModuleKind::Standard(StandardModule::Output) && self.output_id.is_some() {
-            return false;
-        }
-
-        let mut module = source.clone();
-        module.id = id;
-        let width = module.width();
-        let height = module.height();
-
-        if !self.grid.place_module(id, pos, width, height) {
-            return false;
-        }
-
-        self.modules.insert(id, module);
-        self.positions.insert(id, pos);
-
-        if source.kind == ModuleKind::Standard(StandardModule::Output) {
-            self.output_id = Some(id);
-        }
-
-        self.rebuild_channels();
-        true
     }
 
     pub fn insert_module(&mut self, module: Module, pos: GridPos) -> bool {
@@ -587,27 +550,26 @@ mod tests {
 
     #[test]
     fn test_add_remove_module() {
-        let mut patch = Patch::new(10, 10);
-        let id = ModuleId(0);
-        let added = patch.add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Freq),
+        let mut patches = PatchSet::new(10, 10);
+        let id = patches.alloc_module_id();
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Freq)),
             GridPos::new(0, 0),
         );
-        assert!(added);
-        assert!(patch.remove_module(id));
+        assert!(patches.root_mut().remove_module(id));
     }
 
     #[test]
     fn test_move_module() {
-        let mut patch = Patch::new(10, 10);
-        let id = ModuleId(0);
-        patch.add_module(
-            id,
-            ModuleKind::Standard(StandardModule::Freq),
+        let mut patches = PatchSet::new(10, 10);
+        let id = patches.alloc_module_id();
+        patches.add_module(
+            None,
+            Module::new(id, ModuleKind::Standard(StandardModule::Freq)),
             GridPos::new(0, 0),
         );
-        assert!(patch.move_module(id, GridPos::new(2, 2)));
-        assert_eq!(patch.module_position(id), Some(GridPos::new(2, 2)));
+        assert!(patches.root_mut().move_module(id, GridPos::new(2, 2)));
+        assert_eq!(patches.root().module_position(id), Some(GridPos::new(2, 2)));
     }
 }

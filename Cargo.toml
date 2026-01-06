@@ -8,7 +8,7 @@ name = "brainwash"
 path = "src/lib.rs"
 
 [features]
-default = ["live"]
+default = ["live", "tui"]
 live = ["cpal"]
 wav = ["hound"]
 tui = ["live", "wav", "ratatui", "dep:flume", "dep:tui-input", "dep:lilt", "dep:toml"]

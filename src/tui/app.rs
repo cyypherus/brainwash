@@ -1318,44 +1318,46 @@ impl App {
             && self.patch().output_id().is_some()
         {
             self.message = Some("Output exists".into());
-        } else if matches!(kind, ModuleKind::Subpatch(SubpatchModule::SubPatch(_))) {
+            return;
+        }
+
+        if matches!(kind, ModuleKind::Subpatch(SubpatchModule::SubPatch(_))) {
             let color = subpatch_color(self.patches().subpatch_count());
             let rgb = match color {
                 Color::Rgb(r, g, b) => (r, g, b),
                 _ => (255, 150, 50),
             };
             let sub_id = self.patches_mut().create_subpatch("Sub".into(), color);
-            let mod_id = self.patches_mut().alloc_module_id();
-            if self.patch_mut().add_module(
-                mod_id,
+            let mut module = Module::new(
+                self.patches_mut().alloc_module_id(),
                 ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
-                cursor,
-            ) {
-                if let Some(m) = self.patch_mut().module_mut(mod_id) {
-                    m.params = ModuleParams::SubPatch {
-                        inputs: 0,
-                        outputs: 0,
-                        color: rgb,
-                    };
-                }
+            );
+            module.params = ModuleParams::SubPatch {
+                inputs: 0,
+                outputs: 0,
+                color: rgb,
+            };
+            if self.patch_mut().insert_module(module, cursor) {
                 self.message = Some("SubPatch placed".into());
                 self.commit_patch();
             } else {
                 self.message = Some("Can't place here".into());
             }
-        } else if matches!(kind, ModuleKind::Standard(StandardModule::DelayTap(_))) {
+            return;
+        }
+
+        if matches!(kind, ModuleKind::Standard(StandardModule::DelayTap(_))) {
             let delay_id = self
                 .patch()
                 .all_modules()
                 .find(|m| m.kind == ModuleKind::Standard(StandardModule::Delay))
                 .map(|m| m.id);
             if let Some(delay_id) = delay_id {
-                let mod_id = self.patches_mut().alloc_module_id();
-                if self.patch_mut().add_module(
-                    mod_id,
+                let module = Module::new(
+                    self.patches_mut().alloc_module_id(),
                     ModuleKind::Standard(StandardModule::DelayTap(delay_id)),
-                    cursor,
-                ) {
+                );
+                if self.patch_mut().insert_module(module, cursor) {
                     self.message = Some("DelayTap placed".into());
                     self.commit_patch();
                 } else {
@@ -1364,14 +1366,15 @@ impl App {
             } else {
                 self.message = Some("No Delay module found".into());
             }
+            return;
+        }
+
+        let module = Module::new(self.patches_mut().alloc_module_id(), kind);
+        if self.patch_mut().insert_module(module, cursor) {
+            self.message = Some(format!("{} placed", kind.name()));
+            self.commit_patch();
         } else {
-            let mod_id = self.patches_mut().alloc_module_id();
-            if self.patch_mut().add_module(mod_id, kind, cursor) {
-                self.message = Some(format!("{} placed", kind.name()));
-                self.commit_patch();
-            } else {
-                self.message = Some("Can't place here".into());
-            }
+            self.message = Some("Can't place here".into());
         }
     }
 
@@ -1485,8 +1488,9 @@ impl App {
             }
             Action::Confirm => {
                 let cursor = self.cursor();
-                let mod_id = self.patches_mut().alloc_module_id();
-                if self.patch_mut().add_module_clone(mod_id, &module, cursor) {
+                let mut new_module = module.clone();
+                new_module.id = self.patches_mut().alloc_module_id();
+                if self.patch_mut().insert_module(new_module, cursor) {
                     self.mode = Mode::Normal;
                     self.message = Some("Placed".into());
                     self.commit_patch();
@@ -1529,8 +1533,9 @@ impl App {
                     let new_x = (pos.x as i16 + dx).max(0) as u16;
                     let new_y = (pos.y as i16 + dy).max(0) as u16;
                     let new_pos = GridPos::new(new_x, new_y);
-                    let mod_id = self.patches_mut().alloc_module_id();
-                    if self.patch_mut().add_module_clone(mod_id, module, new_pos) {
+                    let mut new_module = module.clone();
+                    new_module.id = self.patches_mut().alloc_module_id();
+                    if self.patch_mut().insert_module(new_module, new_pos) {
                         placed += 1;
                     }
                 }

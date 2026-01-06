@@ -1,5 +1,5 @@
 use super::grid::GridPos;
-use super::module::{ModuleId, ModuleKind, StandardModule, SubPatchId};
+use super::module::{Module, ModuleId, ModuleKind, StandardModule, SubPatchId};
 use super::patch::PatchSet;
 use std::collections::{HashMap, VecDeque};
 
@@ -21,12 +21,13 @@ pub struct Instrument {
 impl Instrument {
     pub fn new() -> Self {
         let mut patches = PatchSet::new(41, 21);
-        let mod_id = patches.alloc_module_id();
-        patches.root_mut().add_module(
-            mod_id,
+        let module = Module::new(
+            patches.alloc_module_id(),
             ModuleKind::Standard(StandardModule::Output),
-            GridPos::new(40, 20),
         );
+        patches
+            .root_mut()
+            .insert_module(module, GridPos::new(40, 20));
 
         let track_text = r#"
 # _ = rest
