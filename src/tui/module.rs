@@ -279,8 +279,8 @@ impl ModuleKind {
                 RoutingModule::TurnDR => " └ ",
             },
             ModuleKind::Subpatch(s) => match s {
-                SubpatchModule::SubIn => "SIN",
-                SubpatchModule::SubOut => "SOT",
+                SubpatchModule::SubIn => "S>>",
+                SubpatchModule::SubOut => ">>S",
                 SubpatchModule::SubPatch(_) => "SUB",
             },
             ModuleKind::Standard(s) => match s {
