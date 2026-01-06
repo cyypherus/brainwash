@@ -135,7 +135,7 @@ fn patch_to_modules(patch: &Patch) -> Vec<ModuleDef> {
         .collect()
 }
 
-fn modules_to_patch(modules: &[ModuleDef], width: u16, height: u16) -> Patch {
+fn modules_to_patch(modules: &[ModuleDef], width: u16, height: u16, next_id: &mut u32) -> Patch {
     use super::module::ModuleId;
 
     let mut patch = Patch::new(width, height);
@@ -143,7 +143,9 @@ fn modules_to_patch(modules: &[ModuleDef], width: u16, height: u16) -> Patch {
 
     for mdef in modules {
         let pos = GridPos::new(mdef.x, mdef.y);
-        if let Some(new_id) = patch.add_module(mdef.kind, pos) {
+        let new_id = ModuleId(*next_id);
+        *next_id += 1;
+        if patch.add_module(new_id, mdef.kind, pos) {
             id_map.insert(mdef.id, new_id);
             if let Some(module) = patch.module_mut(new_id) {
                 module.orientation = mdef.orientation;
@@ -193,9 +195,9 @@ pub fn patchset_to_file(
     pf.bars = bars;
     pf.scale_idx = scale_idx;
     pf.track = track.map(|s| s.to_string());
-    pf.modules = patch_to_modules(&patches.root);
+    pf.modules = patch_to_modules(patches.root());
 
-    for (id, sub) in &patches.subpatches {
+    for (id, sub) in patches.subpatches() {
         pf.subpatches.push(SubPatchFileDef {
             id: id.0,
             name: sub.name.clone(),
@@ -217,28 +219,25 @@ pub struct LoadResult {
 }
 
 pub fn file_to_patchset(pf: &PatchFile) -> LoadResult {
-    let mut root = modules_to_patch(&pf.modules, 41, 21);
+    let mut next_module_id = 0u32;
+
+    let mut root = modules_to_patch(&pf.modules, 41, 21, &mut next_module_id);
     let mut missing_samples = reload_samples_in_patch(&mut root);
 
-    let mut subpatches = HashMap::new();
-    let mut max_id = 0u32;
+    let mut patches = PatchSet::new(41, 21);
+    patches.set_root(root);
 
     for sub in &pf.subpatches {
         let id = SubPatchId(sub.id);
-        max_id = max_id.max(sub.id);
 
         let (r, g, b) = sub.color;
         let mut def = SubPatchDef::new(sub.name.clone(), Color::Rgb(r, g, b));
-        def.patch = modules_to_patch(&sub.modules, 10, 10);
+        def.patch = modules_to_patch(&sub.modules, 10, 10, &mut next_module_id);
         missing_samples.extend(reload_samples_in_patch(&mut def.patch));
-        subpatches.insert(id, def);
+        patches.insert_subpatch(id, def);
     }
 
-    let patches = PatchSet {
-        root,
-        subpatches,
-        next_subpatch_id: max_id + 1,
-    };
+    patches.set_next_module_id(next_module_id);
 
     LoadResult {
         patches,
@@ -282,23 +281,26 @@ mod tests {
     #[test]
     fn test_ron_format() {
         let mut patches = PatchSet::new(20, 20);
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::Freq),
             GridPos::new(0, 0),
         );
-        let osc_id = patches
-            .root
-            .add_module(
-                ModuleKind::Standard(StandardModule::Osc),
-                GridPos::new(0, 2),
-            )
-            .unwrap();
-        patches.root.add_module(
+        let osc_id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            osc_id,
+            ModuleKind::Standard(StandardModule::Osc),
+            GridPos::new(0, 2),
+        );
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::Output),
             GridPos::new(0, 7),
         );
 
-        if let Some(osc) = patches.root.module_mut(osc_id) {
+        if let Some(osc) = patches.root_mut().module_mut(osc_id) {
             osc.params = ModuleParams::Osc {
                 wave: crate::tui::module::WaveType::Saw,
                 freq: crate::tui::module::TimeValue::from_hz(440.0),
@@ -320,36 +322,32 @@ mod tests {
     fn test_roundtrip() {
         let mut patches = PatchSet::new(20, 20);
 
-        let _freq_id = patches
-            .root
-            .add_module(
-                ModuleKind::Standard(StandardModule::Freq),
-                GridPos::new(0, 0),
-            )
-            .unwrap();
-        let osc_id = patches
-            .root
-            .add_module(
-                ModuleKind::Standard(StandardModule::Osc),
-                GridPos::new(0, 2),
-            )
-            .unwrap();
-        let env_id = patches
-            .root
-            .add_module(
-                ModuleKind::Standard(StandardModule::Envelope),
-                GridPos::new(2, 0),
-            )
-            .unwrap();
-        let _out_id = patches
-            .root
-            .add_module(
-                ModuleKind::Standard(StandardModule::Output),
-                GridPos::new(0, 7),
-            )
-            .unwrap();
+        let _freq_id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            _freq_id,
+            ModuleKind::Standard(StandardModule::Freq),
+            GridPos::new(0, 0),
+        );
+        let osc_id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            osc_id,
+            ModuleKind::Standard(StandardModule::Osc),
+            GridPos::new(0, 2),
+        );
+        let env_id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            env_id,
+            ModuleKind::Standard(StandardModule::Envelope),
+            GridPos::new(2, 0),
+        );
+        let _out_id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            _out_id,
+            ModuleKind::Standard(StandardModule::Output),
+            GridPos::new(0, 7),
+        );
 
-        if let Some(osc) = patches.root.module_mut(osc_id) {
+        if let Some(osc) = patches.root_mut().module_mut(osc_id) {
             osc.orientation = Orientation::Vertical;
             osc.params = ModuleParams::Osc {
                 wave: crate::tui::module::WaveType::Saw,
@@ -361,7 +359,7 @@ mod tests {
             };
         }
 
-        if let Some(env) = patches.root.module_mut(env_id) {
+        if let Some(env) = patches.root_mut().module_mut(env_id) {
             if let Some(pts) = env.params.env_points_mut() {
                 *pts = vec![
                     EnvPoint {
@@ -402,7 +400,7 @@ mod tests {
         assert!((result.bars - 4.0).abs() < 0.01);
         assert!(result.track.unwrap().contains("# comment"));
 
-        let modules: Vec<_> = result.patches.root.all_modules().collect();
+        let modules: Vec<_> = result.patches.root().all_modules().collect();
         assert_eq!(modules.len(), 4);
 
         let osc2 = modules
@@ -444,37 +442,51 @@ mod tests {
 
         let mut patches = PatchSet::new(20, 20);
 
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::Freq),
             GridPos::new(0, 0),
         );
 
         let sub_id = patches.create_subpatch("TestSub".into(), Color::Rgb(100, 150, 200));
+        let id1 = patches.alloc_module_id();
+        let id2 = patches.alloc_module_id();
+        let id3 = patches.alloc_module_id();
 
         if let Some(sub) = patches.subpatch_mut(sub_id) {
             sub.patch.add_module(
+                id1,
                 ModuleKind::Subpatch(SubpatchModule::SubIn),
                 GridPos::new(0, 0),
             );
             sub.patch.add_module(
+                id2,
                 ModuleKind::Standard(StandardModule::Mul),
                 GridPos::new(1, 0),
             );
             sub.patch.add_module(
+                id3,
                 ModuleKind::Subpatch(SubpatchModule::SubOut),
                 GridPos::new(2, 0),
             );
         }
 
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
             GridPos::new(1, 0),
         );
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Routing(RoutingModule::LSplit),
             GridPos::new(3, 0),
         );
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::Output),
             GridPos::new(5, 0),
         );
@@ -487,8 +499,8 @@ mod tests {
         let pf2: PatchFile = ron::from_str(&serialized).unwrap();
         let result = file_to_patchset(&pf2);
 
-        assert_eq!(result.patches.root.all_modules().count(), 4);
-        assert_eq!(result.patches.subpatches.len(), 1);
+        assert_eq!(result.patches.root().all_modules().count(), 4);
+        assert_eq!(result.patches.subpatch_count(), 1);
 
         let sub = result.patches.subpatch(sub_id).unwrap();
         assert_eq!(sub.patch.all_modules().count(), 3);

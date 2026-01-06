@@ -21,7 +21,9 @@ pub struct Instrument {
 impl Instrument {
     pub fn new() -> Self {
         let mut patches = PatchSet::new(41, 21);
-        patches.root.add_module(
+        let mod_id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            mod_id,
             ModuleKind::Standard(StandardModule::Output),
             GridPos::new(40, 20),
         );

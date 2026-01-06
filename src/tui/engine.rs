@@ -830,17 +830,17 @@ fn flatten_patchset(patches: &PatchSet) -> (Vec<Module>, Vec<(ModuleId, ModuleId
     let mut flat_modules: Vec<Module> = Vec::new();
     let mut id_map: HashMap<(Option<SubPatchId>, ModuleId), ModuleId> = HashMap::new();
     let max_root_id = patches
-        .root
+        .root()
         .all_modules()
         .map(|m| m.id.0)
         .max()
         .unwrap_or(0);
     let mut next_id = max_root_id + 1;
 
-    for module in patches.root.all_modules() {
+    for module in patches.root().all_modules() {
         if let ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)) = module.kind {
             if let Some(sub) = patches.subpatch(sub_id) {
-                let sub_pos = patches.root.module_position(module.id);
+                let sub_pos = patches.root().module_position(module.id);
                 expand_subpatch(
                     sub_id,
                     sub,
@@ -859,7 +859,7 @@ fn flatten_patchset(patches: &PatchSet) -> (Vec<Module>, Vec<(ModuleId, ModuleId
 
     let mut connections = Vec::new();
 
-    for module in patches.root.all_modules() {
+    for module in patches.root().all_modules() {
         if matches!(
             module.kind,
             ModuleKind::Subpatch(SubpatchModule::SubPatch(_))
@@ -867,14 +867,14 @@ fn flatten_patchset(patches: &PatchSet) -> (Vec<Module>, Vec<(ModuleId, ModuleId
             continue;
         }
 
-        let Some(pos) = patches.root.module_position(module.id) else {
+        let Some(pos) = patches.root().module_position(module.id) else {
             continue;
         };
 
         if module.has_output_bottom()
             && let Some((target_id, port_idx)) = trace_down(
-                patches.root.grid(),
-                &patches.root,
+                patches.root().grid(),
+                patches.root(),
                 pos.x,
                 pos.y + module.height() as u16,
             )
@@ -888,8 +888,8 @@ fn flatten_patchset(patches: &PatchSet) -> (Vec<Module>, Vec<(ModuleId, ModuleId
 
         if module.has_output_right()
             && let Some((target_id, port_idx)) = trace_right(
-                patches.root.grid(),
-                &patches.root,
+                patches.root().grid(),
+                patches.root(),
                 pos.x + module.width() as u16,
                 pos.y,
             )
@@ -932,14 +932,14 @@ fn trace_subpatch_connections(
     id_map: &HashMap<(Option<SubPatchId>, ModuleId), ModuleId>,
     connections: &mut Vec<(ModuleId, ModuleId, usize)>,
 ) {
-    for module in patches.root.all_modules() {
+    for module in patches.root().all_modules() {
         let ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)) = module.kind else {
             continue;
         };
         let Some(sub) = patches.subpatch(sub_id) else {
             continue;
         };
-        let Some(parent_pos) = patches.root.module_position(module.id) else {
+        let Some(parent_pos) = patches.root().module_position(module.id) else {
             continue;
         };
 
@@ -975,19 +975,19 @@ fn trace_subpatch_connections(
             .map(|(i, (_, id))| (i, id))
             .collect();
 
-        for src in patches.root.all_modules() {
+        for src in patches.root().all_modules() {
             if src.id == module.id {
                 continue;
             }
-            let Some(src_pos) = patches.root.module_position(src.id) else {
+            let Some(src_pos) = patches.root().module_position(src.id) else {
                 continue;
             };
 
             if src.has_output_right()
                 && module.has_input_left()
                 && let Some((target_id, port_idx)) = trace_right(
-                    patches.root.grid(),
-                    &patches.root,
+                    patches.root().grid(),
+                    patches.root(),
                     src_pos.x + src.width() as u16,
                     src_pos.y,
                 )
@@ -1004,8 +1004,8 @@ fn trace_subpatch_connections(
             if src.has_output_bottom()
                 && module.has_input_top()
                 && let Some((target_id, port_idx)) = trace_down(
-                    patches.root.grid(),
-                    &patches.root,
+                    patches.root().grid(),
+                    patches.root(),
                     src_pos.x,
                     src_pos.y + src.height() as u16,
                 )
@@ -1027,7 +1027,7 @@ fn trace_subpatch_connections(
                 let out_y = parent_pos.y + sub_outputs.len().max(1) as u16;
 
                 if let Some((target_id, port_idx)) =
-                    trace_down(patches.root.grid(), &patches.root, out_x, out_y)
+                    trace_down(patches.root().grid(), patches.root(), out_x, out_y)
                 {
                     let flat_src = id_map.get(&(Some(sub_id), *sub_out_id)).copied();
                     let flat_dst = id_map.get(&(None, target_id)).copied();
@@ -1044,7 +1044,7 @@ fn trace_subpatch_connections(
                 let out_y = parent_pos.y + *out_idx as u16;
 
                 if let Some((target_id, port_idx)) =
-                    trace_right(patches.root.grid(), &patches.root, out_x, out_y)
+                    trace_right(patches.root().grid(), patches.root(), out_x, out_y)
                 {
                     let flat_src = id_map.get(&(Some(sub_id), *sub_out_id)).copied();
                     let flat_dst = id_map.get(&(None, target_id)).copied();
@@ -1499,15 +1499,21 @@ mod tests {
     fn test_flatten_simple() {
         let mut patches = PatchSet::new(20, 20);
 
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::Freq),
             GridPos::new(0, 0),
         );
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::Osc),
             GridPos::new(1, 0),
         );
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::Output),
             GridPos::new(5, 0),
         );
@@ -1527,33 +1533,45 @@ mod tests {
     fn test_flatten_with_subpatch() {
         let mut patches = PatchSet::new(20, 20);
 
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::Freq),
             GridPos::new(0, 0),
         );
 
         let sub_id = patches.create_subpatch("Test".into(), Color::Red);
+        let id1 = patches.alloc_module_id();
+        let id2 = patches.alloc_module_id();
+        let id3 = patches.alloc_module_id();
 
         if let Some(sub) = patches.subpatch_mut(sub_id) {
             sub.patch.add_module(
+                id1,
                 ModuleKind::Subpatch(SubpatchModule::SubIn),
                 GridPos::new(0, 0),
             );
             sub.patch.add_module(
+                id2,
                 ModuleKind::Standard(StandardModule::Mul),
                 GridPos::new(0, 1),
             );
             sub.patch.add_module(
+                id3,
                 ModuleKind::Subpatch(SubpatchModule::SubOut),
                 GridPos::new(0, 3),
             );
         }
 
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
             GridPos::new(0, 1),
         );
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::Output),
             GridPos::new(0, 3),
         );
@@ -1599,34 +1617,44 @@ mod tests {
     fn test_subpatch_connections() {
         let mut patches = PatchSet::new(20, 20);
 
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::Freq),
             GridPos::new(0, 0),
         );
 
         let sub_id = patches.create_subpatch("Test".into(), Color::Red);
+        let id1 = patches.alloc_module_id();
+        let id2 = patches.alloc_module_id();
 
         if let Some(sub) = patches.subpatch_mut(sub_id) {
             sub.patch.add_module(
+                id1,
                 ModuleKind::Subpatch(SubpatchModule::SubIn),
                 GridPos::new(0, 0),
             );
             sub.patch.add_module(
+                id2,
                 ModuleKind::Subpatch(SubpatchModule::SubOut),
                 GridPos::new(1, 0),
             );
         }
 
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
             GridPos::new(1, 0),
         );
         sync_subpatch_params(&mut patches, sub_id);
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::Output),
             GridPos::new(2, 0),
         );
-        patches.root.rebuild_channels();
+        patches.root_mut().rebuild_channels();
 
         let (modules, connections) = flatten_patchset(&patches);
 
@@ -1680,17 +1708,21 @@ mod tests {
         };
 
         let ids: Vec<ModuleId> = patches
-            .root
+            .root()
             .all_modules()
             .filter(|m| m.kind == ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)))
             .map(|m| m.id)
             .collect();
 
         for id in ids {
-            if let Some(m) = patches.root.module_mut(id) {
-                m.params = crate::tui::module::ModuleParams::SubPatch { inputs, outputs };
+            if let Some(m) = patches.root_mut().module_mut(id) {
+                m.params = crate::tui::module::ModuleParams::SubPatch {
+                    inputs,
+                    outputs,
+                    color: (255, 150, 50),
+                };
             }
-            patches.root.refit_module(id);
+            patches.root_mut().refit_module(id);
         }
     }
 
@@ -1700,29 +1732,37 @@ mod tests {
         let mut patches = PatchSet::new(20, 20);
 
         let sub_id = patches.create_subpatch("Test".into(), Color::Red);
+        let id1 = patches.alloc_module_id();
+        let id2 = patches.alloc_module_id();
 
         if let Some(sub) = patches.subpatch_mut(sub_id) {
             sub.patch.add_module(
+                id1,
                 ModuleKind::Standard(StandardModule::Gate),
                 GridPos::new(0, 0),
             );
             sub.patch.add_module(
+                id2,
                 ModuleKind::Subpatch(SubpatchModule::SubOut),
                 GridPos::new(2, 0),
             );
             sub.patch.rebuild_channels();
         }
 
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
             GridPos::new(0, 0),
         );
         sync_subpatch_params(&mut patches, sub_id);
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::Output),
             GridPos::new(2, 0),
         );
-        patches.root.rebuild_channels();
+        patches.root_mut().rebuild_channels();
 
         let (modules, connections) = flatten_patchset(&patches);
 
@@ -1784,29 +1824,37 @@ mod tests {
         let mut patches = PatchSet::new(20, 20);
 
         let sub_id = patches.create_subpatch("Test".into(), Color::Red);
+        let id1 = patches.alloc_module_id();
+        let id2 = patches.alloc_module_id();
 
         if let Some(sub) = patches.subpatch_mut(sub_id) {
             sub.patch.add_module(
+                id1,
                 ModuleKind::Standard(StandardModule::Freq),
                 GridPos::new(0, 0),
             );
             sub.patch.add_module(
+                id2,
                 ModuleKind::Subpatch(SubpatchModule::SubOut),
                 GridPos::new(2, 0),
             );
             sub.patch.rebuild_channels();
         }
 
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
             GridPos::new(0, 0),
         );
         sync_subpatch_params(&mut patches, sub_id);
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::Output),
             GridPos::new(2, 0),
         );
-        patches.root.rebuild_channels();
+        patches.root_mut().rebuild_channels();
 
         let (modules, connections) = flatten_patchset(&patches);
         let module_refs: Vec<&Module> = modules.iter().collect();
@@ -1833,18 +1881,21 @@ mod tests {
     fn test_delay_tap_linking() {
         let mut patches = PatchSet::new(20, 20);
 
-        let delay_id = patches
-            .root
-            .add_module(
-                ModuleKind::Standard(StandardModule::Delay),
-                GridPos::new(0, 0),
-            )
-            .unwrap();
-        patches.root.add_module(
+        let delay_id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            delay_id,
+            ModuleKind::Standard(StandardModule::Delay),
+            GridPos::new(0, 0),
+        );
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::DelayTap(delay_id)),
             GridPos::new(3, 0),
         );
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::Output),
             GridPos::new(5, 0),
         );
@@ -1885,32 +1936,37 @@ mod tests {
         use crate::Signal;
         let mut patches = PatchSet::new(20, 20);
 
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::Osc),
             GridPos::new(0, 0),
         );
-        let delay_id = patches
-            .root
-            .add_module(
-                ModuleKind::Standard(StandardModule::Delay),
-                GridPos::new(2, 0),
-            )
-            .unwrap();
-        if let Some(m) = patches.root.module_mut(delay_id) {
+        let delay_id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            delay_id,
+            ModuleKind::Standard(StandardModule::Delay),
+            GridPos::new(2, 0),
+        );
+        if let Some(m) = patches.root_mut().module_mut(delay_id) {
             m.params = crate::tui::module::ModuleParams::Delay {
                 time: crate::tui::module::TimeValue::from_samples(100.0),
                 connected: 0xFF,
             };
         }
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::DelayTap(delay_id)),
             GridPos::new(4, 0),
         );
-        patches.root.add_module(
+        let id = patches.alloc_module_id();
+        patches.root_mut().add_module(
+            id,
             ModuleKind::Standard(StandardModule::Output),
             GridPos::new(6, 0),
         );
-        patches.root.rebuild_channels();
+        patches.root_mut().rebuild_channels();
 
         let (modules, connections) = flatten_patchset(&patches);
         let module_refs: Vec<&Module> = modules.iter().collect();

@@ -132,7 +132,6 @@ pub fn parse_action(s: &str) -> Option<Action> {
         "undo" => Some(Action::Undo),
         "redo" => Some(Action::Redo),
         "search" => Some(Action::Search),
-        "make_subpatch" => Some(Action::MakeSubpatch),
         "edit_subpatch" => Some(Action::EditSubpatch),
         "exit_subpatch" => Some(Action::ExitSubpatch),
         "toggle_meters" => Some(Action::ToggleMeters),

@@ -38,7 +38,6 @@ pub enum Action {
     Undo,
     Redo,
     Search,
-    MakeSubpatch,
     EditSubpatch,
     ExitSubpatch,
     ToggleMeters,
@@ -83,7 +82,6 @@ impl Action {
             Action::Undo => "undo",
             Action::Redo => "redo",
             Action::Search => "search",
-            Action::MakeSubpatch => "subpatch",
             Action::TypeValue => "type value",
             Action::CycleStep => "step size",
             Action::EditSubpatch | Action::ExitSubpatch => "sub",
@@ -537,6 +535,13 @@ pub fn move_bindings() -> &'static [Binding] {
             group: None,
             section: 0,
         },
+        Binding {
+            key: KeyCode::Char('p'),
+            action: Action::EditSubpatch,
+            hint: Some("sub"),
+            group: None,
+            section: 0,
+        },
     ]
 }
 
@@ -929,13 +934,6 @@ pub fn select_bindings() -> &'static [Binding] {
             section: 0,
         },
         Binding {
-            key: KeyCode::Char('p'),
-            action: Action::MakeSubpatch,
-            hint: None,
-            group: None,
-            section: 0,
-        },
-        Binding {
             key: KeyCode::Esc,
             action: Action::Cancel,
             hint: None,
@@ -1290,7 +1288,7 @@ pub fn hints(bindings: &[Binding]) -> Vec<(String, &'static str, u8)> {
             && let Some(existing) = result.iter_mut().find(|(_, _, g, _)| *g == Some(group))
         {
             existing.0.push('/');
-            existing.0.push_str(key_str(b.key));
+            existing.0.push_str(&key_str(b.key));
             continue;
         }
         if result
@@ -1299,74 +1297,23 @@ pub fn hints(bindings: &[Binding]) -> Vec<(String, &'static str, u8)> {
         {
             continue;
         }
-        result.push((key_str(b.key).to_string(), hint, b.group, b.section));
+        result.push((key_str(b.key), hint, b.group, b.section));
     }
     result.into_iter().map(|(k, h, _, s)| (k, h, s)).collect()
 }
 
-pub fn key_str(key: KeyCode) -> &'static str {
+pub fn key_str(key: KeyCode) -> String {
     match key {
-        KeyCode::Char(c) => match c {
-            'h' => "h",
-            'j' => "j",
-            'k' => "k",
-            'l' => "l",
-            'H' => "H",
-            'J' => "J",
-            'K' => "K",
-            'L' => "L",
-            'q' => "q",
-            'Q' => "Q",
-            'u' => "u",
-            'U' => "U",
-            'y' => "y",
-            'Y' => "Y",
-            'i' => "i",
-            'm' => "m",
-            'n' => "n",
-            'o' => "o",
-            'p' => "p",
-            'r' => "r",
-            't' => "t",
-            's' => "s",
-            'S' => "S",
-            'e' => "e",
-            'c' => "c",
-            'x' => "x",
-            'v' => "v",
-            '`' => "`",
-            ',' => ",",
-            'w' => "w",
-            'W' => "W",
-            ' ' => "space",
-            '.' => ".",
-            ';' => ";",
-            '/' => "/",
-            '1' => "1",
-            '2' => "2",
-            '3' => "3",
-            '4' => "4",
-            '5' => "5",
-            '6' => "6",
-            '7' => "7",
-            '8' => "8",
-            '9' => "9",
-            '0' => "0",
-            '-' => "-",
-            '=' => "=",
-            '+' => "+",
-            '[' => "[",
-            ']' => "]",
-            _ => "?",
-        },
-        KeyCode::Enter => "ret",
-        KeyCode::Esc => "esc",
-        KeyCode::Tab => "tab",
-        KeyCode::BackTab => "S-tab",
-        KeyCode::Left => "←",
-        KeyCode::Right => "→",
-        KeyCode::Up => "↑",
-        KeyCode::Down => "↓",
-        _ => "?",
+        KeyCode::Char(' ') => "space".to_string(),
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::Enter => "ret".to_string(),
+        KeyCode::Esc => "esc".to_string(),
+        KeyCode::Tab => "tab".to_string(),
+        KeyCode::BackTab => "S-tab".to_string(),
+        KeyCode::Left => "←".to_string(),
+        KeyCode::Right => "→".to_string(),
+        KeyCode::Up => "↑".to_string(),
+        KeyCode::Down => "↓".to_string(),
+        _ => "?".to_string(),
     }
 }

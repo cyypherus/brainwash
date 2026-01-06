@@ -781,7 +781,7 @@ impl Module {
             width: self.width(),
             height: self.height(),
             name: self.display_name(),
-            color: self.kind.color(),
+            color: self.color(),
             input_edges,
             output_edges,
             input_ports,
@@ -940,12 +940,23 @@ impl Module {
         }
     }
 
+    pub fn color(&self) -> Color {
+        if let ModuleParams::SubPatch { color, .. } = self.params {
+            Color::Rgb(color.0, color.1, color.2)
+        } else {
+            self.kind.color()
+        }
+    }
+
     pub fn is_port_open(&self, port_idx: usize) -> bool {
         if self.kind.is_routing() {
             return port_idx < self.kind.port_count();
         }
 
-        if let ModuleParams::SubPatch { inputs, outputs } = self.params {
+        if let ModuleParams::SubPatch {
+            inputs, outputs, ..
+        } = self.params
+        {
             return port_idx < inputs.max(outputs) as usize;
         }
 
@@ -1889,6 +1900,7 @@ pub enum ModuleParams {
     SubPatch {
         inputs: u8,
         outputs: u8,
+        color: (u8, u8, u8),
     },
     DelayTap {
         gain: f32,
@@ -1904,6 +1916,7 @@ impl ModuleParams {
                 SubpatchModule::SubPatch(_) => ModuleParams::SubPatch {
                     inputs: 0,
                     outputs: 0,
+                    color: (255, 150, 50),
                 },
             },
             ModuleKind::Standard(s) => match s {

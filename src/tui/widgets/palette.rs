@@ -99,49 +99,48 @@ impl Widget for PaletteWidget<'_> {
             }
         } else {
             let categories = ModuleCategory::all();
+            let mut y = area.y;
 
-            let tab_style = Style::default().fg(Color::DarkGray);
-            let selected_tab = Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD);
-
-            let mut x_off = area.x;
-            for (i, cat) in categories.iter().enumerate() {
-                let style = if i == self.selected_category {
-                    selected_tab
-                } else {
-                    tab_style
-                };
-                let name = cat.name();
-                set_str(buf, x_off, area.y, name, style);
-                x_off += name.len() as u16 + 1;
-            }
-
-            if let Some(cat) = categories.get(self.selected_category) {
-                let modules = ModuleKind::by_category(*cat);
-                let label_style = Style::default().fg(Color::DarkGray);
-                let selected_style = Style::default().fg(Color::Black).bg(Color::Yellow);
-
-                let mut y = area.y + 2;
-                for (i, kind) in modules.iter().enumerate() {
-                    if y >= area.y + area.height - 1 {
-                        break;
-                    }
-                    let style = if i == self.selected_module {
-                        selected_style
-                    } else {
-                        label_style
-                    };
-                    set_str(buf, area.x + 2, y, kind.name(), style);
-                    y += 1;
+            for (cat_idx, cat) in categories.iter().enumerate() {
+                if y >= desc_y {
+                    break;
                 }
 
-                if let Some(selected_kind) = modules.get(self.selected_module) {
-                    let desc: String = selected_kind.description().chars().take(max_w).collect();
-                    for x in 0..area.width {
-                        set_cell(buf, area.x + x, desc_y, ' ', desc_style);
+                let is_selected_cat = cat_idx == self.selected_category;
+                let cat_style = if is_selected_cat {
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+
+                set_str(buf, area.x, y, &format!(" {} ", cat.name()), cat_style);
+                y += 1;
+
+                if is_selected_cat {
+                    let mods = ModuleKind::by_category(*cat);
+                    for (mod_idx, kind) in mods.iter().enumerate() {
+                        if y >= desc_y {
+                            break;
+                        }
+                        let is_sel = mod_idx == self.selected_module;
+                        let style = if is_sel {
+                            Style::default().fg(Color::Black).bg(kind.color())
+                        } else {
+                            Style::default().fg(kind.color())
+                        };
+                        set_str(buf, area.x + 1, y, &format!(" {} ", kind.name()), style);
+                        y += 1;
                     }
-                    set_str(buf, area.x, desc_y, &desc, desc_style);
+                    if let Some(selected_kind) = mods.get(self.selected_module) {
+                        let desc: String =
+                            selected_kind.description().chars().take(max_w).collect();
+                        for x in 0..area.width {
+                            set_cell(buf, area.x + x, desc_y, ' ', desc_style);
+                        }
+                        set_str(buf, area.x, desc_y, &desc, desc_style);
+                    }
                 }
             }
         }

@@ -42,33 +42,136 @@ impl SubPatchDef {
 
 #[derive(Clone)]
 pub struct PatchSet {
-    pub root: Patch,
-    pub subpatches: HashMap<SubPatchId, SubPatchDef>,
-    pub next_subpatch_id: u32,
+    patches: HashMap<Option<SubPatchId>, SubPatchDef>,
+    next_subpatch_id: u32,
+    next_module_id: u32,
 }
 
 impl PatchSet {
     pub fn new(width: u16, height: u16) -> Self {
+        let mut patches = HashMap::new();
+        let mut root_def = SubPatchDef::new("Root".into(), Color::White);
+        root_def.patch = Patch::new(width, height);
+        patches.insert(None, root_def);
         Self {
-            root: Patch::new(width, height),
-            subpatches: HashMap::new(),
+            patches,
             next_subpatch_id: 0,
+            next_module_id: 0,
         }
+    }
+
+    pub fn alloc_module_id(&mut self) -> ModuleId {
+        let id = ModuleId(self.next_module_id);
+        self.next_module_id += 1;
+        id
+    }
+
+    pub fn patch(&self, id: Option<SubPatchId>) -> Option<&Patch> {
+        self.patches.get(&id).map(|def| &def.patch)
+    }
+
+    pub fn patch_mut(&mut self, id: Option<SubPatchId>) -> Option<&mut Patch> {
+        self.patches.get_mut(&id).map(|def| &mut def.patch)
+    }
+
+    pub fn root(&self) -> &Patch {
+        &self.patches.get(&None).unwrap().patch
+    }
+
+    pub fn root_mut(&mut self) -> &mut Patch {
+        &mut self.patches.get_mut(&None).unwrap().patch
     }
 
     pub fn create_subpatch(&mut self, name: String, color: Color) -> SubPatchId {
         let id = SubPatchId(self.next_subpatch_id);
         self.next_subpatch_id += 1;
-        self.subpatches.insert(id, SubPatchDef::new(name, color));
+        self.patches.insert(Some(id), SubPatchDef::new(name, color));
         id
     }
 
     pub fn subpatch(&self, id: SubPatchId) -> Option<&SubPatchDef> {
-        self.subpatches.get(&id)
+        self.patches.get(&Some(id))
     }
 
     pub fn subpatch_mut(&mut self, id: SubPatchId) -> Option<&mut SubPatchDef> {
-        self.subpatches.get_mut(&id)
+        self.patches.get_mut(&Some(id))
+    }
+
+    pub fn subpatches(&self) -> impl Iterator<Item = (SubPatchId, &SubPatchDef)> {
+        self.patches.iter().filter_map(|(k, v)| k.map(|id| (id, v)))
+    }
+
+    pub fn subpatch_count(&self) -> usize {
+        self.patches.len() - 1
+    }
+
+    pub fn set_root(&mut self, patch: Patch) {
+        if let Some(def) = self.patches.get_mut(&None) {
+            def.patch = patch;
+        }
+    }
+
+    pub fn insert_subpatch(&mut self, id: SubPatchId, def: SubPatchDef) {
+        self.patches.insert(Some(id), def);
+        if id.0 >= self.next_subpatch_id {
+            self.next_subpatch_id = id.0 + 1;
+        }
+    }
+
+    pub fn set_next_module_id(&mut self, id: u32) {
+        self.next_module_id = id;
+    }
+
+    pub fn move_module(
+        &mut self,
+        from_patch: Option<SubPatchId>,
+        to_patch: Option<SubPatchId>,
+        module_id: ModuleId,
+        to_pos: GridPos,
+    ) -> bool {
+        let Some(from) = self.patches.get_mut(&from_patch) else {
+            return false;
+        };
+        let Some((module, _from_pos)) = from.patch.extract_module(module_id) else {
+            return false;
+        };
+
+        let Some(to) = self.patches.get_mut(&to_patch) else {
+            if let Some(from) = self.patches.get_mut(&from_patch) {
+                from.patch.insert_module(module, _from_pos);
+            }
+            return false;
+        };
+
+        if !to.patch.insert_module(module.clone(), to_pos) {
+            if let Some(from) = self.patches.get_mut(&from_patch) {
+                from.patch.insert_module(module, _from_pos);
+            }
+            return false;
+        }
+
+        true
+    }
+
+    pub fn extract_module_from(
+        &mut self,
+        patch_id: Option<SubPatchId>,
+        module_id: ModuleId,
+    ) -> Option<Module> {
+        let patch = self.patches.get_mut(&patch_id)?;
+        patch.patch.extract_module(module_id).map(|(m, _)| m)
+    }
+
+    pub fn insert_module_into(
+        &mut self,
+        patch_id: Option<SubPatchId>,
+        module: Module,
+        pos: GridPos,
+    ) -> bool {
+        let Some(patch) = self.patches.get_mut(&patch_id) else {
+            return false;
+        };
+        patch.patch.insert_module(module, pos)
     }
 }
 
@@ -77,7 +180,6 @@ pub struct Patch {
     grid: Grid,
     modules: HashMap<ModuleId, Module>,
     positions: HashMap<ModuleId, GridPos>,
-    next_module_id: u32,
     output_id: Option<ModuleId>,
 }
 
@@ -87,7 +189,6 @@ impl Patch {
             grid: Grid::new(width, height),
             modules: HashMap::new(),
             positions: HashMap::new(),
-            next_module_id: 0,
             output_id: None,
         }
     }
@@ -130,57 +231,89 @@ impl Patch {
         self.output_id
     }
 
-    pub fn add_module(&mut self, kind: ModuleKind, pos: GridPos) -> Option<ModuleId> {
+    pub fn add_module(&mut self, id: ModuleId, kind: ModuleKind, pos: GridPos) -> bool {
         if kind == ModuleKind::Standard(StandardModule::Output) && self.output_id.is_some() {
-            return None;
+            return false;
         }
 
-        let id = ModuleId(self.next_module_id);
         let module = Module::new(id, kind);
         let width = module.width();
         let height = module.height();
 
         if !self.grid.place_module(id, pos, width, height) {
-            return None;
+            return false;
         }
 
         self.modules.insert(id, module);
         self.positions.insert(id, pos);
-        self.next_module_id += 1;
 
         if kind == ModuleKind::Standard(StandardModule::Output) {
             self.output_id = Some(id);
         }
 
         self.rebuild_channels();
-        Some(id)
+        true
     }
 
-    pub fn add_module_clone(&mut self, source: &Module, pos: GridPos) -> Option<ModuleId> {
+    pub fn add_module_clone(&mut self, id: ModuleId, source: &Module, pos: GridPos) -> bool {
         if source.kind == ModuleKind::Standard(StandardModule::Output) && self.output_id.is_some() {
-            return None;
+            return false;
         }
 
-        let id = ModuleId(self.next_module_id);
         let mut module = source.clone();
         module.id = id;
         let width = module.width();
         let height = module.height();
 
         if !self.grid.place_module(id, pos, width, height) {
-            return None;
+            return false;
         }
 
         self.modules.insert(id, module);
         self.positions.insert(id, pos);
-        self.next_module_id += 1;
 
         if source.kind == ModuleKind::Standard(StandardModule::Output) {
             self.output_id = Some(id);
         }
 
         self.rebuild_channels();
-        Some(id)
+        true
+    }
+
+    pub fn insert_module(&mut self, module: Module, pos: GridPos) -> bool {
+        if module.kind == ModuleKind::Standard(StandardModule::Output) && self.output_id.is_some() {
+            return false;
+        }
+
+        let id = module.id;
+        let width = module.width();
+        let height = module.height();
+
+        if !self.grid.place_module(id, pos, width, height) {
+            return false;
+        }
+
+        if module.kind == ModuleKind::Standard(StandardModule::Output) {
+            self.output_id = Some(id);
+        }
+
+        self.modules.insert(id, module);
+        self.positions.insert(id, pos);
+        self.rebuild_channels();
+        true
+    }
+
+    pub fn extract_module(&mut self, id: ModuleId) -> Option<(Module, GridPos)> {
+        let module = self.modules.remove(&id)?;
+        let pos = self.positions.remove(&id)?;
+        self.grid.remove_module(id);
+
+        if self.output_id == Some(id) {
+            self.output_id = None;
+        }
+
+        self.rebuild_channels();
+        Some((module, pos))
     }
 
     pub fn remove_module(&mut self, id: ModuleId) -> bool {
@@ -455,23 +588,25 @@ mod tests {
     #[test]
     fn test_add_remove_module() {
         let mut patch = Patch::new(10, 10);
-        let id = patch.add_module(
+        let id = ModuleId(0);
+        let added = patch.add_module(
+            id,
             ModuleKind::Standard(StandardModule::Freq),
             GridPos::new(0, 0),
         );
-        assert!(id.is_some());
-        assert!(patch.remove_module(id.unwrap()));
+        assert!(added);
+        assert!(patch.remove_module(id));
     }
 
     #[test]
     fn test_move_module() {
         let mut patch = Patch::new(10, 10);
-        let id = patch
-            .add_module(
-                ModuleKind::Standard(StandardModule::Freq),
-                GridPos::new(0, 0),
-            )
-            .unwrap();
+        let id = ModuleId(0);
+        patch.add_module(
+            id,
+            ModuleKind::Standard(StandardModule::Freq),
+            GridPos::new(0, 0),
+        );
         assert!(patch.move_module(id, GridPos::new(2, 2)));
         assert_eq!(patch.module_position(id), Some(GridPos::new(2, 2)));
     }

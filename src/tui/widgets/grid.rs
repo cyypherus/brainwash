@@ -149,8 +149,7 @@ impl<'a> GridWidget<'a> {
         probe_value: Option<f32>,
         meter_values: Option<&Vec<f32>>,
     ) {
-        let kind = module.kind;
-        let color = kind.color();
+        let color = module.color();
         let width = module.width();
         let height = module.height();
         let is_single_height = height == 1;
