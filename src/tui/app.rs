@@ -1303,60 +1303,75 @@ impl App {
                 };
             }
             Action::Confirm => {
-                let cursor = self.cursor();
                 if let Some(kind) = modules.get(palette_module) {
-                    if *kind == ModuleKind::Standard(StandardModule::Output)
-                        && self.patch().output_id().is_some()
-                    {
-                        self.message = Some("Output exists".into());
-                    } else if matches!(kind, ModuleKind::Subpatch(SubpatchModule::SubPatch(_))) {
-                        let color = subpatch_color(self.patches().subpatch_count());
-                        let sub_id = self.patches_mut().create_subpatch("Sub".into(), color);
-                        let mod_id = self.patches_mut().alloc_module_id();
-                        if self.patch_mut().add_module(
-                            mod_id,
-                            ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
-                            cursor,
-                        ) {
-                            self.message = Some("SubPatch placed".into());
-                            self.commit_patch();
-                        } else {
-                            self.message = Some("Can't place here".into());
-                        }
-                    } else if matches!(kind, ModuleKind::Standard(StandardModule::DelayTap(_))) {
-                        let delay_id = self
-                            .patch()
-                            .all_modules()
-                            .find(|m| m.kind == ModuleKind::Standard(StandardModule::Delay))
-                            .map(|m| m.id);
-                        if let Some(delay_id) = delay_id {
-                            let mod_id = self.patches_mut().alloc_module_id();
-                            if self.patch_mut().add_module(
-                                mod_id,
-                                ModuleKind::Standard(StandardModule::DelayTap(delay_id)),
-                                cursor,
-                            ) {
-                                self.message = Some("DelayTap placed".into());
-                                self.commit_patch();
-                            } else {
-                                self.message = Some("Can't place here".into());
-                            }
-                        } else {
-                            self.message = Some("No Delay module found".into());
-                        }
-                    } else {
-                        let mod_id = self.patches_mut().alloc_module_id();
-                        if self.patch_mut().add_module(mod_id, *kind, cursor) {
-                            self.message = Some(format!("{} placed", kind.name()));
-                            self.commit_patch();
-                        } else {
-                            self.message = Some("Can't place here".into());
-                        }
-                    }
+                    self.place_module(*kind);
                 }
                 self.mode = Mode::Normal;
             }
             _ => {}
+        }
+    }
+
+    fn place_module(&mut self, kind: ModuleKind) {
+        let cursor = self.cursor();
+        if kind == ModuleKind::Standard(StandardModule::Output)
+            && self.patch().output_id().is_some()
+        {
+            self.message = Some("Output exists".into());
+        } else if matches!(kind, ModuleKind::Subpatch(SubpatchModule::SubPatch(_))) {
+            let color = subpatch_color(self.patches().subpatch_count());
+            let rgb = match color {
+                Color::Rgb(r, g, b) => (r, g, b),
+                _ => (255, 150, 50),
+            };
+            let sub_id = self.patches_mut().create_subpatch("Sub".into(), color);
+            let mod_id = self.patches_mut().alloc_module_id();
+            if self.patch_mut().add_module(
+                mod_id,
+                ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
+                cursor,
+            ) {
+                if let Some(m) = self.patch_mut().module_mut(mod_id) {
+                    m.params = ModuleParams::SubPatch {
+                        inputs: 0,
+                        outputs: 0,
+                        color: rgb,
+                    };
+                }
+                self.message = Some("SubPatch placed".into());
+                self.commit_patch();
+            } else {
+                self.message = Some("Can't place here".into());
+            }
+        } else if matches!(kind, ModuleKind::Standard(StandardModule::DelayTap(_))) {
+            let delay_id = self
+                .patch()
+                .all_modules()
+                .find(|m| m.kind == ModuleKind::Standard(StandardModule::Delay))
+                .map(|m| m.id);
+            if let Some(delay_id) = delay_id {
+                let mod_id = self.patches_mut().alloc_module_id();
+                if self.patch_mut().add_module(
+                    mod_id,
+                    ModuleKind::Standard(StandardModule::DelayTap(delay_id)),
+                    cursor,
+                ) {
+                    self.message = Some("DelayTap placed".into());
+                    self.commit_patch();
+                } else {
+                    self.message = Some("Can't place here".into());
+                }
+            } else {
+                self.message = Some("No Delay module found".into());
+            }
+        } else {
+            let mod_id = self.patches_mut().alloc_module_id();
+            if self.patch_mut().add_module(mod_id, kind, cursor) {
+                self.message = Some(format!("{} placed", kind.name()));
+                self.commit_patch();
+            } else {
+                self.message = Some("Can't place here".into());
+            }
         }
     }
 
@@ -1383,56 +1398,8 @@ impl App {
                 }
             }
             KeyCode::Enter => {
-                let cursor = self.cursor();
                 if let Some(kind) = filtered.get(self.palette_filter_selection) {
-                    if *kind == ModuleKind::Standard(StandardModule::Output)
-                        && self.patch().output_id().is_some()
-                    {
-                        self.message = Some("Output exists".into());
-                    } else if matches!(kind, ModuleKind::Subpatch(SubpatchModule::SubPatch(_))) {
-                        let color = subpatch_color(self.patches().subpatch_count());
-                        let sub_id = self.patches_mut().create_subpatch("Sub".into(), color);
-                        let mod_id = self.patches_mut().alloc_module_id();
-                        if self.patch_mut().add_module(
-                            mod_id,
-                            ModuleKind::Subpatch(SubpatchModule::SubPatch(sub_id)),
-                            cursor,
-                        ) {
-                            self.message = Some("SubPatch placed".into());
-                            self.commit_patch();
-                        } else {
-                            self.message = Some("Can't place here".into());
-                        }
-                    } else if matches!(kind, ModuleKind::Standard(StandardModule::DelayTap(_))) {
-                        let delay_id = self
-                            .patch()
-                            .all_modules()
-                            .find(|m| m.kind == ModuleKind::Standard(StandardModule::Delay))
-                            .map(|m| m.id);
-                        if let Some(delay_id) = delay_id {
-                            let mod_id = self.patches_mut().alloc_module_id();
-                            if self.patch_mut().add_module(
-                                mod_id,
-                                ModuleKind::Standard(StandardModule::DelayTap(delay_id)),
-                                cursor,
-                            ) {
-                                self.message = Some("DelayTap placed".into());
-                                self.commit_patch();
-                            } else {
-                                self.message = Some("Can't place here".into());
-                            }
-                        } else {
-                            self.message = Some("No Delay module found".into());
-                        }
-                    } else {
-                        let mod_id = self.patches_mut().alloc_module_id();
-                        if self.patch_mut().add_module(mod_id, *kind, cursor) {
-                            self.message = Some(format!("{} placed", kind.name()));
-                            self.commit_patch();
-                        } else {
-                            self.message = Some("Can't place here".into());
-                        }
-                    }
+                    self.place_module(*kind);
                 }
                 self.palette_filter.clear();
                 self.palette_filter_selection = 0;
