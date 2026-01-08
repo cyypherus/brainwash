@@ -60,7 +60,8 @@ impl LowpassFilter {
         output
     }
 
-    pub fn output(&mut self, input: f32, signal: &mut Signal) -> f32 {
+    pub fn output(&mut self, input: f32, freq_mod: f32, signal: &mut Signal) -> f32 {
+        self.frequency = freq_mod.clamp(0.001, 0.99);
         self.process(input, signal.sample_rate as f32)
     }
 
@@ -153,7 +154,8 @@ impl HighpassFilter {
         output
     }
 
-    pub fn output(&mut self, input: f32, signal: &mut Signal) -> f32 {
+    pub fn output(&mut self, input: f32, freq_mod: f32, signal: &mut Signal) -> f32 {
+        self.frequency = freq_mod.clamp(0.001, 0.99);
         self.process(input, signal.sample_rate as f32)
     }
 

@@ -418,8 +418,8 @@ impl CompiledVoice {
                 }
                 NodeKind::Adsr(adsr) => adsr.output(in0, in1),
                 NodeKind::Envelope(env) => env.output(in0),
-                NodeKind::Lpf(filter) => filter.output(in0, signal),
-                NodeKind::Hpf(filter) => filter.output(in0, signal),
+                NodeKind::Lpf(filter) => filter.output(in0, in1, signal),
+                NodeKind::Hpf(filter) => filter.output(in0, in1, signal),
                 NodeKind::Comb(comb) => comb.output(in0),
                 NodeKind::Allpass(allpass) => allpass.process(in0),
                 NodeKind::Delay(delay) => delay.output(in0),
@@ -1188,7 +1188,10 @@ fn trace_down(
                     return None;
                 }
                 if local_y == 0 && module.has_input_top() {
-                    let port_idx = local_x as usize;
+                    let mut port_idx = local_x as usize;
+                    if module.has_input_left() {
+                        port_idx += 1;
+                    }
                     if module.is_port_open(port_idx) {
                         return Some((id, port_idx));
                     }

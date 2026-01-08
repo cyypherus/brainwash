@@ -194,10 +194,11 @@ impl Osc {
                     .wrapping_mul(196314165)
                     .wrapping_add(907633515);
                 let bipolar_sample = (self.noise_seed as f32 / u32::MAX as f32) * 2.0 - 1.0;
+                let scaled = bipolar_sample * 0.25;
                 if self.unipolar {
-                    (bipolar_sample + 1.0) * 0.5
+                    (scaled + 1.0) * 0.5
                 } else {
-                    bipolar_sample
+                    scaled
                 }
             }
         };

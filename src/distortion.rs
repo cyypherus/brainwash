@@ -178,30 +178,53 @@ impl Distortion {
 
     fn tube_shape(&self, x: f32) -> f32 {
         let driven = x * self.drive;
-        let shifted = driven + self.asymmetry * 0.3;
-        let saturated = fast_tanh(shifted);
-        saturated - fast_tanh(self.asymmetry * 0.3)
+        let pos_gain = 1.0 + self.asymmetry.max(0.0);
+        let neg_gain = 1.0 - self.asymmetry.min(0.0);
+        let asymmetric = if driven >= 0.0 {
+            driven * pos_gain
+        } else {
+            driven * neg_gain
+        };
+        fast_tanh(asymmetric)
     }
 
     fn tape_shape(&self, x: f32) -> f32 {
         let driven = x * self.drive;
-        let soft = soft_clip_cubic(driven * 0.8);
-        let compressed = soft * (1.0 - 0.2 * soft.abs());
-        compressed + self.asymmetry * 0.1 * driven * driven.abs()
+        let pos_gain = 1.0 + self.asymmetry.max(0.0) * 0.5;
+        let neg_gain = 1.0 - self.asymmetry.min(0.0) * 0.5;
+        let asymmetric = if driven >= 0.0 {
+            driven * pos_gain
+        } else {
+            driven * neg_gain
+        };
+        let soft = soft_clip_cubic(asymmetric * 0.8);
+        soft * (1.0 - 0.2 * soft.abs())
     }
 
     fn fuzz_shape(&self, x: f32) -> f32 {
         let driven = x * self.drive * 2.0;
-        let clipped = driven.clamp(-1.0, 1.0);
-        let fuzzed = clipped.signum() * (1.0 - (-clipped.abs() * 4.0).exp());
-        fuzzed + self.asymmetry * 0.2 * clipped * clipped
+        let pos_gain = 1.0 + self.asymmetry.max(0.0);
+        let neg_gain = 1.0 - self.asymmetry.min(0.0);
+        let asymmetric = if driven >= 0.0 {
+            driven * pos_gain
+        } else {
+            driven * neg_gain
+        };
+        let clipped = asymmetric.clamp(-1.0, 1.0);
+        clipped.signum() * (1.0 - (-clipped.abs() * 4.0).exp())
     }
 
     fn fold_shape(&self, x: f32) -> f32 {
         let driven = x * self.drive;
-        let threshold = 1.0;
-        if driven > threshold || driven < -threshold {
-            ((driven - threshold).abs() % (threshold * 4.0) - threshold * 2.0).abs() - threshold
+        let pos_thresh = 1.0 - self.asymmetry.max(0.0) * 0.5;
+        let neg_thresh = 1.0 + self.asymmetry.min(0.0) * 0.5;
+        let threshold = if driven >= 0.0 {
+            pos_thresh
+        } else {
+            neg_thresh
+        };
+        if driven.abs() > threshold {
+            ((driven.abs() - threshold) % (threshold * 4.0) - threshold * 2.0).abs() - threshold
         } else {
             driven
         }
@@ -209,15 +232,21 @@ impl Distortion {
 
     fn clip_shape(&self, x: f32) -> f32 {
         let driven = x * self.drive;
-        let knee = 0.7 - self.asymmetry * 0.2;
+        let pos_thresh = 1.0 - self.asymmetry.max(0.0) * 0.4;
+        let neg_thresh = 1.0 + self.asymmetry.min(0.0) * 0.4;
+        let (threshold, knee) = if driven >= 0.0 {
+            (pos_thresh, 0.7 * pos_thresh)
+        } else {
+            (neg_thresh, 0.7 * neg_thresh)
+        };
         if driven.abs() < knee {
             driven
         } else {
             let sign = driven.signum();
             let excess = driven.abs() - knee;
-            let range = 1.0 - knee;
-            let compressed = knee + range * (1.0 - (-excess / range).exp());
-            sign * compressed.min(1.0)
+            let range = threshold - knee;
+            let compressed = knee + range * (1.0 - (-excess / range.max(0.01)).exp());
+            sign * compressed.min(threshold)
         }
     }
 

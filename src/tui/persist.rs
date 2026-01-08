@@ -220,10 +220,13 @@ pub struct LoadResult {
 pub fn file_to_patchset(pf: &PatchFile) -> LoadResult {
     let mut next_module_id = 0u32;
 
-    let mut root = modules_to_patch(&pf.modules, 41, 21, &mut next_module_id);
+    const ROOT_WIDTH: u16 = 41;
+    const ROOT_HEIGHT: u16 = 21;
+
+    let mut root = modules_to_patch(&pf.modules, ROOT_WIDTH, ROOT_HEIGHT, &mut next_module_id);
     let mut missing_samples = reload_samples_in_patch(&mut root);
 
-    let mut patches = PatchSet::new(41, 21);
+    let mut patches = PatchSet::new(ROOT_WIDTH, ROOT_HEIGHT);
     patches.set_root(root);
 
     for sub in &pf.subpatches {
@@ -231,7 +234,7 @@ pub fn file_to_patchset(pf: &PatchFile) -> LoadResult {
 
         let (r, g, b) = sub.color;
         let mut def = SubPatchDef::new(sub.name.clone(), Color::Rgb(r, g, b));
-        def.patch = modules_to_patch(&sub.modules, 10, 10, &mut next_module_id);
+        def.patch = modules_to_patch(&sub.modules, ROOT_WIDTH, ROOT_HEIGHT, &mut next_module_id);
         missing_samples.extend(reload_samples_in_patch(&mut def.patch));
         patches.insert_subpatch(id, def);
     }
