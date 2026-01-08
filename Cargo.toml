@@ -11,7 +11,9 @@ path = "src/lib.rs"
 default = ["live", "tui"]
 live = ["cpal"]
 wav = ["hound"]
-tui = ["live", "wav", "ratatui", "dep:flume", "dep:tui-input", "dep:lilt", "dep:toml"]
+tui = ["wav", "ratatui", "dep:flume", "dep:tui-input", "dep:lilt", "dep:toml"]
+tui-audio = ["tui", "live"]
+headless = ["tui"]
 
 [[example]]
 name = "simple"
