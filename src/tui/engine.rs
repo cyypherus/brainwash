@@ -42,11 +42,13 @@ pub enum AudioCommand {
         voices: Vec<CompiledVoice>,
         track: Option<Track>,
         bars: f32,
+        immediate: bool,
     },
     SetVoices {
         idx: usize,
         voices: Vec<CompiledVoice>,
         bars: f32,
+        immediate: bool,
     },
     SetProbeVoice(usize),
 }
@@ -204,7 +206,7 @@ enum NodeKind {
     Sample { samples: std::sync::Arc<Vec<f32>> },
     Probe,
     Pass,
-    Output,
+    Output { gain: f32 },
 }
 
 impl NodeKind {
@@ -274,7 +276,7 @@ impl NodeKind {
             | (NodeKind::Sample { .. }, NodeKind::Sample { .. })
             | (NodeKind::Probe, NodeKind::Probe)
             | (NodeKind::Pass, NodeKind::Pass)
-            | (NodeKind::Output, NodeKind::Output) => {}
+            | (NodeKind::Output { .. }, NodeKind::Output { .. }) => {}
             (_, _) => {}
         }
     }
@@ -337,7 +339,7 @@ impl CompiledVoice {
                 | NodeKind::Sample { .. }
                 | NodeKind::Probe
                 | NodeKind::Pass
-                | NodeKind::Output => {}
+                | NodeKind::Output { .. } => {}
             }
             node.output = 0.0;
             node.input_values.fill(0.0);
@@ -469,8 +471,8 @@ impl CompiledVoice {
                     }
                 }
                 NodeKind::Probe => in0,
-                NodeKind::Pass => in0,
-                NodeKind::Output => in0,
+                NodeKind::Pass => node.input_values.iter().sum(),
+                NodeKind::Output { gain } => in0 * *gain,
             };
         }
 
@@ -543,12 +545,17 @@ impl CompiledPatch {
 }
 
 impl CompiledPatch {
-    fn set_voices(&mut self, voices: Vec<CompiledVoice>) {
+    fn set_voices(&mut self, voices: Vec<CompiledVoice>, immediate: bool) {
         let mut new_patch = PatchVoices { voices };
         if let Some(ref current) = self.current {
             new_patch.inherit_state_from(current);
         }
-        if self.crossfade_pos >= CROSSFADE_SAMPLES {
+        if immediate {
+            self.old = None;
+            self.pending = None;
+            self.current = Some(new_patch);
+            self.crossfade_pos = CROSSFADE_SAMPLES;
+        } else if self.crossfade_pos >= CROSSFADE_SAMPLES {
             self.old = self.current.take();
             self.current = Some(new_patch);
             self.crossfade_pos = 0;
@@ -703,8 +710,9 @@ pub fn compile_patch(
     patches: &PatchSet,
     num_voices: usize,
     ctx: &CompileContext,
+    immediate: bool,
 ) {
-    patch.set_voices(compile_voices(patches, num_voices, ctx));
+    patch.set_voices(compile_voices(patches, num_voices, ctx), immediate);
 }
 
 pub fn compile_voices(
@@ -785,18 +793,24 @@ impl AudioEngine {
                 voices,
                 track,
                 bars,
+                immediate,
             } => {
                 self.ensure_instruments(idx + 1);
                 if let Some(inst) = self.instruments.get_mut(idx) {
-                    inst.patch.set_voices(voices);
+                    inst.patch.set_voices(voices, immediate);
                     inst.track.set_track(track);
                     inst.track.clock.bars(bars);
                 }
             }
-            AudioCommand::SetVoices { idx, voices, bars } => {
+            AudioCommand::SetVoices {
+                idx,
+                voices,
+                bars,
+                immediate,
+            } => {
                 self.ensure_instruments(idx + 1);
                 if let Some(inst) = self.instruments.get_mut(idx) {
-                    inst.patch.set_voices(voices);
+                    inst.patch.set_voices(voices, immediate);
                     inst.track.clock.bars(bars);
                 }
             }
@@ -1439,7 +1453,9 @@ fn create_node_kind(module: &Module, ctx: &CompileContext) -> NodeKind {
             }
         }
         (ModuleKind::Standard(StandardModule::Probe), _) => NodeKind::Probe,
-        (ModuleKind::Standard(StandardModule::Output), _) => NodeKind::Output,
+        (ModuleKind::Standard(StandardModule::Output), ModuleParams::Output { gain, .. }) => {
+            NodeKind::Output { gain: *gain }
+        }
         (ModuleKind::Standard(StandardModule::DegreeGate), _)
         | (ModuleKind::Standard(StandardModule::Osc), _)
         | (ModuleKind::Standard(StandardModule::Rise), _)
@@ -1456,7 +1472,8 @@ fn create_node_kind(module: &Module, ctx: &CompileContext) -> NodeKind {
         | (ModuleKind::Standard(StandardModule::Reverb), _)
         | (ModuleKind::Standard(StandardModule::Distortion), _)
         | (ModuleKind::Standard(StandardModule::Flanger), _)
-        | (ModuleKind::Standard(StandardModule::Sample), _) => {
+        | (ModuleKind::Standard(StandardModule::Sample), _)
+        | (ModuleKind::Standard(StandardModule::Output), _) => {
             unreachable!(
                 "ModuleKind {:?} matched with wrong ModuleParams {:?}",
                 module.kind, module.params

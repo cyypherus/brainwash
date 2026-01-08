@@ -1,15 +1,16 @@
 use super::bindings::{Action, Binding, lookup};
 use super::config::Bindings;
 use super::engine::{
-    AudioCommand, AudioEngine, CommandSender, CompileContext, CompiledPatch, MeterReceiver,
-    OUTPUT_INTERVAL, OutputReceiver, TrackState, command_channel, compile_patch, compile_voices,
-    meter_channel, output_channel,
+    AudioCommand, CommandSender, CompileContext, CompiledPatch, MeterReceiver, OutputReceiver,
+    TrackState, command_channel, compile_patch, compile_voices, meter_channel, output_channel,
 };
+#[cfg(feature = "live")]
+use super::engine::{AudioEngine, OUTPUT_INTERVAL};
 use super::grid::GridPos;
 use super::instrument::Instrument;
 use super::module::{
     Module, ModuleCategory, ModuleId, ModuleKind, ModuleParams, ParamKind, StandardModule,
-    SubPatchId, SubpatchModule,
+    SubPatchId, SubpatchModule, TimeUnit, TimeValue,
 };
 use super::patch::{Patch, PatchSet};
 use super::persist;
@@ -17,7 +18,9 @@ use super::widgets::{
     AdsrWidget, EditWidget, EnvelopeWidget, GridWidget, HelpWidget, PaletteWidget, ProbeWidget,
     SampleWidget, StatusWidget,
 };
+#[cfg(feature = "live")]
 use crate::Signal;
+#[cfg(feature = "live")]
 use crate::live::AudioPlayer;
 use crate::scale::{
     Scale, amaj, amin, asharpmaj, asharpmin, bmaj, bmin, chromatic, cmaj, cmin, csharpmaj,
@@ -25,6 +28,7 @@ use crate::scale::{
     gmaj, gmin, gsharpmaj, gsharpmin,
 };
 use crate::track::Track;
+#[cfg(feature = "live")]
 use cpal::traits::StreamTrait;
 use lilt::{Animated, Easing};
 use ratatui::crossterm::{
@@ -496,6 +500,7 @@ impl App {
             idx: inst_idx,
             voices,
             bars,
+            immediate: !self.playing,
         });
     }
 
@@ -515,6 +520,7 @@ impl App {
             voices,
             track,
             bars,
+            immediate: !self.playing,
         });
     }
 
@@ -2157,12 +2163,14 @@ impl App {
                                     let cur = m.params.get_float(param_idx).unwrap_or(0.0);
                                     m.params.set_float(param_idx, (cur - step).max(*min));
                                     m.params.set_connected(param_idx, false);
+                                    self.patch_mut().rebuild_channels();
                                 }
                                 ParamKind::Time => {
                                     if let Some(t) = m.params.get_time_mut(param_idx) {
                                         t.adjust(false, false);
                                     }
                                     m.params.set_connected(param_idx, false);
+                                    self.patch_mut().rebuild_channels();
                                 }
                                 ParamKind::Enum => {
                                     m.params.cycle_enum_prev(param_idx);
@@ -2202,12 +2210,14 @@ impl App {
                                     let cur = m.params.get_float(param_idx).unwrap_or(0.0);
                                     m.params.set_float(param_idx, (cur + step).min(*max));
                                     m.params.set_connected(param_idx, false);
+                                    self.patch_mut().rebuild_channels();
                                 }
                                 ParamKind::Time => {
                                     if let Some(t) = m.params.get_time_mut(param_idx) {
                                         t.adjust(true, false);
                                     }
                                     m.params.set_connected(param_idx, false);
+                                    self.patch_mut().rebuild_channels();
                                 }
                                 ParamKind::Enum => {
                                     m.params.cycle_enum_next(param_idx);
@@ -2236,12 +2246,14 @@ impl App {
                                 let cur = m.params.get_float(param_idx).unwrap_or(0.0);
                                 m.params.set_float(param_idx, (cur - step).max(*min));
                                 m.params.set_connected(param_idx, false);
+                                self.patch_mut().rebuild_channels();
                             }
                             ParamKind::Time => {
                                 if let Some(t) = m.params.get_time_mut(param_idx) {
                                     t.adjust(false, true);
                                 }
                                 m.params.set_connected(param_idx, false);
+                                self.patch_mut().rebuild_channels();
                             }
                             _ => {}
                         }
@@ -2259,12 +2271,14 @@ impl App {
                                 let cur = m.params.get_float(param_idx).unwrap_or(0.0);
                                 m.params.set_float(param_idx, (cur + step).min(*max));
                                 m.params.set_connected(param_idx, false);
+                                self.patch_mut().rebuild_channels();
                             }
                             ParamKind::Time => {
                                 if let Some(t) = m.params.get_time_mut(param_idx) {
                                     t.adjust(true, true);
                                 }
                                 m.params.set_connected(param_idx, false);
+                                self.patch_mut().rebuild_channels();
                             }
                             _ => {}
                         }
@@ -2306,6 +2320,26 @@ impl App {
                             module_id,
                             param_idx,
                         };
+                    } else if matches!(def.kind, ParamKind::Time)
+                        && let Some(time) = module.params.get_time(param_idx)
+                    {
+                        let current = match time.unit {
+                            TimeUnit::Seconds => {
+                                if time.seconds >= 1.0 {
+                                    format!("{:.2}", time.seconds)
+                                } else {
+                                    format!("{:.0}", time.seconds * 1000.0)
+                                }
+                            }
+                            TimeUnit::Samples => format!("{:.0}", time.samples),
+                            TimeUnit::Bars => format!("{}/{}", time.bar_num, time.bar_denom),
+                            TimeUnit::Hz => format!("{}", time.hz),
+                        };
+                        self.value_input = Input::new(current);
+                        self.mode = Mode::ValueInput {
+                            module_id,
+                            param_idx,
+                        };
                     }
                 }
             }
@@ -2335,6 +2369,11 @@ impl App {
     }
 
     fn handle_value_input_key(&mut self, code: KeyCode, module_id: ModuleId, param_idx: usize) {
+        let param_kind = self
+            .patch()
+            .module(module_id)
+            .and_then(|m| m.kind.param_defs().get(param_idx).map(|d| d.kind));
+
         match code {
             KeyCode::Esc => {
                 self.mode = Mode::Edit {
@@ -2343,13 +2382,76 @@ impl App {
                 };
             }
             KeyCode::Enter => {
-                if let Ok(val) = self.value_input.value().parse::<f32>() {
+                let input_val = self.value_input.value().to_string();
+                let mut success = false;
+
+                if matches!(param_kind, Some(ParamKind::Time))
+                    && let Some(m) = self.patch().module(module_id)
+                    && let Some(time) = m.params.get_time(param_idx)
+                {
+                    let unit = time.unit;
+                    let was_ms = time.seconds < 1.0;
+                    let new_time = match unit {
+                        TimeUnit::Seconds => input_val.parse::<f32>().ok().map(|v| {
+                            if was_ms {
+                                TimeValue::from_seconds((v / 1000.0).max(0.001))
+                            } else {
+                                TimeValue::from_seconds(v.max(0.001))
+                            }
+                        }),
+                        TimeUnit::Samples => input_val
+                            .parse::<f32>()
+                            .ok()
+                            .map(|v| TimeValue::from_samples(v.max(1.0))),
+                        TimeUnit::Hz => input_val
+                            .parse::<f32>()
+                            .ok()
+                            .map(|v| TimeValue::from_hz(v.max(0.001))),
+                        TimeUnit::Bars => {
+                            let parts: Vec<&str> = input_val.split('/').collect();
+                            if parts.len() == 2
+                                && let (Ok(num), Ok(denom)) =
+                                    (parts[0].parse::<u8>(), parts[1].parse::<u8>())
+                                && denom > 0
+                            {
+                                Some(TimeValue {
+                                    unit: TimeUnit::Bars,
+                                    bar_num: num.max(1),
+                                    bar_denom: denom,
+                                    seconds: 0.0,
+                                    samples: 0.0,
+                                    hz: 0.0,
+                                })
+                            } else {
+                                None
+                            }
+                        }
+                    };
+                    if let Some(new_time) = new_time {
+                        if let Some(m) = self.patch_mut().module_mut(module_id) {
+                            if let Some(t) = m.params.get_time_mut(param_idx) {
+                                *t = new_time;
+                            }
+                            m.params.set_connected(param_idx, false);
+                        }
+                        self.patch_mut().rebuild_channels();
+                        self.commit_patch();
+                        success = true;
+                    }
+                } else if let Ok(val) = input_val.parse::<f32>() {
                     if let Some(m) = self.patch_mut().module_mut(module_id) {
                         m.params.set_float(param_idx, val);
                         m.params.set_connected(param_idx, false);
                     }
+                    self.patch_mut().rebuild_channels();
                     self.commit_patch();
+                    success = true;
                 }
+
+                if !success {
+                    self.message = Some("Invalid value".into());
+                }
+
                 self.mode = Mode::Edit {
                     module_id,
                     param_idx,
@@ -2374,7 +2476,8 @@ impl App {
                 self.value_input.handle(InputRequest::GoToEnd);
             }
             KeyCode::Char(c) => {
-                if c.is_ascii_digit() || c == '.' || c == '-' {
+                let is_time = matches!(param_kind, Some(ParamKind::Time));
+                if c.is_ascii_digit() || c == '.' || c == '-' || (is_time && c == '/') {
                     self.value_input.handle(InputRequest::InsertChar(c));
                 }
             }
@@ -2605,7 +2708,7 @@ impl App {
             bpm,
             bars,
         };
-        compile_patch(&mut compiled, self.patches(), NUM_VOICES, &ctx);
+        compile_patch(&mut compiled, self.patches(), NUM_VOICES, &ctx, true);
 
         let mut track_state = TrackState::new(NUM_VOICES);
         track_state.clock.bpm(bpm).bars(bars);
@@ -3992,60 +4095,84 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (output_tx, output_rx) = output_channel();
     let (cmd_tx, cmd_rx) = command_channel();
 
-    let player = AudioPlayer::new()?;
-    let sample_rate = player.config.sample_rate.0 as f32;
     let playing = Arc::new(Mutex::new(false));
-    let playing_clone = Arc::clone(&playing);
 
-    let stream = {
-        use assert_no_alloc::assert_no_alloc;
-        use cpal::traits::DeviceTrait;
+    #[cfg(feature = "live")]
+    let _stream = {
+        let player = AudioPlayer::new()?;
+        let sample_rate = player.config.sample_rate.0 as f32;
+        let playing_clone = Arc::clone(&playing);
 
-        let mut engine = AudioEngine::new(NUM_VOICES, sample_rate, cmd_rx, meter_tx);
-        let mut signal = Signal::new(sample_rate as usize);
-        let channels = player.config.channels as usize;
+        let stream = {
+            use assert_no_alloc::assert_no_alloc;
+            use cpal::traits::DeviceTrait;
 
-        let mut output_counter = 0usize;
-        player.device.build_output_stream(
-            &player.config,
-            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                engine.poll_commands();
+            let mut engine = AudioEngine::new(NUM_VOICES, sample_rate, cmd_rx, meter_tx);
+            let mut signal = Signal::new(sample_rate as usize);
+            let channels = player.config.channels as usize;
 
-                let is_playing = *playing_clone.lock().unwrap();
-                if !is_playing {
-                    for sample in data.iter_mut() {
-                        *sample = 0.0;
-                    }
-                    output_counter += data.len() / channels;
-                    while output_counter >= OUTPUT_INTERVAL {
-                        output_counter -= OUTPUT_INTERVAL;
-                        let _ = output_tx.try_send(0.0);
-                    }
-                    return;
-                }
+            let mut output_counter = 0usize;
+            const FADE_SAMPLES: usize = 2205;
+            let mut fade_gain: f32 = 0.0;
 
-                for frame in data.chunks_mut(channels) {
-                    let sample = assert_no_alloc(|| engine.process(&mut signal).clamp(-1., 1.));
+            player.device.build_output_stream(
+                &player.config,
+                move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                    engine.poll_commands();
 
-                    for channel_sample in frame.iter_mut() {
-                        *channel_sample = sample;
-                    }
+                    let is_playing = *playing_clone.lock().unwrap();
+                    let target_gain = if is_playing { 1.0 } else { 0.0 };
 
-                    output_counter += 1;
-                    if output_counter >= OUTPUT_INTERVAL {
-                        output_counter = 0;
-                        let _ = output_tx.try_send(sample);
+                    if !is_playing && fade_gain == 0.0 {
+                        for sample in data.iter_mut() {
+                            *sample = 0.0;
+                        }
+                        output_counter += data.len() / channels;
+                        while output_counter >= OUTPUT_INTERVAL {
+                            output_counter -= OUTPUT_INTERVAL;
+                            let _ = output_tx.try_send(0.0);
+                        }
+                        return;
                     }
 
-                    signal.advance();
-                }
-            },
-            |err| eprintln!("Audio error: {}", err),
-            None,
-        )?
+                    let fade_step = 1.0 / FADE_SAMPLES as f32;
+
+                    for frame in data.chunks_mut(channels) {
+                        if fade_gain < target_gain {
+                            fade_gain = (fade_gain + fade_step).min(1.0);
+                        } else if fade_gain > target_gain {
+                            fade_gain = (fade_gain - fade_step).max(0.0);
+                        }
+
+                        let sample = assert_no_alloc(|| engine.process(&mut signal).clamp(-1., 1.));
+                        let sample = sample * fade_gain;
+
+                        for channel_sample in frame.iter_mut() {
+                            *channel_sample = sample;
+                        }
+
+                        output_counter += 1;
+                        if output_counter >= OUTPUT_INTERVAL {
+                            output_counter = 0;
+                            let _ = output_tx.try_send(sample);
+                        }
+
+                        signal.advance();
+                    }
+                },
+                |err| eprintln!("Audio error: {}", err),
+                None,
+            )?
+        };
+
+        stream.play()?;
+        stream
     };
 
-    stream.play()?;
+    #[cfg(not(feature = "live"))]
+    {
+        let _ = (cmd_rx, meter_tx, output_tx);
+    }
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();

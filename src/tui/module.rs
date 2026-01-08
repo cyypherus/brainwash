@@ -589,6 +589,7 @@ impl ModuleKind {
             ModuleKind::Standard(Reverb),
             ModuleKind::Standard(Distortion),
             ModuleKind::Standard(Flanger),
+            ModuleKind::Standard(Probe),
             ModuleKind::Standard(Mul),
             ModuleKind::Standard(Add),
             ModuleKind::Standard(Gt),
@@ -596,7 +597,6 @@ impl ModuleKind {
             ModuleKind::Standard(Switch),
             ModuleKind::Standard(Rng),
             ModuleKind::Standard(Sample),
-            ModuleKind::Standard(Probe),
             ModuleKind::Standard(Output),
             ModuleKind::Routing(TurnRD),
             ModuleKind::Routing(TurnDR),
@@ -1765,15 +1765,22 @@ impl ModuleKind {
                     },
                     desc: None,
                 }],
-                StandardModule::Output => &[ParamDef {
-                    name: "In",
-                    kind: ParamKind::Float {
-                        min: -1.0,
-                        max: 1.0,
-                        step: 0.01,
+                StandardModule::Output => &[
+                    ParamDef {
+                        name: "In",
+                        kind: ParamKind::Input,
+                        desc: None,
                     },
-                    desc: None,
-                }],
+                    ParamDef {
+                        name: "Gain",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 1.0,
+                            step: 0.01,
+                        },
+                        desc: None,
+                    },
+                ],
             },
         }
     }
@@ -1897,6 +1904,7 @@ pub enum ModuleParams {
         connected: u8,
     },
     Output {
+        gain: f32,
         connected: u8,
     },
     SubPatch {
@@ -2040,7 +2048,10 @@ impl ModuleParams {
                     connected: 0xFF,
                 },
                 StandardModule::Probe => ModuleParams::Probe { connected: 0xFF },
-                StandardModule::Output => ModuleParams::Output { connected: 0xFF },
+                StandardModule::Output => ModuleParams::Output {
+                    gain: 0.5,
+                    connected: 0xFF,
+                },
             },
         }
     }
@@ -2223,6 +2234,10 @@ impl ModuleParams {
                 2 => Some(*feedback),
                 _ => None,
             },
+            ModuleParams::Output { gain, .. } => match idx {
+                1 => Some(*gain),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -2325,6 +2340,11 @@ impl ModuleParams {
             ModuleParams::Allpass { feedback, .. } => {
                 if idx == 2 {
                     *feedback = val
+                }
+            }
+            ModuleParams::Output { gain, .. } => {
+                if idx == 1 {
+                    *gain = val
                 }
             }
             _ => {}

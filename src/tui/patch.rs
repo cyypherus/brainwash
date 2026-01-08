@@ -85,7 +85,11 @@ impl PatchSet {
     pub fn create_subpatch(&mut self, name: String, color: Color) -> SubPatchId {
         let id = SubPatchId(self.next_subpatch_id);
         self.next_subpatch_id += 1;
-        self.patches.insert(Some(id), SubPatchDef::new(name, color));
+        let root = self.root();
+        let (width, height) = (root.grid.width(), root.grid.height());
+        let mut def = SubPatchDef::new(name, color);
+        def.patch = Patch::new(width, height);
+        self.patches.insert(Some(id), def);
         id
     }
 
