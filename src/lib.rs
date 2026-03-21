@@ -9,6 +9,7 @@ static A: rlsf::GlobalTlsf = rlsf::GlobalTlsf::new();
 mod allpass;
 mod clock;
 mod comb;
+mod compressor;
 mod delay;
 mod distortion;
 mod envelopes;
@@ -30,6 +31,7 @@ mod utils;
 mod wav;
 
 pub use clock::*;
+pub use compressor::*;
 pub use delay::*;
 pub use distortion::*;
 pub use envelopes::*;

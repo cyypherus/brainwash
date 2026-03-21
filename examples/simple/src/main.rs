@@ -71,7 +71,7 @@ fn main() {
             );
             // output = flng.freq(0.05).depth(1.).feedback(0.8).output(output, s) * 0.3;
 
-            let filtered = lpf1.freq(0.1).output(output, s);
+            let filtered = lpf1.freq(0.1).output(output, 0.0, s);
             output += filtered * 0.5;
 
             let tap = del.delay(6000.).tap();

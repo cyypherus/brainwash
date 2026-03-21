@@ -200,6 +200,7 @@ pub enum StandardModule {
     DelayTap(ModuleId),
     Reverb,
     Distortion,
+    Compressor,
     Flanger,
     Mul,
     Add,
@@ -254,6 +255,7 @@ impl ModuleKind {
                 StandardModule::DelayTap(_) => "Tap",
                 StandardModule::Reverb => "Verb",
                 StandardModule::Distortion => "Dist",
+                StandardModule::Compressor => "Comp",
                 StandardModule::Flanger => "Flang",
                 StandardModule::Mul => "Mul",
                 StandardModule::Add => "Add",
@@ -302,6 +304,7 @@ impl ModuleKind {
                 StandardModule::DelayTap(_) => "TAP",
                 StandardModule::Reverb => "VRB",
                 StandardModule::Distortion => "DST",
+                StandardModule::Compressor => "CMP",
                 StandardModule::Flanger => "FLG",
                 StandardModule::Mul => "MUL",
                 StandardModule::Add => "ADD",
@@ -350,6 +353,7 @@ impl ModuleKind {
                 StandardModule::DelayTap(_) => "Read from delay (feedback)",
                 StandardModule::Reverb => "FDN reverb with modulation",
                 StandardModule::Distortion => "Soft-clip distortion",
+                StandardModule::Compressor => "Dynamics compressor",
                 StandardModule::Flanger => "Flanger/chorus effect",
                 StandardModule::Mul => "Multiply A * B",
                 StandardModule::Add => "Add A + B",
@@ -390,6 +394,7 @@ impl ModuleKind {
                 | StandardModule::DelayTap(_)
                 | StandardModule::Reverb
                 | StandardModule::Distortion
+                | StandardModule::Compressor
                 | StandardModule::Flanger => Color::Rgb(200, 100, 255),
                 StandardModule::Mul
                 | StandardModule::Add
@@ -466,6 +471,7 @@ impl ModuleKind {
                 | StandardModule::DelayTap(_)
                 | StandardModule::Reverb
                 | StandardModule::Distortion
+                | StandardModule::Compressor
                 | StandardModule::Flanger
                 | StandardModule::Mul
                 | StandardModule::Add
@@ -516,6 +522,7 @@ impl ModuleKind {
                 | StandardModule::DelayTap(_)
                 | StandardModule::Reverb
                 | StandardModule::Distortion
+                | StandardModule::Compressor
                 | StandardModule::Flanger
                 | StandardModule::Mul
                 | StandardModule::Add
@@ -552,6 +559,7 @@ impl ModuleKind {
                 | StandardModule::DelayTap(_)
                 | StandardModule::Reverb
                 | StandardModule::Distortion
+                | StandardModule::Compressor
                 | StandardModule::Flanger => ModuleCategory::Effect,
                 StandardModule::Mul
                 | StandardModule::Add
@@ -588,6 +596,7 @@ impl ModuleKind {
             ModuleKind::Standard(DelayTap(ModuleId(0))),
             ModuleKind::Standard(Reverb),
             ModuleKind::Standard(Distortion),
+            ModuleKind::Standard(Compressor),
             ModuleKind::Standard(Flanger),
             ModuleKind::Standard(Probe),
             ModuleKind::Standard(Mul),
@@ -928,6 +937,7 @@ impl Module {
             | ModuleParams::Delay { .. }
             | ModuleParams::Reverb { .. }
             | ModuleParams::Distortion { .. }
+            | ModuleParams::Compressor { .. }
             | ModuleParams::Flanger { .. }
             | ModuleParams::Mul { .. }
             | ModuleParams::Add { .. }
@@ -1596,6 +1606,62 @@ impl ModuleKind {
                         desc: None,
                     },
                 ],
+                StandardModule::Compressor => &[
+                    ParamDef {
+                        name: "In",
+                        kind: ParamKind::Float {
+                            min: -1.0,
+                            max: 1.0,
+                            step: 0.01,
+                        },
+                        desc: None,
+                    },
+                    ParamDef {
+                        name: "Thresh",
+                        kind: ParamKind::Float {
+                            min: 0.01,
+                            max: 1.0,
+                            step: 0.01,
+                        },
+                        desc: Some("Level above which compression starts"),
+                    },
+                    ParamDef {
+                        name: "Ratio",
+                        kind: ParamKind::Float {
+                            min: 1.0,
+                            max: 20.0,
+                            step: 0.5,
+                        },
+                        desc: Some("Compression ratio (e.g. 4:1)"),
+                    },
+                    ParamDef {
+                        name: "Atk",
+                        kind: ParamKind::Float {
+                            min: 0.001,
+                            max: 0.5,
+                            step: 0.001,
+                        },
+                        desc: Some("Attack time in seconds"),
+                    },
+                    ParamDef {
+                        name: "Rel",
+                        kind: ParamKind::Float {
+                            min: 0.01,
+                            max: 2.0,
+                            step: 0.01,
+                        },
+                        desc: Some("Release time in seconds"),
+                    },
+                    ParamDef {
+                        name: "Gain",
+                        kind: ParamKind::Float {
+                            min: 0.0,
+                            max: 4.0,
+                            step: 0.1,
+                        },
+                        desc: Some("Makeup gain"),
+                    },
+                ],
                 StandardModule::Flanger => &[
                     ParamDef {
                         name: "In",
@@ -1868,6 +1934,14 @@ pub enum ModuleParams {
         feedback: f32,
         connected: u8,
     },
+    Compressor {
+        threshold: f32,
+        ratio: f32,
+        attack: f32,
+        release: f32,
+        makeup: f32,
+        connected: u8,
+    },
     Mul {
         a: f32,
         b: f32,
@@ -2015,6 +2089,14 @@ impl ModuleParams {
                     feedback: 0.3,
                     connected: 0xFF,
                 },
+                StandardModule::Compressor => ModuleParams::Compressor {
+                    threshold: 0.5,
+                    ratio: 4.0,
+                    attack: 0.01,
+                    release: 0.1,
+                    makeup: 1.0,
+                    connected: 0xFF,
+                },
                 StandardModule::Mul => ModuleParams::Mul {
                     a: 1.0,
                     b: 1.0,
@@ -2072,6 +2154,7 @@ impl ModuleParams {
             ModuleParams::Reverb { connected, .. } => *connected,
             ModuleParams::Distortion { connected, .. } => *connected,
             ModuleParams::Flanger { connected, .. } => *connected,
+            ModuleParams::Compressor { connected, .. } => *connected,
             ModuleParams::Mul { connected, .. } => *connected,
             ModuleParams::Add { connected, .. } => *connected,
 
@@ -2104,6 +2187,7 @@ impl ModuleParams {
             ModuleParams::Reverb { connected, .. } => Some(connected),
             ModuleParams::Distortion { connected, .. } => Some(connected),
             ModuleParams::Flanger { connected, .. } => Some(connected),
+            ModuleParams::Compressor { connected, .. } => Some(connected),
             ModuleParams::Mul { connected, .. } => Some(connected),
             ModuleParams::Add { connected, .. } => Some(connected),
 
@@ -2193,6 +2277,21 @@ impl ModuleParams {
                 1 => Some(*rate),
                 2 => Some(*depth),
                 3 => Some(*feedback),
+                _ => None,
+            },
+            ModuleParams::Compressor {
+                threshold,
+                ratio,
+                attack,
+                release,
+                makeup,
+                ..
+            } => match idx {
+                1 => Some(*threshold),
+                2 => Some(*ratio),
+                3 => Some(*attack),
+                4 => Some(*release),
+                5 => Some(*makeup),
                 _ => None,
             },
             ModuleParams::Mul { a, b, .. } => match idx {
@@ -2299,6 +2398,21 @@ impl ModuleParams {
                 1 => *rate = val,
                 2 => *depth = val,
                 3 => *feedback = val,
+                _ => {}
+            },
+            ModuleParams::Compressor {
+                threshold,
+                ratio,
+                attack,
+                release,
+                makeup,
+                ..
+            } => match idx {
+                1 => *threshold = val,
+                2 => *ratio = val,
+                3 => *attack = val,
+                4 => *release = val,
+                5 => *makeup = val,
                 _ => {}
             },
             ModuleParams::Mul { a, b, .. } => match idx {

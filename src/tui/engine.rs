@@ -4,6 +4,7 @@ use super::patch::{Patch, PatchSet};
 use crate::allpass::AllpassFilter;
 use crate::clock::Clock;
 use crate::comb::CombFilter;
+use crate::compressor::Compressor;
 use crate::delay::Delay;
 use crate::distortion::Distortion;
 use crate::envelopes::{ADSR, Envelope, EnvelopePoint, PointType};
@@ -196,6 +197,7 @@ enum NodeKind {
     DelayTap { delay_node: usize, gain: f32 },
     Reverb(Reverb),
     Distortion(Distortion),
+    Compressor(Compressor),
     Flanger(Flanger),
     Mul,
     Add,
@@ -247,6 +249,9 @@ impl NodeKind {
                 new.copy_state_from(old);
             }
             (NodeKind::Flanger(new), NodeKind::Flanger(old)) => {
+                new.copy_state_from(old);
+            }
+            (NodeKind::Compressor(new), NodeKind::Compressor(old)) => {
                 new.copy_state_from(old);
             }
             (
@@ -301,8 +306,15 @@ pub struct CompiledVoice {
 impl CompiledVoice {
     fn inherit_state_from(&mut self, old: &CompiledVoice) {
         self.last_gate = old.last_gate;
+        let old_index: HashMap<ModuleId, usize> = old
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.module_id, i))
+            .collect();
         for new_node in &mut self.nodes {
-            if let Some(old_node) = old.nodes.iter().find(|n| n.module_id == new_node.module_id) {
+            if let Some(&old_idx) = old_index.get(&new_node.module_id) {
+                let old_node = &old.nodes[old_idx];
                 new_node.kind.copy_state_from(&old_node.kind);
                 new_node.output = old_node.output;
             }
@@ -329,6 +341,7 @@ impl CompiledVoice {
                 | NodeKind::DelayTap { .. }
                 | NodeKind::Reverb(_)
                 | NodeKind::Distortion(_)
+                | NodeKind::Compressor(_)
                 | NodeKind::Flanger(_)
                 | NodeKind::Mul
                 | NodeKind::Add
@@ -426,6 +439,7 @@ impl CompiledVoice {
                 NodeKind::DelayTap { .. } => delay_tap_value.unwrap_or(0.0),
                 NodeKind::Reverb(reverb) => reverb.output(in0),
                 NodeKind::Distortion(dist) => dist.output(in0),
+                NodeKind::Compressor(comp) => comp.output(in0, signal.sample_rate as f32),
                 NodeKind::Flanger(flanger) => flanger.output(in0, signal),
                 NodeKind::Mul => in0 * in1,
                 NodeKind::Add => in0 + in1,
@@ -1441,6 +1455,25 @@ fn create_node_kind(module: &Module, ctx: &CompileContext) -> NodeKind {
             flanger.freq(*rate).depth(*depth).feedback(*feedback);
             NodeKind::Flanger(flanger)
         }
+        (
+            ModuleKind::Standard(StandardModule::Compressor),
+            ModuleParams::Compressor {
+                threshold,
+                ratio,
+                attack,
+                release,
+                makeup,
+                ..
+            },
+        ) => {
+            let mut comp = Compressor::default();
+            comp.threshold(*threshold)
+                .ratio(*ratio)
+                .attack(*attack)
+                .release(*release)
+                .makeup(*makeup);
+            NodeKind::Compressor(comp)
+        }
         (ModuleKind::Standard(StandardModule::Mul), _) => NodeKind::Mul,
         (ModuleKind::Standard(StandardModule::Add), _) => NodeKind::Add,
         (ModuleKind::Standard(StandardModule::Gt), _) => NodeKind::Gt,
@@ -1474,6 +1507,7 @@ fn create_node_kind(module: &Module, ctx: &CompileContext) -> NodeKind {
         | (ModuleKind::Standard(StandardModule::DelayTap(_)), _)
         | (ModuleKind::Standard(StandardModule::Reverb), _)
         | (ModuleKind::Standard(StandardModule::Distortion), _)
+        | (ModuleKind::Standard(StandardModule::Compressor), _)
         | (ModuleKind::Standard(StandardModule::Flanger), _)
         | (ModuleKind::Standard(StandardModule::Sample), _)
         | (ModuleKind::Standard(StandardModule::Output), _) => {

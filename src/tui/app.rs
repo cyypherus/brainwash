@@ -51,7 +51,8 @@ use std::collections::VecDeque;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use std::{io, time::Duration};
 
@@ -4095,7 +4096,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (output_tx, output_rx) = output_channel();
     let (cmd_tx, cmd_rx) = command_channel();
 
-    let playing = Arc::new(Mutex::new(false));
+    let playing = Arc::new(AtomicBool::new(false));
 
     #[cfg(feature = "live")]
     let _stream = {
@@ -4120,7 +4121,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                     engine.poll_commands();
 
-                    let is_playing = *playing_clone.lock().unwrap();
+                    let is_playing = playing_clone.load(Ordering::Relaxed);
                     let target_gain = if is_playing { 1.0 } else { 0.0 };
 
                     if !is_playing && fade_gain == 0.0 {
@@ -4190,7 +4191,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     loop {
-        *playing.lock().unwrap() = app.playing;
+        playing.store(app.playing, Ordering::Relaxed);
 
         terminal.draw(|f| app.ui(f))?;
 
