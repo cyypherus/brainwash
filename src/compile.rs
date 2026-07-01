@@ -14,13 +14,14 @@ pub struct CompiledPatch {
     values: Vec<Sample>,
     output: usize,
     probes: Vec<(crate::patch::ModuleId, usize)>,
+    meters: Vec<(crate::patch::ModuleId, usize)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PatchEngine {
-    active: Box<CompiledPatch>,
+    active: CompiledPatch,
     transition: Option<Transition>,
-    retired: Option<Box<CompiledPatch>>,
+    retired: Option<CompiledPatch>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -107,7 +108,7 @@ enum Node {
 
 #[derive(Clone, Debug, PartialEq)]
 struct Transition {
-    old: Box<CompiledPatch>,
+    old: CompiledPatch,
     position: usize,
 }
 
@@ -220,6 +221,7 @@ impl CompiledPatch {
             values: vec![Sample::ZERO],
             output: 0,
             probes: Vec::new(),
+            meters: Vec::new(),
         }
     }
 
@@ -260,6 +262,15 @@ impl CompiledPatch {
                 matches!(module, Module::Probe).then_some((*id, rank))
             })
             .collect();
+        let meters = order
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(rank, module_index)| {
+                let (id, module) = &patch.modules()[module_index];
+                (input_count(module) > 0).then_some((*id, rank))
+            })
+            .collect();
 
         let mut nodes = Vec::with_capacity(order.len());
         for module_index in order.iter().copied() {
@@ -279,6 +290,7 @@ impl CompiledPatch {
             values: vec![Sample::ZERO; patch.modules().len()],
             output,
             probes,
+            meters,
         })
     }
 
@@ -299,14 +311,24 @@ impl CompiledPatch {
             .iter()
             .map(|(id, index)| (*id, self.values[*index]))
     }
+
+    fn visit_input_values(&self, mut visitor: impl FnMut(crate::patch::ModuleId, usize, Sample)) {
+        for (id, index) in &self.meters {
+            for (input, source) in self.inputs[*index].iter().copied().enumerate() {
+                visitor(
+                    *id,
+                    input,
+                    source
+                        .map(|source| self.values[source])
+                        .unwrap_or(Sample::ZERO),
+                );
+            }
+        }
+    }
 }
 
 impl PatchEngine {
     pub fn new(active: CompiledPatch) -> Self {
-        Self::new_boxed(Box::new(active))
-    }
-
-    pub fn new_boxed(active: Box<CompiledPatch>) -> Self {
         Self {
             active,
             transition: None,
@@ -315,19 +337,6 @@ impl PatchEngine {
     }
 
     pub fn replace(&mut self, next: CompiledPatch) -> Result<(), UpdateRejected> {
-        self.replace_boxed(Box::new(next))
-            .map_err(|rejected| match rejected {
-                UpdateRejected::Busy(next) => UpdateRejected::Busy(*next),
-                UpdateRejected::RetiredPatchPending(next) => {
-                    UpdateRejected::RetiredPatchPending(*next)
-                }
-            })
-    }
-
-    pub fn replace_boxed(
-        &mut self,
-        next: Box<CompiledPatch>,
-    ) -> Result<(), UpdateRejected<Box<CompiledPatch>>> {
         if self.transition.is_some() {
             return Err(UpdateRejected::Busy(next));
         }
@@ -340,10 +349,6 @@ impl PatchEngine {
     }
 
     pub fn take_retired(&mut self) -> Option<CompiledPatch> {
-        self.take_retired_boxed().map(|patch| *patch)
-    }
-
-    pub fn take_retired_boxed(&mut self) -> Option<Box<CompiledPatch>> {
         self.retired.take()
     }
 
@@ -376,6 +381,10 @@ impl PatchEngine {
 
     pub fn probe_values(&self) -> impl Iterator<Item = (crate::patch::ModuleId, Sample)> + '_ {
         self.active.probe_values()
+    }
+
+    pub fn visit_input_values(&self, visitor: impl FnMut(crate::patch::ModuleId, usize, Sample)) {
+        self.active.visit_input_values(visitor);
     }
 }
 
@@ -939,11 +948,12 @@ fn input_count(module: &Module) -> usize {
     }
 }
 
-fn input_values(input_slots: &[Option<usize>], values: &[Sample]) -> Vec<Option<Sample>> {
-    input_slots
-        .iter()
-        .map(|source| source.and_then(|source| values.get(source).copied()))
-        .collect()
+fn input_values(input_slots: &[Option<usize>], values: &[Sample]) -> [Option<Sample>; 3] {
+    let mut inputs = [None; 3];
+    for (index, source) in input_slots.iter().copied().take(inputs.len()).enumerate() {
+        inputs[index] = source.and_then(|source| values.get(source).copied());
+    }
+    inputs
 }
 
 fn sample(inputs: &[Option<Sample>], index: usize) -> Sample {
@@ -1079,6 +1089,26 @@ mod tests {
         assert_eq!(values.len(), 1);
         assert_eq!(values[0].0, probe);
         assert!((values[0].1.value() - 0.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn input_values_expose_connected_module_inputs() {
+        let mut patch = Patch::new();
+        let source = patch.insert(Module::Constant(0.25));
+        let lowpass = patch.insert(Module::Lowpass {
+            cutoff: Hertz::new(1000.0).unwrap(),
+        });
+        patch.connect(source, lowpass).unwrap();
+        patch.output(lowpass).unwrap();
+
+        let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+        compiled.next();
+        let mut values = Vec::new();
+        compiled.visit_input_values(|module, input, value| {
+            values.push((module, input, value.value()));
+        });
+
+        assert!(values.contains(&(lowpass, 0, 0.25)));
     }
 
     #[test]

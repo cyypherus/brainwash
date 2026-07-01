@@ -1,12 +1,10 @@
 use crate::model::{
-    GridPointerPhase, GridPos, GuiAction, GuiState, Mode, ModuleCategory, ModuleKind, Orientation,
-    ParameterValue,
+    EnvPointerPhase, GridPointerPhase, GridPos, GridViewSize, GuiAction, GuiState, Mode,
+    ModuleCategory, ModuleId, ModuleKind, Orientation, ParameterValue,
 };
 use haven::*;
 
 const ROOT: u64 = 1;
-const GRID_COLUMNS: u16 = 16;
-const GRID_ROWS: u16 = 12;
 const CELL: f32 = 30.;
 const GAP: f32 = 3.;
 const TILE_PAD: f32 = 3.;
@@ -14,23 +12,31 @@ const PORT_SIZE: f32 = 7.;
 const PORT_INSET: f32 = 1.;
 const WIRE_THICKNESS: f32 = 4.;
 const PALETTE_ROW_HEIGHT: f32 = 23.;
+const TITLE_BAR_SPACE: f32 = 40.;
+const PANEL_GAP: f32 = 10.;
+const ENVELOPE_VALUE_MIN: f32 = -1.;
+const ENVELOPE_VALUE_MAX: f32 = 1.;
+const PREVIEW_ID_OFFSET: u64 = 100_000;
 
 pub fn main_view<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
+    let side_panel = shortcut_panel(state, app);
+
     let mut layers = vec![
-        key_surface(app).expand(),
-        column_spaced(
-            10.,
+        row_spaced_aligned(
+            PANEL_GAP,
+            Align::TopLeading,
             vec![
-                toolbar(state, app).height(34.),
-                patch_panel(state, app).expand(),
+                column_spaced(
+                    PANEL_GAP,
+                    vec![toolbar(state, app), patch_panel(state, app).expand()],
+                )
+                .expand(),
+                side_panel,
             ],
         )
-        .pad(10.)
+        .pad(PANEL_GAP)
         .expand(),
     ];
-    if let Some(panel) = context_panel(state, app) {
-        layers.push(panel.pad_x(10.).pad_y(54.).align(Align::TopTrailing));
-    }
     if matches!(
         state.mode(),
         Mode::QuitConfirm
@@ -49,88 +55,95 @@ pub fn main_view<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
                 .align(Align::CenterCenter),
         );
     }
-    stack(layers).align(Align::TopLeading)
+    let mut root_layers = vec![
+        key_surface(app).expand(),
+        stack(layers).pad_top(TITLE_BAR_SPACE).expand(),
+    ];
+    if matches!(state.mode(), Mode::Palette) || state.palette_searching() {
+        root_layers.push(
+            stack(vec![palette_panel(state, app).align(Align::CenterCenter)])
+                .pad_top(TITLE_BAR_SPACE)
+                .expand(),
+        );
+    }
+    stack(root_layers).align(Align::TopLeading)
 }
 
 fn key_surface(app: &mut PaneState) -> View<'static, GuiState> {
     stack(vec![
-        rect(ROOT)
-            .fill(bg())
-            .view()
-            .gesture(key("h", GuiAction::Left))
-            .gesture(key("j", GuiAction::Down))
-            .gesture(key("k", GuiAction::Up))
-            .gesture(key("l", GuiAction::Right))
-            .gesture(key("H", GuiAction::LeftFast))
-            .gesture(key("J", GuiAction::DownFast))
-            .gesture(key("K", GuiAction::UpFast))
-            .gesture(key("L", GuiAction::RightFast))
-            .gesture(new_or_no_key())
-            .gesture(key("m", GuiAction::Move))
-            .gesture(yes_key("y", GuiAction::Copy))
-            .gesture(key("i", GuiAction::Edit))
-            .gesture(key("o", GuiAction::Rotate))
-            .gesture(env_key(".", GuiAction::Delete, GuiAction::DeletePoint))
-            .gesture(key("c", GuiAction::ToggleCurve))
-            .gesture(key("r", GuiAction::Delete))
-            .gesture(key(",", GuiAction::Select))
-            .gesture(key("p", GuiAction::EditSubpatch))
-            .gesture(key_named(NamedKey::Space, GuiAction::TogglePlay))
-            .gesture(key("v", GuiAction::ToggleMeters))
-            .gesture(key("O", GuiAction::Load))
-            .gesture(key("w", GuiAction::Save))
-            .gesture(key("W", GuiAction::SaveAs))
-            .gesture(key("e", GuiAction::Export))
-            .gesture(key("Q", GuiAction::Quit))
-            .gesture(yes_key("Y", GuiAction::Confirm))
-            .gesture(key("N", GuiAction::Cancel))
-            .gesture(key("/", GuiAction::Search))
-            .gesture(edit_key("u", GuiAction::Undo, GuiAction::CycleUnit))
-            .gesture(key("U", GuiAction::Redo))
-            .gesture(key(";", GuiAction::TogglePort))
-            .gesture(step_key())
-            .gesture(edit_key("t", GuiAction::TrackEdit, GuiAction::TypeValue))
-            .gesture(key("+", GuiAction::NewInstrument))
-            .gesture(key("[", GuiAction::HelpScrollUp))
-            .gesture(key("]", GuiAction::HelpScrollDown))
-            .gesture(key("1", GuiAction::Instrument(0)))
-            .gesture(key("2", GuiAction::Instrument(1)))
-            .gesture(key("3", GuiAction::Instrument(2)))
-            .gesture(key("4", GuiAction::Instrument(3)))
-            .gesture(key("5", GuiAction::Instrument(4)))
-            .gesture(key_named(NamedKey::Enter, GuiAction::Confirm))
-            .gesture(key_named(NamedKey::Escape, GuiAction::Cancel))
-            .gesture(key_named(NamedKey::Backspace, GuiAction::Backspace))
-            .gesture(key_named(NamedKey::Delete, GuiAction::DeleteChar))
-            .gesture(key_named(NamedKey::Home, GuiAction::TextStart))
-            .gesture(key_named(NamedKey::End, GuiAction::TextEnd))
-            .gesture(key_named(NamedKey::ArrowLeft, GuiAction::Left))
-            .gesture(key_named(NamedKey::ArrowDown, GuiAction::Down))
-            .gesture(key_named(NamedKey::ArrowUp, GuiAction::Up))
-            .gesture(key_named(NamedKey::ArrowRight, GuiAction::Right))
-            .build(app)
-            .expand(),
-        text_input_keys(app).expand(),
+        rect(ROOT).fill(bg()).build(app).expand(),
+        binding_surface(app, None).expand(),
     ])
 }
 
+fn binding_surface(
+    app: &mut PaneState,
+    grid_size: Option<GridViewSize>,
+) -> View<'static, GuiState> {
+    let mut layers = Vec::new();
+    layers.extend(
+        binding_inputs()
+            .into_iter()
+            .enumerate()
+            .map(|(index, input)| {
+                rect(8_000 + index as u64)
+                    .fill(Color::TRANSPARENT)
+                    .view()
+                    .gesture(binding_key(8_500 + index as u64, input, grid_size))
+                    .build(app)
+                    .expand()
+            }),
+    );
+    stack(layers)
+}
+
 fn toolbar<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
-    row_spaced(
-        6.,
+    row_spaced_aligned(
+        PANEL_GAP,
+        Align::TopLeading,
         vec![
-            status_chip(status_text(state), accent(), app),
             action_button(
+                binding!(state.play_button),
                 if state.playing() { "Pause" } else { "Play" },
                 GuiAction::TogglePlay,
                 state.playing(),
                 app,
             ),
-            action_button("Meters", GuiAction::ToggleMeters, state.show_meters(), app),
-            action_button("Load", GuiAction::Load, false, app),
-            action_button("Save", GuiAction::Save, false, app),
-            action_button("Export", GuiAction::Export, false, app),
-            action_button("Track", GuiAction::TrackEdit, false, app),
-            action_button("Inst", GuiAction::NewInstrument, false, app),
+            action_button(
+                binding!(state.meters_button),
+                "Meters",
+                GuiAction::ToggleMeters,
+                state.show_meters(),
+                app,
+            ),
+            action_button(
+                binding!(state.load_button),
+                "Load",
+                GuiAction::Load,
+                false,
+                app,
+            ),
+            action_button(
+                binding!(state.save_button),
+                "Save",
+                GuiAction::Save,
+                false,
+                app,
+            ),
+            action_button(
+                binding!(state.export_button),
+                "Export",
+                GuiAction::Export,
+                false,
+                app,
+            ),
+            action_button(
+                binding!(state.track_button),
+                "Track",
+                GuiAction::TrackEdit,
+                false,
+                app,
+            ),
             status_chip(
                 format!(
                     "{} / {}",
@@ -144,22 +157,9 @@ fn toolbar<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
     )
 }
 
-fn context_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> Option<View<'a, GuiState>> {
-    match state.mode() {
-        Mode::Palette => Some(palette_panel(state, app)),
-        Mode::Edit { .. }
-        | Mode::ValueInput { .. }
-        | Mode::AdsrEdit { .. }
-        | Mode::EnvEdit { .. }
-        | Mode::ProbeEdit { .. }
-        | Mode::SampleView { .. } => Some(edit_panel(state, app)),
-        _ if state.palette_searching() => Some(palette_panel(state, app)),
-        _ => None,
-    }
-}
-
 fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
     let (width, height) = palette_panel_size(state);
+    let content_width = width - 24.;
     let content = if state.palette_searching() {
         let filter = state.palette_filter().to_string();
         let modules = state
@@ -171,6 +171,7 @@ fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
                     index,
                     *kind,
                     Some(*kind) == state.selected_filtered_palette_module(),
+                    content_width,
                     app,
                 )
             })
@@ -190,7 +191,8 @@ fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
                     .build(app)
                     .pad_x(9.)
                     .pad_y(7.),
-            ]),
+            ])
+            .width(content_width),
             column_spaced(6., modules),
         ]
     } else {
@@ -205,13 +207,10 @@ fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
             .map(|(index, kind)| {
                 let selected =
                     state.mode() == Mode::Palette && *kind == state.selected_palette_module();
-                module_choice(index, *kind, selected, app)
+                module_choice(index, *kind, selected, content_width, app)
             })
             .collect::<Vec<_>>();
-        vec![
-            row_spaced(6., categories),
-            column_spaced(6., modules),
-        ]
+        vec![row_spaced(6., categories), column_spaced(6., modules)]
     };
 
     stack(vec![
@@ -274,7 +273,9 @@ fn palette_panel_size(state: &GuiState) -> (f32, f32) {
             .map(|category| row_width(category.label(), 13.))
             .sum::<f32>()
             + GAP * ModuleCategory::ALL.len().saturating_sub(1) as f32;
-        let width = title_w.max(module_w + PANEL_PAD).max(category_w + PANEL_PAD);
+        let width = title_w
+            .max(module_w + PANEL_PAD)
+            .max(category_w + PANEL_PAD);
         let height = PANEL_PAD
             + TITLE_H
             + TITLE_GAP
@@ -302,41 +303,153 @@ fn text_width(label: &str, font_size: f32) -> f32 {
 }
 
 fn patch_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
-    stack(vec![
-        rect(300)
-            .fill(Color::from_rgb8(18, 20, 24))
-            .stroke(line(), Stroke::new(1.))
-            .corner_rounding(8.)
-            .build(app),
-        column_spaced(
-            10.,
-            vec![
-                row_spaced(
-                    8.,
-                    vec![
-                        text(301, "Patch")
-                            .font_size(18)
-                            .fill(fg())
-                            .view()
-                            .build(app),
-                        status_chip(mode_text(state), panel(), app),
-                        status_chip(format!("Sub {}", state.subpatch_depth()), panel(), app),
-                    ],
-                )
-                .height(28.),
-                patch_grid(state, app),
-                shortcut_bar(state, app).height(34.),
-            ],
-        )
-        .pad(10.),
-    ])
+    let parameter_edit = matches!(state.mode(), Mode::Edit { .. } | Mode::ValueInput { .. });
+    let align = if parameter_edit {
+        Align::CenterCenter
+    } else {
+        Align::TopLeading
+    };
+    let content = match state.mode() {
+        Mode::Edit { .. } | Mode::ValueInput { .. } => edit_panel(state, app).pad(PANEL_GAP),
+        Mode::AdsrEdit { .. }
+        | Mode::EnvEdit { .. }
+        | Mode::ProbeEdit { .. }
+        | Mode::SampleView { .. } => edit_panel(state, app).expand().pad(PANEL_GAP),
+        _ => patch_grid(state).pad(PANEL_GAP).expand(),
+    };
+    stack_aligned(
+        align,
+        vec![
+            rect(300)
+                .fill(Color::from_rgb8(18, 20, 24))
+                .stroke(mode_color(state), Stroke::new(1.5))
+                .corner_rounding(8.)
+                .build(app),
+            content,
+        ],
+    )
 }
 
-fn patch_grid<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
-    let rows = (0..GRID_ROWS)
+fn mode_overlay<'a>(state: &GuiState, app: &mut PaneState) -> View<'a, GuiState> {
+    let label = mode_text(state).to_ascii_uppercase();
+    let width = text_width(&label, 11.) + 16.;
+    stack(vec![
+        rect(301)
+            .fill(Color::from_rgb8(8, 10, 12).with_alpha(0.76))
+            .stroke(mode_color(state), Stroke::new(1.))
+            .corner_rounding(4.)
+            .build(app)
+            .inert(),
+        text(302, label)
+            .font_size(11)
+            .fill(fg())
+            .view()
+            .build(app)
+            .pad_x(8.)
+            .pad_y(5.),
+    ])
+    .width(width)
+    .height(24.)
+    .inert()
+}
+
+fn mode_color(state: &GuiState) -> Color {
+    match state.mode() {
+        Mode::Normal => line(),
+        Mode::Palette => module_color(state.palette_category()),
+        Mode::Move { .. }
+        | Mode::Copy { .. }
+        | Mode::Select { .. }
+        | Mode::SelectMove { .. }
+        | Mode::CopySelection { .. } => Color::from_rgb8(255, 200, 100),
+        Mode::Edit { .. }
+        | Mode::ValueInput { .. }
+        | Mode::AdsrEdit { .. }
+        | Mode::EnvEdit { .. }
+        | Mode::ProbeEdit { .. }
+        | Mode::SampleView { .. }
+        | Mode::TrackSettings { .. } => accent(),
+        Mode::QuitConfirm
+        | Mode::SavePrompt
+        | Mode::SaveConfirm
+        | Mode::ExportPrompt
+        | Mode::ExportConfirm
+        | Mode::TrackPrompt => Color::from_rgb8(190, 76, 91),
+    }
+}
+
+fn patch_grid<'a>(state: &'a GuiState) -> View<'a, GuiState> {
+    draw(move |area, app: &mut PaneState| grid_view(state, app, grid_view_size(state, area), area))
+        .expand()
+        .clipped(rect_path)
+}
+
+fn grid_view<'a>(
+    state: &'a GuiState,
+    app: &mut PaneState,
+    size: GridViewSize,
+    area: Area,
+) -> Vec<PaneElement<GuiState>> {
+    let preview = grid_preview(state);
+    let view = state.grid_view_offset_for_size(size);
+    let pixel_x = view.x as f32 * (CELL + GAP);
+    let pixel_y = view.y as f32 * (CELL + GAP);
+    let hidden = preview
+        .filter(|preview| !preview.copy)
+        .map(|preview| {
+            if let Some(module) = preview.source_module {
+                vec![module]
+            } else {
+                modules_in_rect(state, preview.source_min, preview.source_max)
+            }
+        })
+        .unwrap_or_default();
+    let mut layers = vec![
+        grid_content(
+            state,
+            app,
+            0,
+            &hidden,
+            preview.is_none_or(|preview| preview.copy),
+        )
+        .offset(-pixel_x, -pixel_y),
+    ];
+    if let Some(preview) = preview {
+        layers.push(grid_preview_layer(
+            state,
+            app,
+            preview,
+            pixel_x,
+            pixel_y,
+            area.width,
+            area.height,
+        ));
+    }
+    layers.push(mode_overlay(state, app).offset(6., (area.height - 30.).max(0.)));
+    layers.push(
+        grid_pointer_surface(app, view, size, area)
+            .width(area.width)
+            .height(area.height),
+    );
+    layers.push(binding_surface(app, Some(size)).expand());
+    stack_aligned(Align::TopLeading, layers)
+        .width(area.width)
+        .height(area.height)
+        .draw(area, app)
+}
+
+fn grid_content<'a>(
+    state: &'a GuiState,
+    app: &mut PaneState,
+    id_offset: u64,
+    hidden: &[ModuleId],
+    show_selection: bool,
+) -> View<'a, GuiState> {
+    let (columns, rows) = state.grid_size();
+    let row_views = (0..rows)
         .map(|y| {
-            let cells = (0..GRID_COLUMNS)
-                .map(|x| grid_cell(state, GridPos::new(x, y), app))
+            let cells = (0..columns)
+                .map(|x| grid_cell(state, GridPos::new(x, y), id_offset, show_selection, app))
                 .collect::<Vec<_>>();
             row_spaced(GAP, cells).height(CELL)
         })
@@ -344,21 +457,183 @@ fn patch_grid<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState
     stack_aligned(
         Align::TopLeading,
         vec![
-            column_spaced(GAP, rows),
-            connection_layer(state, app),
-            module_layer(state, app),
-            grid_pointer_surface(app)
-                .width(grid_width())
-                .height(grid_height()),
+            column_spaced(GAP, row_views),
+            connection_layer(state, app, id_offset, hidden),
+            module_layer(state, app, id_offset, hidden),
         ],
     )
-    .width(grid_width())
-    .height(grid_height())
+    .width(grid_span(columns))
+    .height(grid_span(rows))
+    .inert()
 }
 
-fn connection_layer<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
+#[derive(Clone, Copy)]
+struct GridPreview {
+    source_module: Option<ModuleId>,
+    source_min: GridPos,
+    source_max: GridPos,
+    dx: i16,
+    dy: i16,
+    copy: bool,
+}
+
+fn grid_preview(state: &GuiState) -> Option<GridPreview> {
+    match state.mode() {
+        Mode::Move { module, origin } => {
+            let module = state.moving_module(module)?;
+            let width = state.module_width(module).saturating_sub(1);
+            let height = state.module_height(module).saturating_sub(1);
+            Some(GridPreview {
+                source_module: Some(module.id()),
+                source_min: module.position(),
+                source_max: GridPos::new(module.position().x + width, module.position().y + height),
+                dx: bounded_grid_delta(
+                    module.position().x,
+                    module.position().x + width,
+                    state.cursor().x as i16 - origin.x as i16,
+                    state.grid_size().0,
+                ),
+                dy: bounded_grid_delta(
+                    module.position().y,
+                    module.position().y + height,
+                    state.cursor().y as i16 - origin.y as i16,
+                    state.grid_size().1,
+                ),
+                copy: false,
+            })
+        }
+        Mode::SelectMove {
+            anchor,
+            extent,
+            origin,
+        }
+        | Mode::CopySelection {
+            anchor,
+            extent,
+            origin,
+        } => {
+            let source_min = GridPos::new(anchor.x.min(extent.x), anchor.y.min(extent.y));
+            let source_max = GridPos::new(anchor.x.max(extent.x), anchor.y.max(extent.y));
+            Some(GridPreview {
+                source_module: None,
+                source_min,
+                source_max,
+                dx: bounded_grid_delta(
+                    source_min.x,
+                    source_max.x,
+                    state.cursor().x as i16 - origin.x as i16,
+                    state.grid_size().0,
+                ),
+                dy: bounded_grid_delta(
+                    source_min.y,
+                    source_max.y,
+                    state.cursor().y as i16 - origin.y as i16,
+                    state.grid_size().1,
+                ),
+                copy: matches!(state.mode(), Mode::CopySelection { .. }),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn bounded_grid_delta(min: u16, max: u16, delta: i16, size: u16) -> i16 {
+    let lower = -(min as i16);
+    let upper = size.saturating_sub(1).saturating_sub(max) as i16;
+    delta.clamp(lower, upper)
+}
+
+fn grid_preview_layer<'a>(
+    state: &'a GuiState,
+    app: &mut PaneState,
+    preview: GridPreview,
+    view_x: f32,
+    view_y: f32,
+    width: f32,
+    height: f32,
+) -> View<'a, GuiState> {
+    let modules = if let Some(source_module) = preview.source_module {
+        state
+            .moving_module(source_module)
+            .into_iter()
+            .collect::<Vec<_>>()
+    } else {
+        state
+            .modules()
+            .iter()
+            .filter(|module| {
+                module_overlaps_rect(state, module, preview.source_min, preview.source_max)
+            })
+            .collect::<Vec<_>>()
+    };
+    stack_aligned(
+        Align::TopLeading,
+        modules
+            .into_iter()
+            .map(|module| {
+                let position = module.position();
+                let target_x = position.x as i16 + preview.dx;
+                let target_y = position.y as i16 + preview.dy;
+                let probe_value = (module.kind() == ModuleKind::Probe)
+                    .then(|| state.probe_history(module.id()).last().copied())
+                    .flatten();
+                let meter_values = if state.show_meters() {
+                    state.meter_values(module.id())
+                } else {
+                    Vec::new()
+                };
+                module_tile(
+                    PREVIEW_ID_OFFSET + cell_id(position),
+                    state,
+                    module,
+                    probe_value,
+                    &meter_values,
+                    0.58,
+                    app,
+                )
+                .offset(
+                    target_x as f32 * (CELL + GAP) + TILE_PAD - view_x,
+                    target_y as f32 * (CELL + GAP) + TILE_PAD - view_y,
+                )
+            })
+            .collect(),
+    )
+    .width(width)
+    .height(height)
+}
+
+fn modules_in_rect(state: &GuiState, min: GridPos, max: GridPos) -> Vec<ModuleId> {
+    state
+        .modules()
+        .iter()
+        .filter(|module| module_overlaps_rect(state, module, min, max))
+        .map(|module| module.id())
+        .collect()
+}
+
+fn module_overlaps_rect(
+    state: &GuiState,
+    module: &crate::model::Module,
+    min: GridPos,
+    max: GridPos,
+) -> bool {
+    module.position().x <= max.x
+        && module.position().x + state.module_width(module) > min.x
+        && module.position().y <= max.y
+        && module.position().y + state.module_height(module) > min.y
+}
+
+fn connection_layer<'a>(
+    state: &'a GuiState,
+    app: &mut PaneState,
+    id_offset: u64,
+    hidden: &[ModuleId],
+) -> View<'a, GuiState> {
     let mut layers = Vec::new();
     for (index, connection) in state.connections().into_iter().enumerate() {
+        if hidden.contains(&connection.from()) || hidden.contains(&connection.to()) {
+            continue;
+        }
         let Some(_) = state
             .modules()
             .iter()
@@ -373,7 +648,7 @@ fn connection_layer<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, Gu
         else {
             continue;
         };
-        let id = 60_000 + index as u64 * 10;
+        let id = id_offset + 60_000 + index as u64 * 10;
         let segment = connection_segment(
             connection.from_cell(),
             connection.orientation(),
@@ -390,8 +665,8 @@ fn connection_layer<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, Gu
         );
     }
     stack_aligned(Align::TopLeading, layers)
-        .width(grid_width())
-        .height(grid_height())
+        .width(grid_span(state.grid_size().0))
+        .height(grid_span(state.grid_size().1))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -435,34 +710,46 @@ fn port_center(position: GridPos, orientation: Orientation, output: bool) -> (f3
     }
 }
 
-fn module_layer<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
+fn module_layer<'a>(
+    state: &'a GuiState,
+    app: &mut PaneState,
+    id_offset: u64,
+    hidden: &[ModuleId],
+) -> View<'a, GuiState> {
     stack_aligned(
         Align::TopLeading,
         state
             .modules()
             .iter()
+            .filter(|module| !hidden.contains(&module.id()))
             .map(|module| {
                 let position = module.position();
-                module_tile(cell_id(position), module, app).offset(
+                let probe_value = (module.kind() == ModuleKind::Probe)
+                    .then(|| state.probe_history(module.id()).last().copied())
+                    .flatten();
+                let meter_values = if state.show_meters() {
+                    state.meter_values(module.id())
+                } else {
+                    Vec::new()
+                };
+                module_tile(
+                    id_offset + cell_id(position),
+                    state,
+                    module,
+                    probe_value,
+                    &meter_values,
+                    1.,
+                    app,
+                )
+                .offset(
                     position.x as f32 * (CELL + GAP) + TILE_PAD,
                     position.y as f32 * (CELL + GAP) + TILE_PAD,
                 )
             })
             .collect(),
     )
-    .width(grid_width())
-    .height(grid_height())
-}
-
-fn shortcut_bar<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
-    row_spaced(
-        6.,
-        shortcuts(state)
-            .iter()
-            .enumerate()
-            .map(|(index, (key, label))| shortcut_chip(index, key, label, app))
-            .collect(),
-    )
+    .width(grid_span(state.grid_size().0))
+    .height(grid_span(state.grid_size().1))
 }
 
 fn edit_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
@@ -477,6 +764,7 @@ fn edit_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState
     };
     let module = module_id.and_then(|id| state.modules().iter().find(|module| module.id() == id));
     let mut rows = Vec::new();
+    let expand_panel = matches!(state.mode(), Mode::EnvEdit { .. } | Mode::ProbeEdit { .. });
     match (state.mode(), module) {
         (Mode::Edit { parameter, .. }, Some(module)) => {
             rows.push(editor_header(500, module.kind().label(), "Parameters", app));
@@ -511,7 +799,9 @@ fn edit_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState
                 "Envelope points",
                 app,
             ));
-            rows.push(envelope_editor(module.env_points(), point, editing, app));
+            rows.push(
+                envelope_editor(module.id(), module.env_points(), point, editing, app).expand_y(),
+            );
         }
         (Mode::ProbeEdit { .. }, Some(module)) => {
             rows.push(editor_header(
@@ -520,7 +810,9 @@ fn edit_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState
                 "Signal probe",
                 app,
             ));
-            rows.push(probe_editor(state.probe_history(module.id()), state.probe_len(), app));
+            rows.push(
+                probe_editor(state.probe_history(module.id()), state.probe_len(), app).expand_y(),
+            );
         }
         (Mode::SampleView { zoom, offset, .. }, Some(module)) => {
             rows.push(editor_header(
@@ -541,15 +833,26 @@ fn edit_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState
             );
         }
     }
-    stack(vec![
+    let content = column_spaced(5., rows).pad(10.);
+    let content = if expand_panel {
+        content.expand_y()
+    } else {
+        content
+    };
+    let panel = stack(vec![
         rect(501)
             .fill(panel())
             .stroke(line(), Stroke::new(1.))
             .corner_rounding(8.)
             .build(app)
             .inert(),
-        column_spaced(5., rows).pad(10.),
-    ])
+        content,
+    ]);
+    if expand_panel {
+        panel.expand_y()
+    } else {
+        panel
+    }
 }
 
 fn editor_header<'a>(
@@ -593,7 +896,7 @@ fn parameter_row<'a>(
             3.,
             vec![
                 row_spaced(
-                    8.,
+                    PANEL_GAP,
                     vec![
                         text(id + 1, parameter.name())
                             .font_size(12)
@@ -749,13 +1052,27 @@ fn prompt_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSta
                     .height(22.),
                 input.height(38.),
                 row_spaced(
-                    8.,
+                    PANEL_GAP,
                     vec![
-                        action_button("Cancel", GuiAction::Cancel, false, app).width(82.),
-                        action_button("Confirm", GuiAction::Confirm, true, app).width(92.),
+                        action_button(
+                            binding!(state.cancel_button),
+                            "Cancel",
+                            GuiAction::Cancel,
+                            false,
+                            app,
+                        )
+                        .width(82.),
+                        action_button(
+                            binding!(state.confirm_button),
+                            "Confirm",
+                            GuiAction::Confirm,
+                            true,
+                            app,
+                        )
+                        .width(92.),
                     ],
                 )
-                .height(34.),
+                .height(28.),
             ],
         )
         .pad(14.),
@@ -787,50 +1104,143 @@ fn adsr_editor<'a>(
 }
 
 fn envelope_editor<'a>(
+    module: ModuleId,
     points: &'a [crate::model::EnvPoint],
     selected: usize,
     editing: bool,
     app: &mut PaneState,
 ) -> View<'a, GuiState> {
     let graph_points = points.to_vec();
-    let mut layers = vec![
+    let point_views = points.to_vec();
+    let value_labels = row_spaced(
+        PANEL_GAP,
+        points
+            .iter()
+            .enumerate()
+            .map(|(index, point)| {
+                let marker = if point.curve { "~" } else { "/" };
+                text(
+                    880 + index as u64,
+                    format!(
+                        "{marker}{:.2},{:+.2}",
+                        envelope_point_time(*point),
+                        envelope_point_value(*point)
+                    ),
+                )
+                .font_size(12)
+                .fill(if selected == index {
+                    if editing { fg() } else { accent() }
+                } else {
+                    quiet()
+                })
+                .view()
+                .build(app)
+            })
+            .collect(),
+    );
+    let graph = draw(move |area, app: &mut PaneState| {
+        let graph_points_for_path = graph_points.clone();
+        let width = (area.width - 20.).max(1.);
+        let height = (area.height - 20.).max(1.);
+        let mut graph_layers = vec![
+            rect(842)
+                .fill(Color::TRANSPARENT)
+                .stroke(quiet(), Stroke::new(1.))
+                .corner_rounding(3.)
+                .build(app)
+                .pad(10.)
+                .inert(),
+            path(841, move |area| envelope_path(area, &graph_points_for_path))
+                .stroke(Color::from_rgb8(255, 200, 100), Stroke::new(2.))
+                .build(app)
+                .pad(10.),
+        ];
+        graph_layers.extend(point_views.iter().enumerate().map(|(index, point)| {
+            let x = envelope_point_time(*point).clamp(0., 1.);
+            let y = envelope_point_y(envelope_point_value(*point));
+            envelope_point(
+                850 + index as u64,
+                x,
+                y,
+                point.curve,
+                selected == index,
+                editing,
+                app,
+            )
+        }));
+        graph_layers.push(
+            rect(843)
+                .fill(Color::TRANSPARENT)
+                .view()
+                .gesture(gesture::drag(844).button(MouseButton::Left).run(
+                    move |state: &mut GuiState, _app, drag| {
+                        let (phase, point) = match drag {
+                            DragPhase::Began { start, .. } => (EnvPointerPhase::Start, start),
+                            DragPhase::Updated { current, .. } => (EnvPointerPhase::Drag, current),
+                            DragPhase::Completed { current, .. } => (EnvPointerPhase::End, current),
+                        };
+                        let time = (point.x / width).clamp(0., 1.);
+                        let y = (point.y / height).clamp(0., 1.);
+                        let value = (ENVELOPE_VALUE_MAX
+                            - y * (ENVELOPE_VALUE_MAX - ENVELOPE_VALUE_MIN))
+                            .clamp(ENVELOPE_VALUE_MIN, ENVELOPE_VALUE_MAX);
+                        state.drag_env_point(phase, module, time, value);
+                    },
+                ))
+                .build(app)
+                .pad(10.),
+        );
+        stack(graph_layers).draw(area, app)
+    });
+    stack(vec![
         rect(840)
             .fill(field())
             .stroke(line(), Stroke::new(1.))
             .corner_rounding(6.)
             .build(app)
             .inert(),
-        rect(842)
-            .fill(Color::TRANSPARENT)
-            .stroke(quiet(), Stroke::new(1.))
-            .corner_rounding(3.)
-            .build(app)
-            .pad(10.)
-            .inert(),
-        path(841, move |area| envelope_path(area, &graph_points))
-            .stroke(Color::from_rgb8(255, 200, 100), Stroke::new(2.))
-            .build(app)
-            .pad(10.),
-    ];
-    layers.extend(points.iter().enumerate().map(|(index, point)| {
-        let x = (point.time as f32 / 100.).clamp(0., 1.);
-        let y = (1. - ((point.value + 100) as f32 / 200.).clamp(0., 1.)).clamp(0., 1.);
-        envelope_point(
-            850 + index as u64,
-            x,
-            y,
-            point.curve,
-            selected == index,
-            editing,
-            app,
-        )
-    }));
-    stack(layers).height_range(92.0..=150.0)
+        column_spaced(8., vec![value_labels, graph.expand_y()]).pad(10.),
+    ])
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ProbeStats {
+    current: f32,
+    min: f32,
+    max: f32,
+}
+
+fn probe_stats(history: &[f32]) -> ProbeStats {
+    if history.is_empty() {
+        return ProbeStats {
+            current: 0.,
+            min: 0.,
+            max: 0.,
+        };
+    }
+    ProbeStats {
+        current: history.last().copied().unwrap_or(0.),
+        min: history.iter().copied().fold(f32::INFINITY, f32::min),
+        max: history.iter().copied().fold(f32::NEG_INFINITY, f32::max),
+    }
+}
+
+fn probe_value_text<'a>(
+    id: u64,
+    label: &'static str,
+    value: f32,
+    color: Color,
+    app: &mut PaneState,
+) -> View<'a, GuiState> {
+    text(id, format!("{label} {value:+.4}"))
+        .font_size(12)
+        .fill(color)
+        .view()
+        .build(app)
 }
 
 fn probe_editor<'a>(history: Vec<f32>, len: u32, app: &mut PaneState) -> View<'a, GuiState> {
-    let current = history.last().copied().unwrap_or(0.0);
-    let label = format!("{current:+.4}  {} samples", len);
+    let stats = probe_stats(&history);
     let graph = history;
     stack(vec![
         rect(900)
@@ -838,26 +1248,39 @@ fn probe_editor<'a>(history: Vec<f32>, len: u32, app: &mut PaneState) -> View<'a
             .stroke(line(), Stroke::new(1.))
             .corner_rounding(6.)
             .build(app),
-        rect(901)
-            .fill(Color::TRANSPARENT)
-            .stroke(quiet(), Stroke::new(1.))
-            .corner_rounding(3.)
-            .build(app)
-            .pad(10.)
-            .inert(),
-        path(902, move |area| probe_path(area, &graph))
-            .stroke(Color::from_rgb8(96, 210, 210), Stroke::new(2.))
-            .build(app)
-            .pad(10.),
-        text(903, label)
-            .font_size(13)
-            .fill(fg())
-            .view()
-            .build(app)
-            .pad_x(16.)
-            .pad_y(12.),
+        column_spaced(
+            8.,
+            vec![
+                row_spaced(
+                    PANEL_GAP,
+                    vec![
+                        probe_value_text(903, "Value", stats.current, fg(), app),
+                        probe_value_text(904, "Min", stats.min, quiet(), app),
+                        probe_value_text(905, "Max", stats.max, quiet(), app),
+                        text(906, format!("{} samples", len))
+                            .font_size(12)
+                            .fill(quiet())
+                            .view()
+                            .build(app),
+                    ],
+                ),
+                stack(vec![
+                    rect(901)
+                        .fill(Color::TRANSPARENT)
+                        .stroke(quiet(), Stroke::new(1.))
+                        .corner_rounding(3.)
+                        .build(app)
+                        .inert(),
+                    path(902, move |area| probe_path(area, &graph))
+                        .stroke(Color::from_rgb8(96, 210, 210), Stroke::new(2.))
+                        .build(app)
+                        .pad(10.),
+                ])
+                .expand_y(),
+            ],
+        )
+        .pad(10.),
     ])
-    .height_range(92.0..=150.0)
 }
 
 fn sample_editor<'a>(zoom: u16, offset: u16, app: &mut PaneState) -> View<'a, GuiState> {
@@ -951,7 +1374,7 @@ fn envelope_path(area: Area, points: &[crate::model::EnvPoint]) -> BezPath {
         let time = index as f32 / 48.;
         let value = envelope_value(points, time);
         let x = area.x + time * width;
-        let y = area.y + (1. - ((value + 1.) * 0.5)) * height;
+        let y = area.y + envelope_point_y(value) * height;
         if index == 0 {
             path.move_to((x as f64, y as f64));
         } else {
@@ -993,24 +1416,24 @@ fn probe_path(area: Area, history: &[f32]) -> BezPath {
 fn envelope_value(points: &[crate::model::EnvPoint], time: f32) -> f32 {
     let time = time.clamp(0., 1.);
     let first = points[0];
-    if points.len() == 1 || time <= first.time as f32 / 100. {
-        return first.value as f32 / 100.;
+    if points.len() == 1 || time <= envelope_point_time(first) {
+        return envelope_point_value(first);
     }
     let last = points[points.len() - 1];
-    if time >= last.time as f32 / 100. {
-        return last.value as f32 / 100.;
+    if time >= envelope_point_time(last) {
+        return envelope_point_value(last);
     }
     for pair in points.windows(2) {
         let start = pair[0];
         let end = pair[1];
-        let start_time = start.time as f32 / 100.;
-        let end_time = end.time as f32 / 100.;
+        let start_time = envelope_point_time(start);
+        let end_time = envelope_point_time(end);
         if time < start_time || time > end_time {
             continue;
         }
         let span = end_time - start_time;
         if span.abs() < f32::EPSILON {
-            return start.value as f32 / 100.;
+            return envelope_point_value(start);
         }
         let position = (time - start_time) / span;
         let position = match (start.curve, end.curve) {
@@ -1020,11 +1443,24 @@ fn envelope_value(points: &[crate::model::EnvPoint], time: f32) -> f32 {
             (true, true) if position < 0.5 => 2. * position * position,
             (true, true) => 1. - 2. * (1. - position) * (1. - position),
         };
-        let start_value = start.value as f32 / 100.;
-        let end_value = end.value as f32 / 100.;
+        let start_value = envelope_point_value(start);
+        let end_value = envelope_point_value(end);
         return start_value + (end_value - start_value) * position;
     }
-    last.value as f32 / 100.
+    envelope_point_value(last)
+}
+
+fn envelope_point_time(point: crate::model::EnvPoint) -> f32 {
+    point.time as f32 / 100.
+}
+
+fn envelope_point_value(point: crate::model::EnvPoint) -> f32 {
+    point.value as f32 / 100.
+}
+
+fn envelope_point_y(value: f32) -> f32 {
+    let range = ENVELOPE_VALUE_MAX - ENVELOPE_VALUE_MIN;
+    (1. - ((value - ENVELOPE_VALUE_MIN) / range).clamp(0., 1.)).clamp(0., 1.)
 }
 
 fn envelope_point<'a>(
@@ -1038,7 +1474,7 @@ fn envelope_point<'a>(
 ) -> View<'a, GuiState> {
     let fill = if selected {
         if editing {
-            fg()
+            Color::from_rgb8(255, 96, 96)
         } else {
             accent()
         }
@@ -1047,11 +1483,27 @@ fn envelope_point<'a>(
     } else {
         Color::from_rgb8(234, 238, 242)
     };
-    path(id, move |area| envelope_point_path(area, x, y, curved, selected))
-        .fill(fill)
-        .stroke(field(), Stroke::new(if selected { 1.5 } else { 1. }))
-        .build(app)
-        .pad(10.)
+    let stroke = if selected && editing {
+        Color::from_rgb8(255, 200, 100)
+    } else if selected {
+        fg()
+    } else {
+        field()
+    };
+    let stroke_width = if selected && editing {
+        2.5
+    } else if selected {
+        2.
+    } else {
+        1.
+    };
+    path(id, move |area| {
+        envelope_point_path(area, x, y, curved, selected)
+    })
+    .fill(fill)
+    .stroke(stroke, Stroke::new(stroke_width))
+    .build(app)
+    .pad(10.)
 }
 
 fn envelope_point_path(area: Area, x: f32, y: f32, curved: bool, selected: bool) -> BezPath {
@@ -1098,28 +1550,37 @@ fn parameter_fill(value: &ParameterValue) -> f32 {
 fn grid_cell<'a>(
     state: &'a GuiState,
     position: GridPos,
+    id_offset: u64,
+    show_selection: bool,
     app: &mut PaneState,
 ) -> View<'a, GuiState> {
-    let id = cell_id(position);
+    let id = id_offset + cell_id(position);
     let cursor = state.cursor() == position;
-    let selected = state.selection().is_some_and(|(anchor, extent)| {
-        let min_x = anchor.x.min(extent.x);
-        let max_x = anchor.x.max(extent.x);
-        let min_y = anchor.y.min(extent.y);
-        let max_y = anchor.y.max(extent.y);
-        position.x >= min_x && position.x <= max_x && position.y >= min_y && position.y <= max_y
-    });
+    let selected = show_selection
+        && state.selection().is_some_and(|(anchor, extent)| {
+            let min_x = anchor.x.min(extent.x);
+            let max_x = anchor.x.max(extent.x);
+            let min_y = anchor.y.min(extent.y);
+            let max_y = anchor.y.max(extent.y);
+            position.x >= min_x && position.x <= max_x && position.y >= min_y && position.y <= max_y
+        });
 
     let layers = vec![
         rect(id)
             .fill(if selected {
                 Color::from_rgb8(38, 57, 56)
+            } else if cursor {
+                Color::from_rgb8(42, 46, 54)
             } else {
                 Color::from_rgb8(26, 29, 34)
             })
             .stroke(
-                if cursor { accent() } else { line() },
-                Stroke::new(if cursor { 2. } else { 1. }),
+                if cursor {
+                    Color::from_rgb8(248, 250, 252)
+                } else {
+                    line()
+                },
+                Stroke::new(if cursor { 3. } else { 1. }),
             )
             .corner_rounding(6.)
             .build(app),
@@ -1130,79 +1591,278 @@ fn grid_cell<'a>(
 
 fn module_tile<'a>(
     id: u64,
+    state: &'a GuiState,
     module: &'a crate::model::Module,
+    probe_value: Option<f32>,
+    meter_values: &[f32],
+    alpha: f32,
     app: &mut PaneState,
 ) -> View<'a, GuiState> {
+    let alpha = alpha.clamp(0., 1.);
     let kind = module.kind();
     let mut code = kind.label().chars().take(3).collect::<String>();
     code.make_ascii_uppercase();
-    let tile_width = module_span(module.width());
-    let tile_height = module_span(module.height());
+    let input_count = state.module_input_count(module);
+    let output_count = state.module_output_count(module);
+    let tile_width = module_span(state.module_width(module));
+    let tile_height = module_span(state.module_height(module));
     let mut layers = vec![
         rect(id + 1)
-            .fill(module_color(kind.category()))
-            .stroke(Color::from_rgb8(10, 12, 14), Stroke::new(1.))
+            .fill(
+                if module.disabled() {
+                    Color::from_rgb8(160, 42, 54)
+                } else {
+                    module_color(kind.category())
+                }
+                .with_alpha(alpha),
+            )
+            .stroke(
+                if module.disabled() {
+                    Color::from_rgb8(248, 92, 92)
+                } else {
+                    Color::from_rgb8(10, 12, 14)
+                }
+                .with_alpha(alpha),
+                Stroke::new(if module.disabled() { 2. } else { 1. }),
+            )
             .corner_rounding(6.)
             .build(app),
         rect(id + 9)
-            .fill(Color::from_rgb8(8, 10, 12).with_alpha(0.42))
+            .fill(Color::from_rgb8(8, 10, 12).with_alpha(0.42 * alpha))
             .corner_rounding(5.)
             .build(app)
             .height(10.)
             .width(tile_width),
         text(id + 2, code)
             .font_size(8)
-            .fill(Color::from_rgb8(248, 250, 252))
+            .fill(Color::from_rgb8(248, 250, 252).with_alpha(alpha))
             .view()
             .build(app)
             .width(tile_width)
             .height(10.),
     ];
 
-    if module.has_input_left() {
-        for index in 0..module.input_count() {
-            let port_id = if index == 0 && module.output_count() == 0 {
-                id + 3
-            } else {
-                id + 30_000 + index as u64
-            };
-            layers.push(input_port(port_id, module.input_connected(index), app).offset(
-                PORT_INSET,
-                port_axis(index),
-            ));
+    match kind {
+        ModuleKind::TurnRightDown => {
+            layers.push(
+                input_port(
+                    id + 30_000,
+                    state.module_input_connected(module, 0),
+                    alpha,
+                    app,
+                )
+                .offset(PORT_INSET, port_axis(0)),
+            );
+            layers.push(
+                output_port(id + 33_000, alpha, app)
+                    .offset(port_axis(0), tile_height - PORT_INSET - PORT_SIZE),
+            );
+        }
+        ModuleKind::TurnDownRight => {
+            layers.push(
+                input_port(
+                    id + 31_000,
+                    state.module_input_connected(module, 0),
+                    alpha,
+                    app,
+                )
+                .offset(port_axis(0), PORT_INSET),
+            );
+            layers.push(
+                output_port(id + 32_000, alpha, app)
+                    .offset(tile_width - PORT_INSET - PORT_SIZE, port_axis(0)),
+            );
+        }
+        ModuleKind::LeftSplit => {
+            layers.push(
+                input_port(
+                    id + 30_000,
+                    state.module_input_connected(module, 0),
+                    alpha,
+                    app,
+                )
+                .offset(PORT_INSET, port_axis(0)),
+            );
+            layers.push(
+                output_port(id + 33_000, alpha, app)
+                    .offset(port_axis(0), tile_height - PORT_INSET - PORT_SIZE),
+            );
+            layers.push(
+                output_port(id + 32_001, alpha, app)
+                    .offset(tile_width - PORT_INSET - PORT_SIZE, port_axis(0)),
+            );
+        }
+        ModuleKind::TopSplit => {
+            layers.push(
+                input_port(
+                    id + 31_000,
+                    state.module_input_connected(module, 0),
+                    alpha,
+                    app,
+                )
+                .offset(port_axis(0), PORT_INSET),
+            );
+            layers.push(
+                output_port(id + 33_000, alpha, app)
+                    .offset(port_axis(0), tile_height - PORT_INSET - PORT_SIZE),
+            );
+            layers.push(
+                output_port(id + 32_001, alpha, app)
+                    .offset(tile_width - PORT_INSET - PORT_SIZE, port_axis(0)),
+            );
+        }
+        ModuleKind::RightJoin => {
+            layers.push(
+                input_port(
+                    id + 30_000,
+                    state.module_input_connected(module, 0),
+                    alpha,
+                    app,
+                )
+                .offset(PORT_INSET, port_axis(0)),
+            );
+            layers.push(
+                input_port(
+                    id + 31_001,
+                    state.module_input_connected(module, 1),
+                    alpha,
+                    app,
+                )
+                .offset(port_axis(0), PORT_INSET),
+            );
+            layers.push(
+                output_port(id + 32_000, alpha, app)
+                    .offset(tile_width - PORT_INSET - PORT_SIZE, port_axis(0)),
+            );
+        }
+        ModuleKind::DownJoin => {
+            layers.push(
+                input_port(
+                    id + 30_000,
+                    state.module_input_connected(module, 0),
+                    alpha,
+                    app,
+                )
+                .offset(PORT_INSET, port_axis(0)),
+            );
+            layers.push(
+                input_port(
+                    id + 31_001,
+                    state.module_input_connected(module, 1),
+                    alpha,
+                    app,
+                )
+                .offset(port_axis(0), PORT_INSET),
+            );
+            layers.push(
+                output_port(id + 33_000, alpha, app)
+                    .offset(port_axis(0), tile_height - PORT_INSET - PORT_SIZE),
+            );
+        }
+        _ => {
+            if state.module_has_input_left(module) {
+                for index in 0..input_count {
+                    let y = port_axis(index);
+                    let port_id = if index == 0 && output_count == 0 {
+                        id + 3
+                    } else {
+                        id + 30_000 + index as u64
+                    };
+                    layers.push(
+                        input_port(
+                            port_id,
+                            state.module_input_connected(module, index),
+                            alpha,
+                            app,
+                        )
+                        .offset(PORT_INSET, y),
+                    );
+                    if let Some(value) = meter_values.get(index as usize) {
+                        layers.push(
+                            meter_indicator(id + 34_000 + index as u64, *value, false, alpha, app)
+                                .offset(PORT_INSET + PORT_SIZE + 2., y),
+                        );
+                    }
+                }
+            }
+
+            if state.module_has_input_top(module) {
+                for index in 0..input_count {
+                    let x = port_axis(index);
+                    layers.push(
+                        input_port(
+                            id + 31_000 + index as u64,
+                            state.module_input_connected(module, index),
+                            alpha,
+                            app,
+                        )
+                        .offset(x, PORT_INSET),
+                    );
+                    if let Some(value) = meter_values.get(index as usize) {
+                        layers.push(
+                            meter_indicator(id + 35_000 + index as u64, *value, true, alpha, app)
+                                .offset(x, PORT_INSET + PORT_SIZE + 2.),
+                        );
+                    }
+                }
+            }
+
+            if state.module_has_output_right(module) {
+                for index in 0..output_count {
+                    let port_id = if output_count == 1 {
+                        id + 4
+                    } else {
+                        id + 32_000 + index as u64
+                    };
+                    layers.push(
+                        output_port(port_id, alpha, app)
+                            .offset(tile_width - PORT_INSET - PORT_SIZE, port_axis(index)),
+                    );
+                }
+            }
+
+            if state.module_has_output_bottom(module) {
+                for index in 0..output_count {
+                    layers.push(
+                        output_port(id + 33_000 + index as u64, alpha, app)
+                            .offset(port_axis(index), tile_height - PORT_INSET - PORT_SIZE),
+                    );
+                }
+            }
         }
     }
 
-    if module.has_input_top() {
-        for index in 0..module.input_count() {
-            layers.push(
-                input_port(id + 31_000 + index as u64, module.input_connected(index), app)
-                    .offset(port_axis(index), PORT_INSET),
-            );
-        }
-    }
-
-    if module.has_output_right() {
-        for index in 0..module.output_count() {
-            let port_id = if module.output_count() == 1 {
-                id + 4
-            } else {
-                id + 32_000 + index as u64
-            };
-            layers.push(
-                output_port(port_id, app)
-                    .offset(tile_width - PORT_INSET - PORT_SIZE, port_axis(index)),
-            );
-        }
-    }
-
-    if module.has_output_bottom() {
-        for index in 0..module.output_count() {
-            layers.push(
-                output_port(id + 33_000 + index as u64, app)
-                    .offset(port_axis(index), tile_height - PORT_INSET - PORT_SIZE),
-            );
-        }
+    if let Some(value) = probe_value {
+        let track_width = (tile_width - 8.).max(1.);
+        let level = ((value.clamp(-1., 1.) + 1.) * 0.5).clamp(0., 1.);
+        layers.push(
+            rect(id + 6)
+                .fill(Color::from_rgb8(8, 10, 12).with_alpha(0.62 * alpha))
+                .corner_rounding(2.)
+                .build(app)
+                .height(3.)
+                .width(track_width)
+                .offset(4., tile_height - 7.),
+        );
+        layers.push(
+            rect(id + 7)
+                .fill(Color::from_rgb8(96, 210, 210).with_alpha(alpha))
+                .corner_rounding(2.)
+                .build(app)
+                .height(3.)
+                .width((track_width * level).max(1.))
+                .offset(4., tile_height - 7.),
+        );
+        layers.push(
+            text(id + 8, format!("{value:+.1}"))
+                .font_size(8)
+                .fill(Color::from_rgb8(248, 250, 252).with_alpha(alpha))
+                .view()
+                .build(app)
+                .width(tile_width)
+                .height(10.)
+                .offset(0., (tile_height * 0.5 - 4.).max(10.)),
+        );
     }
 
     stack_aligned(Align::TopLeading, layers)
@@ -1210,11 +1870,14 @@ fn module_tile<'a>(
         .height(tile_height)
 }
 
-fn input_port<'a>(id: u64, connected: bool, app: &mut PaneState) -> View<'a, GuiState> {
+fn input_port<'a>(id: u64, connected: bool, alpha: f32, app: &mut PaneState) -> View<'a, GuiState> {
     if connected {
         circle(id)
-            .fill(Color::from_rgb8(14, 16, 20))
-            .stroke(Color::from_rgb8(248, 250, 252), Stroke::new(1.))
+            .fill(Color::from_rgb8(14, 16, 20).with_alpha(alpha))
+            .stroke(
+                Color::from_rgb8(248, 250, 252).with_alpha(alpha),
+                Stroke::new(1.),
+            )
             .view()
             .build(app)
             .width(PORT_SIZE)
@@ -1222,7 +1885,7 @@ fn input_port<'a>(id: u64, connected: bool, app: &mut PaneState) -> View<'a, Gui
     } else {
         text(id + 5_000, "X")
             .font_size(11)
-            .fill(Color::from_rgb8(248, 250, 252))
+            .fill(Color::from_rgb8(248, 250, 252).with_alpha(alpha))
             .view()
             .build(app)
             .width(PORT_SIZE)
@@ -1230,13 +1893,41 @@ fn input_port<'a>(id: u64, connected: bool, app: &mut PaneState) -> View<'a, Gui
     }
 }
 
-fn output_port<'a>(id: u64, app: &mut PaneState) -> View<'a, GuiState> {
+fn output_port<'a>(id: u64, alpha: f32, app: &mut PaneState) -> View<'a, GuiState> {
     circle(id)
-        .fill(Color::from_rgb8(248, 250, 252))
+        .fill(Color::from_rgb8(248, 250, 252).with_alpha(alpha))
         .view()
         .build(app)
         .width(PORT_SIZE)
         .height(PORT_SIZE)
+}
+
+fn meter_indicator<'a>(
+    id: u64,
+    value: f32,
+    horizontal: bool,
+    alpha: f32,
+    app: &mut PaneState,
+) -> View<'a, GuiState> {
+    let level = value.abs().clamp(0., 1.);
+    let brightness = (level * 0.8).min(0.8) + 0.2;
+    let color = Color::from_rgb8(
+        (96. * brightness) as u8,
+        (210. * brightness) as u8,
+        (210. * brightness) as u8,
+    );
+    let length = 2. + level * 5.;
+    let (width, height) = if horizontal {
+        (PORT_SIZE, length)
+    } else {
+        (length, PORT_SIZE)
+    };
+    rect(id)
+        .fill(color.with_alpha(alpha))
+        .corner_rounding(2.)
+        .build(app)
+        .width(width)
+        .height(height)
 }
 
 fn module_span(cells: u16) -> f32 {
@@ -1247,33 +1938,42 @@ fn port_axis(index: u16) -> f32 {
     index as f32 * (CELL + GAP) + CELL * 0.5 - TILE_PAD - PORT_SIZE * 0.5
 }
 
-fn grid_pointer_surface(app: &mut PaneState) -> View<'static, GuiState> {
+fn grid_pointer_surface(
+    app: &mut PaneState,
+    view: GridPos,
+    size: GridViewSize,
+    area: Area,
+) -> View<'static, GuiState> {
     rect(990)
         .fill(Color::TRANSPARENT)
         .view()
         .gesture(gesture::click(991).button(MouseButton::Left).run(
-            |state: &mut GuiState, _app, event| {
+            move |state: &mut GuiState, _app, event| {
                 if matches!(event.state, ClickPhase::Completed)
-                    && let Some(position) = grid_position(event.location.local())
+                    && let Some(position) = grid_position(event.location.local(), view, size, area)
                 {
+                    state.set_grid_view_size(size);
                     state.click_grid_cell(position);
                 }
             },
         ))
         .gesture(gesture::drag(992).button(MouseButton::Left).run(
-            |state: &mut GuiState, _app, drag| match drag {
+            move |state: &mut GuiState, _app, drag| match drag {
                 DragPhase::Began { start, .. } => {
-                    if let Some(position) = grid_position(start) {
+                    if let Some(position) = grid_position(start, view, size, area) {
+                        state.set_grid_view_size(size);
                         state.drag_grid_cell(GridPointerPhase::Start, position);
                     }
                 }
                 DragPhase::Updated { current, .. } => {
-                    if let Some(position) = grid_position(current) {
+                    if let Some(position) = grid_position(current, view, size, area) {
+                        state.set_grid_view_size(size);
                         state.drag_grid_cell(GridPointerPhase::Drag, position);
                     }
                 }
                 DragPhase::Completed { current, .. } => {
-                    if let Some(position) = grid_position(current) {
+                    if let Some(position) = grid_position(current, view, size, area) {
+                        state.set_grid_view_size(size);
                         state.drag_grid_cell(GridPointerPhase::End, position);
                     }
                 }
@@ -1282,24 +1982,32 @@ fn grid_pointer_surface(app: &mut PaneState) -> View<'static, GuiState> {
         .build(app)
 }
 
-fn grid_position(point: Point) -> Option<GridPos> {
-    if point.x < 0. || point.y < 0. || point.x >= grid_width() || point.y >= grid_height() {
+fn grid_position(point: Point, view: GridPos, size: GridViewSize, area: Area) -> Option<GridPos> {
+    if point.x < 0. || point.y < 0. || point.x >= area.width || point.y >= area.height {
         return None;
     }
     let x = (point.x / (CELL + GAP)).floor() as u16;
     let y = (point.y / (CELL + GAP)).floor() as u16;
     let cell_x = point.x - x as f32 * (CELL + GAP);
     let cell_y = point.y - y as f32 * (CELL + GAP);
-    (x < GRID_COLUMNS && y < GRID_ROWS && cell_x < CELL && cell_y < CELL)
-        .then_some(GridPos::new(x, y))
+    (x < size.columns() && y < size.rows() && cell_x < CELL && cell_y < CELL)
+        .then_some(GridPos::new(x + view.x, y + view.y))
 }
 
-fn grid_width() -> f32 {
-    GRID_COLUMNS as f32 * CELL + GRID_COLUMNS.saturating_sub(1) as f32 * GAP
+fn grid_view_size(state: &GuiState, area: Area) -> GridViewSize {
+    let (columns, rows) = state.grid_size();
+    GridViewSize::new(
+        visible_grid_cells(area.width).min(columns),
+        visible_grid_cells(area.height).min(rows),
+    )
 }
 
-fn grid_height() -> f32 {
-    GRID_ROWS as f32 * CELL + GRID_ROWS.saturating_sub(1) as f32 * GAP
+fn visible_grid_cells(length: f32) -> u16 {
+    ((length.max(0.) + GAP) / (CELL + GAP)).floor().max(1.) as u16
+}
+
+fn grid_span(cells: u16) -> f32 {
+    cells as f32 * CELL + cells.saturating_sub(1) as f32 * GAP
 }
 
 fn category_button<'a>(
@@ -1343,6 +2051,7 @@ fn module_choice<'a>(
     index: usize,
     kind: ModuleKind,
     selected: bool,
+    width: f32,
     app: &mut PaneState,
 ) -> View<'a, GuiState> {
     let id = 2_000 + index as u64;
@@ -1365,7 +2074,7 @@ fn module_choice<'a>(
                 },
             ))
             .build(app)
-            .width(row_width(kind.label(), 13.))
+            .width(width)
             .height(PALETTE_ROW_HEIGHT),
         text(id + 200, kind.label())
             .font_size(13)
@@ -1381,6 +2090,7 @@ fn filtered_module_choice<'a>(
     index: usize,
     kind: ModuleKind,
     selected: bool,
+    width: f32,
     app: &mut PaneState,
 ) -> View<'a, GuiState> {
     let id = 2_500 + index as u64;
@@ -1404,7 +2114,7 @@ fn filtered_module_choice<'a>(
                 },
             ))
             .build(app)
-            .width(row_width(kind.label(), 13.))
+            .width(width)
             .height(PALETTE_ROW_HEIGHT),
         text(id + 200, kind.label())
             .font_size(13)
@@ -1417,35 +2127,49 @@ fn filtered_module_choice<'a>(
 }
 
 fn action_button<'a>(
+    button_state: (&'a ButtonState, haven::Binding<GuiState, ButtonState>),
     label: &'static str,
     action: GuiAction,
     active: bool,
     app: &mut PaneState,
 ) -> View<'a, GuiState> {
     let id = 3_000 + action_id(action);
-    stack(vec![
-        rect(id)
-            .fill(if active { accent() } else { field() })
-            .stroke(if active { accent() } else { line() }, Stroke::new(1.))
-            .corner_rounding(7.)
-            .view()
-            .gesture(gesture::click(id + 100).button(MouseButton::Left).run(
-                move |state: &mut GuiState, _app, event| {
-                    if matches!(event.state, ClickPhase::Completed) {
-                        state.apply(action);
-                    }
-                },
-            ))
-            .build(app),
-        text(id + 200, label)
-            .font_size(13)
-            .fill(if active { Color::BLACK } else { fg() })
-            .view()
-            .build(app)
-            .pad_x(9.)
-            .pad_y(6.),
-    ])
-    .height(28.)
+    button(id, button_state)
+        .surface(move |state, app| {
+            let fill = match (active, state.depressed, state.hovered) {
+                (_, true, _) => accent().with_alpha(0.72),
+                (true, false, true) => accent().with_alpha(0.88),
+                (true, false, false) => accent(),
+                (false, false, true) => Color::from_rgb8(43, 49, 58),
+                (false, false, false) => field(),
+            };
+            let stroke = if active || state.hovered {
+                accent()
+            } else {
+                line()
+            };
+            rect(id + 1)
+                .fill(fill)
+                .stroke(stroke, Stroke::new(1.))
+                .corner_rounding(7.)
+                .build(app)
+        })
+        .label(move |state, app| {
+            text(id + 2, label)
+                .font_size(13)
+                .fill(if active && !state.depressed {
+                    Color::BLACK
+                } else {
+                    fg()
+                })
+                .view()
+                .build(app)
+                .pad_x(9.)
+                .pad_y(6.)
+        })
+        .on_click(move |state, _| state.apply(action))
+        .build(app)
+        .height(28.)
 }
 
 fn status_chip<'a>(label: String, color: Color, app: &mut PaneState) -> View<'a, GuiState> {
@@ -1461,115 +2185,38 @@ fn status_chip<'a>(label: String, color: Color, app: &mut PaneState) -> View<'a,
             .fill(fg())
             .view()
             .build(app)
-            .pad_x(10.)
+            .pad_x(9.)
             .pad_y(6.),
     ])
+    .height(28.)
 }
 
-fn shortcuts(state: &GuiState) -> &'static [(&'static str, &'static str)] {
-    match state.mode() {
-        Mode::Normal => &[
-            ("n", "module"),
-            ("i", "edit"),
-            ("m", "move"),
-            (",", "select"),
-            ("space", "play"),
-            ("O", "load"),
-            ("s", "settings"),
-        ],
-        Mode::Palette => &[
-            ("hjkl", "choose"),
-            ("! ... *", "category"),
-            ("enter", "place"),
-            ("/", "search"),
-            ("i esc", "close"),
-        ],
-        Mode::Move { .. } | Mode::Copy { .. } => &[
-            ("hjkl", "move"),
-            ("enter", "place"),
-            ("o", "rotate"),
-            ("p", "subpatch"),
-            ("esc", "cancel"),
-        ],
-        Mode::Edit { .. } => &[
-            ("jk/hl", "param/value"),
-            ("t", "type"),
-            (";/u/s", "port/unit/step"),
-            ("space", "play"),
-            ("i esc", "done"),
-        ],
-        Mode::AdsrEdit { .. } => &[("jk/hl", "shape"), ("space", "play"), ("i esc", "done")],
-        Mode::EnvEdit { editing: true, .. } => &[
-            ("hjkl", "move"),
-            ("s", "step"),
-            ("space", "play"),
-            ("m enter", "done"),
-            ("esc", "cancel"),
-        ],
-        Mode::EnvEdit { .. } => &[
-            ("hl", "point"),
-            ("m", "move"),
-            ("n/.", "add/delete"),
-            ("c/s", "curve/step"),
-            ("space", "play"),
-            ("i esc", "done"),
-        ],
-        Mode::ProbeEdit { .. } => &[
-            ("hl/jk", "length"),
-            ("r", "reset"),
-            ("space", "play"),
-            ("i esc", "done"),
-        ],
-        Mode::SampleView { .. } => &[
-            ("hl", "pan"),
-            ("jk", "zoom"),
-            ("r", "reset"),
-            ("space", "play"),
-            ("i esc", "done"),
-        ],
-        Mode::Select { .. } => &[
-            ("hjkl", "resize"),
-            ("enter", "move"),
-            ("y", "copy"),
-            (".", "delete"),
-            (", esc", "cancel"),
-        ],
-        Mode::SelectMove { .. } | Mode::CopySelection { .. } => {
-            &[("hjkl", "move"), ("enter", "place"), ("esc", "cancel")]
+fn shortcuts(state: &GuiState) -> Vec<(u8, &'static str, &'static str)> {
+    let mut hints = Vec::new();
+    for group in 0..=4 {
+        for binding in bindings(state) {
+            if let Some(hint) = binding.hint {
+                let candidate = (binding_group(binding), hint.key, hint.label);
+                if candidate.0 == group && !hints.contains(&candidate) {
+                    hints.push(candidate);
+                }
+            }
         }
-        Mode::ValueInput { .. }
-        | Mode::SavePrompt
-        | Mode::ExportPrompt
-        | Mode::TrackPrompt => {
-            &[("type", "text"), ("enter", "confirm"), ("esc", "cancel")]
-        }
-        Mode::SaveConfirm | Mode::ExportConfirm => &[("Y enter", "overwrite"), ("N esc", "back")],
-        Mode::TrackSettings { .. } => &[
-            ("jk", "field"),
-            ("hl", "value"),
-            ("space", "play"),
-            ("enter", "confirm"),
-            ("esc", "cancel"),
-        ],
-        Mode::QuitConfirm => &[("Y", "quit"), ("N esc", "cancel")],
     }
+    hints
 }
 
-fn shortcut_chip<'a>(
-    index: usize,
-    key: &'static str,
-    label: &'static str,
-    app: &mut PaneState,
-) -> View<'a, GuiState> {
-    let id = 70_000 + index as u64 * 10;
-    stack(vec![
-        rect(id)
-            .fill(field())
-            .stroke(line(), Stroke::new(1.))
-            .corner_rounding(6.)
-            .build(app),
-        row_spaced(
-            5.,
+fn shortcut_panel<'a>(state: &GuiState, app: &mut PaneState) -> View<'a, GuiState> {
+    let mut rows = Vec::new();
+    let mut previous_group = None;
+    for (index, (group, key, label)) in shortcuts(state).iter().copied().enumerate() {
+        if previous_group.is_some_and(|previous| previous != group) {
+            rows.push(space().height(8.));
+        }
+        let id = 70_000 + index as u64 * 10;
+        rows.push(row_spaced_aligned(
+            6.,
+            Align::Leading,
             vec![
                 text(id + 1, key)
                     .font_size(11)
@@ -1582,242 +2229,1960 @@ fn shortcut_chip<'a>(
                     .view()
                     .build(app),
             ],
-        )
-        .pad_x(7.)
-        .pad_y(5.),
+        ));
+        previous_group = Some(group);
+    }
+    stack(vec![
+        rect(69_900)
+            .fill(panel())
+            .stroke(line(), Stroke::new(1.))
+            .corner_rounding(8.)
+            .build(app)
+            .inert(),
+        column_spaced_aligned(3., Align::TopLeading, rows).pad(10.),
     ])
 }
 
-fn key(input: &'static str, action: GuiAction) -> Gesture<GuiState> {
-    gesture::key(ROOT + action_id(action))
-        .key(Key::character(input))
-        .run(move |state: &mut GuiState, _, event| {
-            if event.phase == KeyPhase::Pressed {
-                if native_text_prompt(state) {
-                    return;
-                }
-                if state.text_input_active()
-                    && let Some(character) = single_character(input)
-                {
-                    state.apply(GuiAction::InputChar(character));
-                    return;
-                }
-                state.apply(action);
-            }
-        })
+#[derive(Clone, Copy, PartialEq)]
+enum BindingInput {
+    Character(char),
+    Named(NamedKey),
+    Text,
 }
 
-fn text_input_keys(app: &mut PaneState) -> View<'static, GuiState> {
-    stack(
-        r#"abdfgqxzABCDEFGIMOPRSTVXZ0123456789-_+#!"$%&'()*:<=>?@\^`{}|~"#
-            .chars()
-            .map(|character| {
-                rect(8_000 + character as u64)
-                    .fill(Color::TRANSPARENT)
-                    .view()
-                    .gesture(input_char_key(character))
-                    .build(app)
-            })
-            .collect(),
-    )
+#[derive(Clone, Copy)]
+enum BindingEffect {
+    Action(GuiAction),
+    Text,
 }
 
-fn input_char_key(character: char) -> Gesture<GuiState> {
-    gesture::key(8_500 + character as u64)
-        .key(Key::character(character.to_string()))
-        .run(move |state: &mut GuiState, _, event| {
-            if event.phase == KeyPhase::Pressed {
-                if native_text_prompt(state) {
-                    return;
-                }
-                let action = if state.text_input_active() || state.palette_searching() {
-                    GuiAction::InputChar(character)
-                } else if let Some(category) = category_key(character) {
-                    GuiAction::Palette(category)
-                } else {
-                    GuiAction::InputChar(character)
-                };
-                state.apply(action);
-            }
-        })
+#[derive(Clone, Copy, PartialEq)]
+struct BindingHint {
+    key: &'static str,
+    label: &'static str,
 }
 
-fn category_key(character: char) -> Option<ModuleCategory> {
-    match character {
-        '!' => Some(ModuleCategory::Source),
-        '@' => Some(ModuleCategory::Shape),
-        '#' => Some(ModuleCategory::Filter),
-        '$' => Some(ModuleCategory::Effect),
-        '%' => Some(ModuleCategory::Logic),
-        '^' => Some(ModuleCategory::Routing),
-        '&' => Some(ModuleCategory::Subpatch),
-        '*' => Some(ModuleCategory::Output),
-        _ => None,
+#[derive(Clone, Copy)]
+struct KeyBinding {
+    input: BindingInput,
+    effect: BindingEffect,
+    hint: Option<BindingHint>,
+}
+
+impl KeyBinding {
+    const fn action(
+        input: BindingInput,
+        action: GuiAction,
+        key: &'static str,
+        label: &'static str,
+    ) -> Self {
+        Self {
+            input,
+            effect: BindingEffect::Action(action),
+            hint: Some(BindingHint { key, label }),
+        }
+    }
+
+    const fn text(key: &'static str, label: &'static str) -> Self {
+        Self {
+            input: BindingInput::Text,
+            effect: BindingEffect::Text,
+            hint: Some(BindingHint { key, label }),
+        }
     }
 }
 
-fn edit_key(
-    input: &'static str,
-    normal_action: GuiAction,
-    edit_action: GuiAction,
-) -> Gesture<GuiState> {
-    gesture::key(ROOT + action_id(normal_action) + action_id(edit_action))
-        .key(Key::character(input))
-        .run(move |state: &mut GuiState, _, event| {
-            if event.phase == KeyPhase::Pressed {
-                if native_text_prompt(state) {
-                    return;
-                }
-                if state.text_input_active()
-                    && let Some(character) = single_character(input)
-                {
-                    state.apply(GuiAction::InputChar(character));
-                    return;
-                }
-                let action = if matches!(state.mode(), Mode::Edit { .. }) {
-                    edit_action
-                } else {
-                    normal_action
-                };
-                state.apply(action);
+fn binding_group(binding: &KeyBinding) -> u8 {
+    match binding.effect {
+        BindingEffect::Text => 0,
+        BindingEffect::Action(
+            GuiAction::Left
+            | GuiAction::Down
+            | GuiAction::Up
+            | GuiAction::Right
+            | GuiAction::LeftFast
+            | GuiAction::DownFast
+            | GuiAction::UpFast
+            | GuiAction::RightFast
+            | GuiAction::PaletteLeft
+            | GuiAction::PaletteRight
+            | GuiAction::PaletteUp
+            | GuiAction::PaletteDown
+            | GuiAction::ValueDown
+            | GuiAction::ValueUp
+            | GuiAction::ValueDownFast
+            | GuiAction::ValueUpFast
+            | GuiAction::TextStart
+            | GuiAction::TextEnd,
+        ) => 0,
+        BindingEffect::Action(
+            GuiAction::Confirm
+            | GuiAction::Cancel
+            | GuiAction::OpenPalette
+            | GuiAction::Palette(_)
+            | GuiAction::Search
+            | GuiAction::Edit
+            | GuiAction::Move
+            | GuiAction::Copy
+            | GuiAction::Rotate
+            | GuiAction::Select
+            | GuiAction::Delete
+            | GuiAction::TogglePort
+            | GuiAction::CycleUnit
+            | GuiAction::CycleStep
+            | GuiAction::TypeValue
+            | GuiAction::AddPoint
+            | GuiAction::DeletePoint
+            | GuiAction::ToggleCurve
+            | GuiAction::Backspace
+            | GuiAction::DeleteChar
+            | GuiAction::InputChar(_),
+        ) => 1,
+        BindingEffect::Action(
+            GuiAction::TogglePlay
+            | GuiAction::ToggleMeters
+            | GuiAction::TrackSettings
+            | GuiAction::TrackEdit
+            | GuiAction::Instrument(_),
+        ) => 2,
+        BindingEffect::Action(
+            GuiAction::Save
+            | GuiAction::SaveAs
+            | GuiAction::Load
+            | GuiAction::Export
+            | GuiAction::Quit,
+        ) => 3,
+        BindingEffect::Action(
+            GuiAction::Undo | GuiAction::Redo | GuiAction::EditSubpatch | GuiAction::ExitSubpatch,
+        ) => 4,
+    }
+}
+
+const TEXT_INPUT_CHARS: &str = r#"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_./+#!"$%&'()*,:;<=>?@[\]^`{}|~"#;
+
+const NORMAL_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Character('h'),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('j'),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('k'),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('l'),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowDown),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowUp),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('H'),
+        GuiAction::LeftFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('J'),
+        GuiAction::DownFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('K'),
+        GuiAction::UpFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('L'),
+        GuiAction::RightFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('n'),
+        GuiAction::OpenPalette,
+        "n",
+        "module",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('!'),
+        GuiAction::Palette(ModuleCategory::Source),
+        "! ... *",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('@'),
+        GuiAction::Palette(ModuleCategory::Shape),
+        "! ... *",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('#'),
+        GuiAction::Palette(ModuleCategory::Filter),
+        "! ... *",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('$'),
+        GuiAction::Palette(ModuleCategory::Effect),
+        "! ... *",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('%'),
+        GuiAction::Palette(ModuleCategory::Logic),
+        "! ... *",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('^'),
+        GuiAction::Palette(ModuleCategory::Routing),
+        "! ... *",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('&'),
+        GuiAction::Palette(ModuleCategory::Subpatch),
+        "! ... *",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('*'),
+        GuiAction::Palette(ModuleCategory::Output),
+        "! ... *",
+        "category",
+    ),
+    KeyBinding::action(BindingInput::Character('i'), GuiAction::Edit, "i", "edit"),
+    KeyBinding::action(BindingInput::Character('m'), GuiAction::Move, "m", "move"),
+    KeyBinding::action(BindingInput::Character('y'), GuiAction::Copy, "y", "copy"),
+    KeyBinding::action(
+        BindingInput::Character('o'),
+        GuiAction::Rotate,
+        "o",
+        "rotate",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('r'),
+        GuiAction::Delete,
+        "r/.",
+        "delete",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('.'),
+        GuiAction::Delete,
+        "r/.",
+        "delete",
+    ),
+    KeyBinding::action(
+        BindingInput::Character(','),
+        GuiAction::Select,
+        ",",
+        "select",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('p'),
+        GuiAction::EditSubpatch,
+        "p",
+        "subpatch",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Space),
+        GuiAction::TogglePlay,
+        "space",
+        "play",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('v'),
+        GuiAction::ToggleMeters,
+        "v",
+        "meters",
+    ),
+    KeyBinding::action(BindingInput::Character('O'), GuiAction::Load, "O", "load"),
+    KeyBinding::action(BindingInput::Character('w'), GuiAction::Save, "w/W", "save"),
+    KeyBinding::action(
+        BindingInput::Character('W'),
+        GuiAction::SaveAs,
+        "w/W",
+        "save",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('e'),
+        GuiAction::Export,
+        "e",
+        "export",
+    ),
+    KeyBinding::action(BindingInput::Character('Q'), GuiAction::Quit, "Q", "quit"),
+    KeyBinding::action(
+        BindingInput::Character('u'),
+        GuiAction::Undo,
+        "u/U",
+        "undo/redo",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('U'),
+        GuiAction::Redo,
+        "u/U",
+        "undo/redo",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('t'),
+        GuiAction::TrackEdit,
+        "t",
+        "track",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('s'),
+        GuiAction::TrackSettings,
+        "s",
+        "settings",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('1'),
+        GuiAction::Instrument(0),
+        "1-5",
+        "instrument",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('2'),
+        GuiAction::Instrument(1),
+        "1-5",
+        "instrument",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('3'),
+        GuiAction::Instrument(2),
+        "1-5",
+        "instrument",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('4'),
+        GuiAction::Instrument(3),
+        "1-5",
+        "instrument",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('5'),
+        GuiAction::Instrument(4),
+        "1-5",
+        "instrument",
+    ),
+];
+
+const PALETTE_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Character('h'),
+        GuiAction::PaletteLeft,
+        "h/l arrows",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('l'),
+        GuiAction::PaletteRight,
+        "h/l arrows",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::PaletteLeft,
+        "h/l arrows",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::PaletteRight,
+        "h/l arrows",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('j'),
+        GuiAction::PaletteDown,
+        "j/k arrows",
+        "module",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('k'),
+        GuiAction::PaletteUp,
+        "j/k arrows",
+        "module",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowDown),
+        GuiAction::PaletteDown,
+        "j/k arrows",
+        "module",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowUp),
+        GuiAction::PaletteUp,
+        "j/k arrows",
+        "module",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('!'),
+        GuiAction::Palette(ModuleCategory::Source),
+        "! ... *",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('@'),
+        GuiAction::Palette(ModuleCategory::Shape),
+        "! ... *",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('#'),
+        GuiAction::Palette(ModuleCategory::Filter),
+        "! ... *",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('$'),
+        GuiAction::Palette(ModuleCategory::Effect),
+        "! ... *",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('%'),
+        GuiAction::Palette(ModuleCategory::Logic),
+        "! ... *",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('^'),
+        GuiAction::Palette(ModuleCategory::Routing),
+        "! ... *",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('&'),
+        GuiAction::Palette(ModuleCategory::Subpatch),
+        "! ... *",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('*'),
+        GuiAction::Palette(ModuleCategory::Output),
+        "! ... *",
+        "category",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Enter),
+        GuiAction::Confirm,
+        "n/enter",
+        "place",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('n'),
+        GuiAction::OpenPalette,
+        "n/enter",
+        "place",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('/'),
+        GuiAction::Search,
+        "/",
+        "search",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('i'),
+        GuiAction::Cancel,
+        "i/esc",
+        "close",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "i/esc",
+        "close",
+    ),
+];
+
+const PALETTE_SEARCH_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::text("type", "filter"),
+    KeyBinding::action(
+        BindingInput::Character('j'),
+        GuiAction::Down,
+        "j/k arrows",
+        "choose",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('k'),
+        GuiAction::Up,
+        "j/k arrows",
+        "choose",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowDown),
+        GuiAction::Down,
+        "j/k arrows",
+        "choose",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowUp),
+        GuiAction::Up,
+        "j/k arrows",
+        "choose",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Enter),
+        GuiAction::Confirm,
+        "enter",
+        "place",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Backspace),
+        GuiAction::Backspace,
+        "backspace",
+        "delete",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "esc",
+        "close",
+    ),
+];
+
+const MOVE_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Character('h'),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('j'),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('k'),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('l'),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowDown),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowUp),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('H'),
+        GuiAction::LeftFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('J'),
+        GuiAction::DownFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('K'),
+        GuiAction::UpFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('L'),
+        GuiAction::RightFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Enter),
+        GuiAction::Confirm,
+        "enter/m/y",
+        "place",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('m'),
+        GuiAction::Move,
+        "enter/m/y",
+        "place",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('y'),
+        GuiAction::Copy,
+        "enter/m/y",
+        "place",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('p'),
+        GuiAction::EditSubpatch,
+        "p",
+        "subpatch",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "esc",
+        "cancel",
+    ),
+];
+
+const COPY_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Character('h'),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('j'),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('k'),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('l'),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowDown),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowUp),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('H'),
+        GuiAction::LeftFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('J'),
+        GuiAction::DownFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('K'),
+        GuiAction::UpFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('L'),
+        GuiAction::RightFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Enter),
+        GuiAction::Confirm,
+        "enter/m/y",
+        "place",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('m'),
+        GuiAction::Move,
+        "enter/m/y",
+        "place",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('y'),
+        GuiAction::Copy,
+        "enter/m/y",
+        "place",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "esc",
+        "cancel",
+    ),
+];
+
+const EDIT_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Character('j'),
+        GuiAction::Down,
+        "j/k arrows",
+        "param",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('k'),
+        GuiAction::Up,
+        "j/k arrows",
+        "param",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowDown),
+        GuiAction::Down,
+        "j/k arrows",
+        "param",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowUp),
+        GuiAction::Up,
+        "j/k arrows",
+        "param",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('h'),
+        GuiAction::Left,
+        "h/l arrows",
+        "value",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('l'),
+        GuiAction::Right,
+        "h/l arrows",
+        "value",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::Left,
+        "h/l arrows",
+        "value",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::Right,
+        "h/l arrows",
+        "value",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('H'),
+        GuiAction::LeftFast,
+        "H/L",
+        "fast value",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('L'),
+        GuiAction::RightFast,
+        "H/L",
+        "fast value",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('t'),
+        GuiAction::TypeValue,
+        "t",
+        "type",
+    ),
+    KeyBinding::action(
+        BindingInput::Character(';'),
+        GuiAction::TogglePort,
+        ";",
+        "port",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('u'),
+        GuiAction::CycleUnit,
+        "u",
+        "unit",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('s'),
+        GuiAction::CycleStep,
+        "s",
+        "step",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Enter),
+        GuiAction::Confirm,
+        "enter",
+        "open",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Space),
+        GuiAction::TogglePlay,
+        "space",
+        "play",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('i'),
+        GuiAction::Cancel,
+        "i/esc",
+        "done",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "i/esc",
+        "done",
+    ),
+];
+
+const ADSR_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Character('j'),
+        GuiAction::Down,
+        "j/k arrows",
+        "field",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('k'),
+        GuiAction::Up,
+        "j/k arrows",
+        "field",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowDown),
+        GuiAction::Down,
+        "j/k arrows",
+        "field",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowUp),
+        GuiAction::Up,
+        "j/k arrows",
+        "field",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('h'),
+        GuiAction::ValueDown,
+        "h/l arrows",
+        "value",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('l'),
+        GuiAction::ValueUp,
+        "h/l arrows",
+        "value",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::ValueDown,
+        "h/l arrows",
+        "value",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::ValueUp,
+        "h/l arrows",
+        "value",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('H'),
+        GuiAction::ValueDownFast,
+        "H/L",
+        "fast value",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('L'),
+        GuiAction::ValueUpFast,
+        "H/L",
+        "fast value",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Space),
+        GuiAction::TogglePlay,
+        "space",
+        "play",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('i'),
+        GuiAction::Cancel,
+        "i/esc",
+        "done",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "i/esc",
+        "done",
+    ),
+];
+
+const ENV_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Character('h'),
+        GuiAction::Left,
+        "h/l arrows",
+        "point",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('l'),
+        GuiAction::Right,
+        "h/l arrows",
+        "point",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::Left,
+        "h/l arrows",
+        "point",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::Right,
+        "h/l arrows",
+        "point",
+    ),
+    KeyBinding::action(BindingInput::Character('m'), GuiAction::Move, "m", "move"),
+    KeyBinding::action(
+        BindingInput::Character('n'),
+        GuiAction::AddPoint,
+        "n/.",
+        "add/delete",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('.'),
+        GuiAction::DeletePoint,
+        "n/.",
+        "add/delete",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('c'),
+        GuiAction::ToggleCurve,
+        "c",
+        "curve",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('s'),
+        GuiAction::CycleStep,
+        "s",
+        "step",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Space),
+        GuiAction::TogglePlay,
+        "space",
+        "play",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('i'),
+        GuiAction::Cancel,
+        "i/esc",
+        "done",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "i/esc",
+        "done",
+    ),
+];
+
+const ENV_MOVE_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Character('h'),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('j'),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('k'),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('l'),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowDown),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowUp),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('H'),
+        GuiAction::LeftFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('J'),
+        GuiAction::DownFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('K'),
+        GuiAction::UpFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('L'),
+        GuiAction::RightFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('s'),
+        GuiAction::CycleStep,
+        "s",
+        "step",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Space),
+        GuiAction::TogglePlay,
+        "space",
+        "play",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('m'),
+        GuiAction::Move,
+        "m/enter",
+        "done",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Enter),
+        GuiAction::Confirm,
+        "m/enter",
+        "done",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "esc",
+        "cancel",
+    ),
+];
+
+const PROBE_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Character('h'),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "length",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('j'),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "length",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('k'),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "length",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('l'),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "length",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "length",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowDown),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "length",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowUp),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "length",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "length",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('r'),
+        GuiAction::Delete,
+        "r/.",
+        "reset",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('.'),
+        GuiAction::Delete,
+        "r/.",
+        "reset",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Space),
+        GuiAction::TogglePlay,
+        "space",
+        "play",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('i'),
+        GuiAction::Cancel,
+        "i/esc",
+        "done",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "i/esc",
+        "done",
+    ),
+];
+
+const SAMPLE_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Character('h'),
+        GuiAction::Left,
+        "h/l arrows",
+        "pan",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('l'),
+        GuiAction::Right,
+        "h/l arrows",
+        "pan",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::Left,
+        "h/l arrows",
+        "pan",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::Right,
+        "h/l arrows",
+        "pan",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('j'),
+        GuiAction::Down,
+        "j/k arrows",
+        "zoom",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('k'),
+        GuiAction::Up,
+        "j/k arrows",
+        "zoom",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowDown),
+        GuiAction::Down,
+        "j/k arrows",
+        "zoom",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowUp),
+        GuiAction::Up,
+        "j/k arrows",
+        "zoom",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('r'),
+        GuiAction::Delete,
+        "r/.",
+        "reset",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('.'),
+        GuiAction::Delete,
+        "r/.",
+        "reset",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Space),
+        GuiAction::TogglePlay,
+        "space",
+        "play",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('i'),
+        GuiAction::Cancel,
+        "i/esc",
+        "done",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "i/esc",
+        "done",
+    ),
+];
+
+const SELECT_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Character('h'),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "resize",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('j'),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "resize",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('k'),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "resize",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('l'),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "resize",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "resize",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowDown),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "resize",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowUp),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "resize",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "resize",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('H'),
+        GuiAction::LeftFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('J'),
+        GuiAction::DownFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('K'),
+        GuiAction::UpFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('L'),
+        GuiAction::RightFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Enter),
+        GuiAction::Confirm,
+        "enter/m",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('m'),
+        GuiAction::Move,
+        "enter/m",
+        "move",
+    ),
+    KeyBinding::action(BindingInput::Character('y'), GuiAction::Copy, "y", "copy"),
+    KeyBinding::action(
+        BindingInput::Character('r'),
+        GuiAction::Delete,
+        "r/.",
+        "delete",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('.'),
+        GuiAction::Delete,
+        "r/.",
+        "delete",
+    ),
+    KeyBinding::action(
+        BindingInput::Character(','),
+        GuiAction::Cancel,
+        ",/esc",
+        "cancel",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        ",/esc",
+        "cancel",
+    ),
+];
+
+const SELECT_MOVE_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Character('h'),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('j'),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('k'),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('l'),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowDown),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowUp),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('H'),
+        GuiAction::LeftFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('J'),
+        GuiAction::DownFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('K'),
+        GuiAction::UpFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('L'),
+        GuiAction::RightFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Enter),
+        GuiAction::Confirm,
+        "enter/m/y",
+        "place",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('m'),
+        GuiAction::Move,
+        "enter/m/y",
+        "place",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('y'),
+        GuiAction::Copy,
+        "enter/m/y",
+        "place",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('p'),
+        GuiAction::EditSubpatch,
+        "p",
+        "subpatch",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "esc",
+        "cancel",
+    ),
+];
+
+const COPY_SELECTION_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Character('h'),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('j'),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('k'),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('l'),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowDown),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowUp),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "move",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('H'),
+        GuiAction::LeftFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('J'),
+        GuiAction::DownFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('K'),
+        GuiAction::UpFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('L'),
+        GuiAction::RightFast,
+        "HJKL",
+        "jump",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Enter),
+        GuiAction::Confirm,
+        "enter/m/y",
+        "place",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('m'),
+        GuiAction::Move,
+        "enter/m/y",
+        "place",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('y'),
+        GuiAction::Copy,
+        "enter/m/y",
+        "place",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "esc",
+        "cancel",
+    ),
+];
+
+const TEXT_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::text("type", "text"),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Enter),
+        GuiAction::Confirm,
+        "enter",
+        "confirm",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "esc",
+        "cancel",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Backspace),
+        GuiAction::Backspace,
+        "backspace",
+        "delete",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Delete),
+        GuiAction::DeleteChar,
+        "delete",
+        "delete",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::Left,
+        "left/right",
+        "cursor",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::Right,
+        "left/right",
+        "cursor",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Home),
+        GuiAction::TextStart,
+        "home/end",
+        "cursor",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::End),
+        GuiAction::TextEnd,
+        "home/end",
+        "cursor",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Space),
+        GuiAction::InputChar(' '),
+        "type",
+        "text",
+    ),
+];
+
+const EXPORT_TEXT_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::text("type", "text"),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Enter),
+        GuiAction::Confirm,
+        "enter",
+        "confirm",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "esc",
+        "cancel",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Backspace),
+        GuiAction::Backspace,
+        "backspace",
+        "delete",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Delete),
+        GuiAction::DeleteChar,
+        "delete",
+        "delete",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::Left,
+        "left/right",
+        "cursor",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::Right,
+        "left/right",
+        "cursor",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowUp),
+        GuiAction::Up,
+        "up/down",
+        "loops",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowDown),
+        GuiAction::Down,
+        "up/down",
+        "loops",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Home),
+        GuiAction::TextStart,
+        "home/end",
+        "cursor",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::End),
+        GuiAction::TextEnd,
+        "home/end",
+        "cursor",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Space),
+        GuiAction::InputChar(' '),
+        "type",
+        "text",
+    ),
+];
+
+const TRACK_TEXT_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::text("type", "text"),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Enter),
+        GuiAction::Confirm,
+        "enter",
+        "confirm",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "esc",
+        "cancel",
+    ),
+];
+
+const CONFIRM_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Character('y'),
+        GuiAction::Confirm,
+        "Y/y/enter",
+        "confirm",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('Y'),
+        GuiAction::Confirm,
+        "Y/y/enter",
+        "confirm",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Enter),
+        GuiAction::Confirm,
+        "Y/y/enter",
+        "confirm",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('n'),
+        GuiAction::Cancel,
+        "N/n/esc",
+        "back",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('N'),
+        GuiAction::Cancel,
+        "N/n/esc",
+        "back",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "N/n/esc",
+        "back",
+    ),
+];
+
+const SETTINGS_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Character('j'),
+        GuiAction::Down,
+        "j/k arrows",
+        "field",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('k'),
+        GuiAction::Up,
+        "j/k arrows",
+        "field",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowDown),
+        GuiAction::Down,
+        "j/k arrows",
+        "field",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowUp),
+        GuiAction::Up,
+        "j/k arrows",
+        "field",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('h'),
+        GuiAction::Left,
+        "h/l arrows",
+        "value",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('l'),
+        GuiAction::Right,
+        "h/l arrows",
+        "value",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::Left,
+        "h/l arrows",
+        "value",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::Right,
+        "h/l arrows",
+        "value",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Space),
+        GuiAction::TogglePlay,
+        "space",
+        "play",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('s'),
+        GuiAction::TrackSettings,
+        "s/enter/esc",
+        "done",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Enter),
+        GuiAction::Confirm,
+        "s/enter/esc",
+        "done",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "s/enter/esc",
+        "done",
+    ),
+];
+
+fn bindings(state: &GuiState) -> &'static [KeyBinding] {
+    if state.palette_searching() {
+        return PALETTE_SEARCH_BINDINGS;
+    }
+    match state.mode() {
+        Mode::Normal => NORMAL_BINDINGS,
+        Mode::Palette => PALETTE_BINDINGS,
+        Mode::Move { .. } => MOVE_BINDINGS,
+        Mode::Copy { .. } => COPY_BINDINGS,
+        Mode::Edit { .. } => EDIT_BINDINGS,
+        Mode::AdsrEdit { .. } => ADSR_BINDINGS,
+        Mode::EnvEdit { editing: true, .. } => ENV_MOVE_BINDINGS,
+        Mode::EnvEdit { .. } => ENV_BINDINGS,
+        Mode::ProbeEdit { .. } => PROBE_BINDINGS,
+        Mode::SampleView { .. } => SAMPLE_BINDINGS,
+        Mode::Select { .. } => SELECT_BINDINGS,
+        Mode::SelectMove { .. } => SELECT_MOVE_BINDINGS,
+        Mode::CopySelection { .. } => COPY_SELECTION_BINDINGS,
+        Mode::ValueInput { .. } | Mode::SavePrompt => TEXT_BINDINGS,
+        Mode::ExportPrompt => EXPORT_TEXT_BINDINGS,
+        Mode::TrackPrompt => TRACK_TEXT_BINDINGS,
+        Mode::SaveConfirm | Mode::ExportConfirm | Mode::QuitConfirm => CONFIRM_BINDINGS,
+        Mode::TrackSettings { .. } => SETTINGS_BINDINGS,
+    }
+}
+
+fn binding_inputs() -> Vec<BindingInput> {
+    let mut inputs = Vec::new();
+    for bindings in [
+        NORMAL_BINDINGS,
+        PALETTE_BINDINGS,
+        PALETTE_SEARCH_BINDINGS,
+        MOVE_BINDINGS,
+        COPY_BINDINGS,
+        EDIT_BINDINGS,
+        ADSR_BINDINGS,
+        ENV_BINDINGS,
+        ENV_MOVE_BINDINGS,
+        PROBE_BINDINGS,
+        SAMPLE_BINDINGS,
+        SELECT_BINDINGS,
+        SELECT_MOVE_BINDINGS,
+        COPY_SELECTION_BINDINGS,
+        TEXT_BINDINGS,
+        EXPORT_TEXT_BINDINGS,
+        TRACK_TEXT_BINDINGS,
+        CONFIRM_BINDINGS,
+        SETTINGS_BINDINGS,
+    ] {
+        for binding in bindings {
+            if binding.input != BindingInput::Text && !inputs.contains(&binding.input) {
+                inputs.push(binding.input);
             }
-        })
+        }
+    }
+    for character in TEXT_INPUT_CHARS.chars() {
+        let input = BindingInput::Character(character);
+        if !inputs.contains(&input) {
+            inputs.push(input);
+        }
+    }
+    inputs
 }
 
-fn step_key() -> Gesture<GuiState> {
-    gesture::key(ROOT + 1_900).key(Key::character("s")).run(
-        move |state: &mut GuiState, _, event| {
-            if event.phase == KeyPhase::Pressed {
-                if native_text_prompt(state) {
-                    return;
-                }
-                if state.text_input_active() {
-                    state.apply(GuiAction::InputChar('s'));
-                    return;
-                }
-                let action = if matches!(state.mode(), Mode::Edit { .. } | Mode::EnvEdit { .. }) {
-                    GuiAction::CycleStep
-                } else {
-                    GuiAction::TrackSettings
-                };
-                state.apply(action);
+fn binding_key(id: u64, input: BindingInput, grid_size: Option<GridViewSize>) -> Gesture<GuiState> {
+    let key = match input {
+        BindingInput::Character(character) => {
+            gesture::key(id).key(Key::character(character.to_string()))
+        }
+        BindingInput::Named(named) => gesture::key(id).key(named),
+        BindingInput::Text => gesture::key(id).key(Key::character("")),
+    };
+    key.run(move |state: &mut GuiState, _, event| {
+        if event.phase == KeyPhase::Pressed {
+            if let Some(size) = grid_size {
+                state.set_grid_view_size(size);
             }
-        },
-    )
+            apply_binding_input(state, input);
+        }
+    })
 }
 
-fn yes_key(input: &'static str, fallback: GuiAction) -> Gesture<GuiState> {
-    gesture::key(ROOT + action_id(fallback) + 2_000)
-        .key(Key::character(input))
-        .run(move |state: &mut GuiState, _, event| {
-            if event.phase == KeyPhase::Pressed {
-                if native_text_prompt(state) {
-                    return;
-                }
-                if state.text_input_active()
-                    && let Some(character) = single_character(input)
-                {
-                    state.apply(GuiAction::InputChar(character));
-                    return;
-                }
-                let action = if confirmation_mode(state) {
-                    GuiAction::Confirm
-                } else {
-                    fallback
-                };
-                state.apply(action);
-            }
-        })
-}
-
-fn new_or_no_key() -> Gesture<GuiState> {
-    gesture::key(ROOT + 2_100).key(Key::character("n")).run(
-        move |state: &mut GuiState, _, event| {
-            if event.phase == KeyPhase::Pressed {
-                if native_text_prompt(state) {
-                    return;
-                }
-                if state.text_input_active() {
-                    state.apply(GuiAction::InputChar('n'));
-                } else if confirmation_mode(state) {
-                    state.apply(GuiAction::Cancel);
-                } else if matches!(state.mode(), Mode::EnvEdit { .. }) {
-                    state.apply(GuiAction::AddPoint);
-                } else {
-                    state.apply(GuiAction::OpenPalette);
-                }
-            }
-        },
-    )
-}
-
-fn confirmation_mode(state: &GuiState) -> bool {
-    matches!(
-        state.mode(),
-        Mode::QuitConfirm | Mode::SaveConfirm | Mode::ExportConfirm
-    )
-}
-
-fn env_key(
-    input: &'static str,
-    normal_action: GuiAction,
-    env_action: GuiAction,
-) -> Gesture<GuiState> {
-    gesture::key(ROOT + action_id(normal_action) + action_id(env_action) + 1_000)
-        .key(Key::character(input))
-        .run(move |state: &mut GuiState, _, event| {
-            if event.phase == KeyPhase::Pressed {
-                if native_text_prompt(state) {
-                    return;
-                }
-                if state.text_input_active()
-                    && let Some(character) = single_character(input)
-                {
-                    state.apply(GuiAction::InputChar(character));
-                    return;
-                }
-                let action = if matches!(state.mode(), Mode::EnvEdit { .. }) {
-                    env_action
-                } else {
-                    normal_action
-                };
-                state.apply(action);
-            }
-        })
-}
-
-fn single_character(input: &str) -> Option<char> {
-    let mut chars = input.chars();
-    let character = chars.next()?;
-    chars.next().is_none().then_some(character)
-}
-
-fn native_text_prompt(state: &GuiState) -> bool {
-    matches!(state.mode(), Mode::TrackPrompt)
-}
-
-fn key_named(input: NamedKey, action: GuiAction) -> Gesture<GuiState> {
-    gesture::key(ROOT + action_id(action) + 100).key(input).run(
-        move |state: &mut GuiState, _, event| {
-            if event.phase == KeyPhase::Pressed {
-                if native_text_prompt(state)
-                    && !matches!(input, NamedKey::Enter | NamedKey::Escape)
-                {
-                    return;
-                }
-                if input == NamedKey::Space
-                    && matches!(
-                        state.mode(),
-                        Mode::SavePrompt | Mode::ExportPrompt
-                    )
-                {
-                    state.apply(GuiAction::InputChar(' '));
-                    return;
-                }
-                state.apply(action);
-            }
-        },
-    )
+fn apply_binding_input(state: &mut GuiState, input: BindingInput) {
+    let current = bindings(state);
+    if let Some(binding) = current.iter().find(|binding| binding.input == input)
+        && let BindingEffect::Action(action) = binding.effect
+    {
+        state.apply(action);
+        return;
+    }
+    if current
+        .iter()
+        .any(|binding| matches!(binding.effect, BindingEffect::Text))
+        && let BindingInput::Character(character) = input
+        && !matches!(state.mode(), Mode::TrackPrompt)
+    {
+        state.apply(GuiAction::InputChar(character));
+    }
 }
 
 fn action_id(action: GuiAction) -> u64 {
@@ -1859,9 +4224,6 @@ fn action_id(action: GuiAction) -> u64 {
         GuiAction::Undo => 33,
         GuiAction::Redo => 34,
         GuiAction::Instrument(index) => 35 + index as u64,
-        GuiAction::NewInstrument => 45,
-        GuiAction::HelpScrollUp => 46,
-        GuiAction::HelpScrollDown => 47,
         GuiAction::ValueDown => 48,
         GuiAction::ValueUp => 49,
         GuiAction::ValueDownFast => 50,
@@ -1886,17 +4248,6 @@ fn category_index(category: ModuleCategory) -> usize {
         .iter()
         .position(|candidate| *candidate == category)
         .unwrap_or(0)
-}
-
-fn status_text(state: &GuiState) -> String {
-    let cursor = state.cursor();
-    format!(
-        "{} x:{} y:{} {}",
-        if state.playing() { "Playing" } else { "Stopped" },
-        cursor.x,
-        cursor.y,
-        state.audio_status()
-    )
 }
 
 fn mode_text(state: &GuiState) -> String {
@@ -1954,7 +4305,11 @@ fn mode_text(state: &GuiState) -> String {
 }
 
 fn cell_id(position: GridPos) -> u64 {
-    10_000 + position.y as u64 * 100 + position.x as u64 * 10
+    if position.x < 10 && position.y < 10 {
+        10_000 + position.y as u64 * 100 + position.x as u64 * 10
+    } else {
+        700_000 + position.y as u64 * 1_000 + position.x as u64 * 10
+    }
 }
 
 fn module_color(category: ModuleCategory) -> Color {

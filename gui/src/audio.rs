@@ -6,26 +6,65 @@ use brainwash::time::{Hertz, SampleRate};
 use brainwash::track::{NoteEvent, Track};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
+use rtrb::{Consumer, Producer, RingBuffer};
+use std::fmt;
+use std::num::NonZeroU8;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 pub struct AudioRuntime {
-    handle: AudioHandle,
+    handle: Option<AudioHandle>,
     _stream: cpal::Stream,
 }
 
-#[derive(Clone, Debug)]
 pub struct AudioHandle {
-    exchange: Arc<PatchBankExchange>,
-    track_exchange: Arc<TrackExchange>,
+    patch_pending: Producer<PatchBank>,
+    patch_retired: Consumer<PatchBank>,
+    track_pending: Producer<TrackRuntime>,
+    track_retired: Consumer<TrackRuntime>,
+    play_pending: Producer<bool>,
     probe_bus: Arc<ProbeBus>,
-    playing: Arc<AtomicBool>,
+    meter_bus: Arc<MeterBus>,
     rate: SampleRate,
 }
 
 pub(crate) struct ProbeRoute {
     pub(crate) source: AudioModuleId,
     pub(crate) target: u32,
+}
+
+pub(crate) struct MeterRoute {
+    source: AudioModuleId,
+    target: u32,
+    input_count: NonZeroU8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VoiceMode {
+    Single,
+    Polyphonic,
+}
+
+impl MeterRoute {
+    pub(crate) fn new(source: AudioModuleId, target: u32, input_count: usize) -> Option<Self> {
+        if input_count > METER_INPUTS {
+            return None;
+        }
+        Some(Self {
+            source,
+            target,
+            input_count: NonZeroU8::new(input_count as u8)?,
+        })
+    }
+}
+
+impl VoiceMode {
+    fn count(self) -> usize {
+        match self {
+            VoiceMode::Single => 1,
+            VoiceMode::Polyphonic => VOICES,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -39,9 +78,12 @@ pub enum AudioStartError {
 }
 
 const PLAY_FADE_FRAMES: f32 = 256.0;
+const PLAY_COMMAND_LIMIT: usize = 2;
 const VOICES: usize = 6;
 const PROBE_SLOTS: usize = 8;
 const PROBE_HISTORY: usize = 88_200;
+const METER_SLOTS: usize = 128;
+const METER_INPUTS: usize = 8;
 
 impl AudioRuntime {
     pub fn start() -> Result<Self, AudioStartError> {
@@ -52,55 +94,70 @@ impl AudioRuntime {
         let supported = device
             .default_output_config()
             .map_err(AudioStartError::DefaultConfig)?;
-        let rate = SampleRate::new(supported.sample_rate().0)
-            .ok_or(AudioStartError::InvalidSampleRate)?;
+        let rate =
+            SampleRate::new(supported.sample_rate().0).ok_or(AudioStartError::InvalidSampleRate)?;
         let config = supported.config();
-        let exchange = Arc::new(PatchBankExchange::new());
-        let track_exchange = Arc::new(TrackExchange::new());
+        let (patch_pending, callback_patch_pending) = RingBuffer::new(2);
+        let (callback_patch_retired, patch_retired) = RingBuffer::new(2);
+        let (track_pending, callback_track_pending) = RingBuffer::new(2);
+        let (callback_track_retired, track_retired) = RingBuffer::new(2);
+        let (play_pending, callback_play_pending) = RingBuffer::new(2);
         let probe_bus = Arc::new(ProbeBus::new());
-        let playing = Arc::new(AtomicBool::new(false));
+        let meter_bus = Arc::new(MeterBus::new());
         let stream = match supported.sample_format() {
             SampleFormat::F32 => build_stream::<f32>(
                 &device,
                 &config,
-                &exchange,
-                &track_exchange,
-                &probe_bus,
-                &playing,
+                callback_patch_pending,
+                callback_patch_retired,
+                callback_track_pending,
+                callback_track_retired,
+                callback_play_pending,
+                Arc::clone(&probe_bus),
+                Arc::clone(&meter_bus),
             )?,
             SampleFormat::I16 => build_stream::<i16>(
                 &device,
                 &config,
-                &exchange,
-                &track_exchange,
-                &probe_bus,
-                &playing,
+                callback_patch_pending,
+                callback_patch_retired,
+                callback_track_pending,
+                callback_track_retired,
+                callback_play_pending,
+                Arc::clone(&probe_bus),
+                Arc::clone(&meter_bus),
             )?,
             SampleFormat::U16 => build_stream::<u16>(
                 &device,
                 &config,
-                &exchange,
-                &track_exchange,
-                &probe_bus,
-                &playing,
+                callback_patch_pending,
+                callback_patch_retired,
+                callback_track_pending,
+                callback_track_retired,
+                callback_play_pending,
+                Arc::clone(&probe_bus),
+                Arc::clone(&meter_bus),
             )?,
             format => return Err(AudioStartError::UnsupportedFormat(format)),
         };
         stream.play().map_err(AudioStartError::PlayStream)?;
         Ok(Self {
-            handle: AudioHandle {
-                exchange,
-                track_exchange,
+            handle: Some(AudioHandle {
+                patch_pending,
+                patch_retired,
+                track_pending,
+                track_retired,
+                play_pending,
                 probe_bus,
-                playing,
+                meter_bus,
                 rate,
-            },
+            }),
             _stream: stream,
         })
     }
 
-    pub fn handle(&self) -> AudioHandle {
-        self.handle.clone()
+    pub fn handle(&mut self) -> Option<AudioHandle> {
+        self.handle.take()
     }
 }
 
@@ -109,21 +166,30 @@ impl AudioHandle {
         self.rate
     }
 
-    pub fn set_playing(&self, playing: bool) {
-        self.playing.store(playing, Ordering::Release);
+    pub fn set_playing(&mut self, playing: bool) {
+        let _ = self.play_pending.push(playing);
     }
 
-    pub fn submit(&self, patch: CompiledPatch) {
-        drop(self.exchange.submit(Box::new(PatchBank::new(patch))));
+    pub fn submit(&mut self, patch: CompiledPatch) {
+        drop(self.patch_pending.push(PatchBank::new(patch)));
         self.collect_retired();
     }
 
-    pub(crate) fn submit_with_probes(&self, patch: CompiledPatch, probes: &[ProbeRoute]) {
-        let slots = self.probe_bus.set_routes(probes);
-        drop(
-            self.exchange
-                .submit(Box::new(PatchBank::new_with_probes(patch, slots))),
-        );
+    pub(crate) fn submit_with_telemetry(
+        &mut self,
+        patch: CompiledPatch,
+        probes: &[ProbeRoute],
+        meters: &[MeterRoute],
+        voice_mode: VoiceMode,
+    ) {
+        let probe_routes = ProbeRoutes::new(probes);
+        let meter_routes = MeterRoutes::new(meters);
+        drop(self.patch_pending.push(PatchBank::new_with_telemetry(
+            patch,
+            probe_routes,
+            meter_routes,
+            voice_mode,
+        )));
         self.collect_retired();
     }
 
@@ -131,53 +197,60 @@ impl AudioHandle {
         self.probe_bus.history(module, voice, len)
     }
 
-    pub fn submit_track(&self, track: Track, bpm: u16) {
-        drop(self.track_exchange.submit(Box::new(TrackRuntime::new(
-            track, bpm, self.rate,
-        ))));
+    pub(crate) fn meter_values(&self, module: u32, voice: usize) -> Vec<f32> {
+        self.meter_bus.values(module, voice)
+    }
+
+    pub fn submit_track(&mut self, track: Track, bpm: u16) {
+        drop(
+            self.track_pending
+                .push(TrackRuntime::new(track, bpm, self.rate)),
+        );
         self.collect_retired();
     }
 
-    pub fn collect_retired(&self) {
-        while self.exchange.take_retired().is_some() {}
-        while self.track_exchange.take_retired().is_some() {}
+    pub fn collect_retired(&mut self) {
+        while self.patch_retired.pop().is_ok() {}
+        while self.track_retired.pop().is_ok() {}
     }
 }
 
-impl PartialEq for AudioHandle {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.exchange, &other.exchange)
-            && Arc::ptr_eq(&self.track_exchange, &other.track_exchange)
-            && Arc::ptr_eq(&self.probe_bus, &other.probe_bus)
-            && Arc::ptr_eq(&self.playing, &other.playing)
-            && self.rate == other.rate
+impl fmt::Debug for AudioHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AudioHandle")
+            .field("rate", &self.rate)
+            .finish()
     }
 }
-
-impl Eq for AudioHandle {}
 
 fn build_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    exchange: &Arc<PatchBankExchange>,
-    track_exchange: &Arc<TrackExchange>,
-    probe_bus: &Arc<ProbeBus>,
-    playing: &Arc<AtomicBool>,
+    patch_pending: Consumer<PatchBank>,
+    patch_retired: Producer<PatchBank>,
+    track_pending: Consumer<TrackRuntime>,
+    track_retired: Producer<TrackRuntime>,
+    play_pending: Consumer<bool>,
+    probe_bus: Arc<ProbeBus>,
+    meter_bus: Arc<MeterBus>,
 ) -> Result<cpal::Stream, AudioStartError>
 where
     T: SizedSample + FromSample<f32>,
 {
     let channels = config.channels as usize;
-    let callback_exchange = Arc::clone(exchange);
-    let callback_track_exchange = Arc::clone(track_exchange);
-    let callback_probe_bus = Arc::clone(probe_bus);
-    let callback_playing = Arc::clone(playing);
     let mut engine = VoicePatchRuntime::new(
         PatchBank::new(CompiledPatch::silence()),
-        callback_exchange,
-        callback_probe_bus,
+        patch_pending,
+        patch_retired,
+        probe_bus,
+        meter_bus,
     );
+    let mut track_pending = track_pending;
+    let mut track_retired = track_retired;
+    let mut play_pending = play_pending;
     let mut track = None;
+    let mut retired_track = None;
+    let mut playing = false;
     let mut gain = 0.0;
     device
         .build_output_stream(
@@ -186,10 +259,13 @@ where
                 write_output(
                     data,
                     channels,
-                    &callback_playing,
+                    &mut play_pending,
+                    &mut playing,
                     &mut engine,
-                    &callback_track_exchange,
+                    &mut track_pending,
+                    &mut track_retired,
                     &mut track,
+                    &mut retired_track,
                     &mut gain,
                 );
             },
@@ -202,23 +278,30 @@ where
 fn write_output<T>(
     data: &mut [T],
     channels: usize,
-    playing: &AtomicBool,
+    play_pending: &mut Consumer<bool>,
+    playing: &mut bool,
     engine: &mut VoicePatchRuntime,
-    track_exchange: &TrackExchange,
-    track: &mut Option<Box<TrackRuntime>>,
+    track_pending: &mut Consumer<TrackRuntime>,
+    track_retired: &mut Producer<TrackRuntime>,
+    track: &mut Option<TrackRuntime>,
+    retired_track: &mut Option<TrackRuntime>,
     gain: &mut f32,
 ) where
     T: Sample + FromSample<f32>,
 {
-    accept_track(track_exchange, track);
-    let is_playing = playing.load(Ordering::Acquire);
-    let target = if is_playing {
-        1.0
-    } else {
-        0.0
-    };
+    return_retired_track(track_retired, retired_track);
+    accept_track(track_pending, track, retired_track);
+    for _ in 0..PLAY_COMMAND_LIMIT {
+        let Ok(next) = play_pending.pop() else {
+            break;
+        };
+        *playing = next;
+    }
+    let target = if *playing { 1.0 } else { 0.0 };
     let step = 1.0 / PLAY_FADE_FRAMES;
-    for output in data.chunks_mut(channels) {
+    let frame_count = data.chunks(channels).len();
+    engine.begin_buffer();
+    for (index, output) in data.chunks_mut(channels).enumerate() {
         if *gain < target {
             *gain = (*gain + step).min(1.0);
         } else if *gain > target {
@@ -226,9 +309,10 @@ fn write_output<T>(
         }
         let controls = track
             .as_mut()
-            .map(|track| track.next(is_playing))
+            .map(|track| track.next(*playing))
             .unwrap_or_default();
-        write_frame(output, engine.next_with_controls(controls), *gain);
+        let record_meters = index + 1 == frame_count;
+        write_frame(output, engine.next_frame(controls, record_meters), *gain);
     }
 }
 
@@ -244,10 +328,86 @@ where
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ProbeSlotRoute {
+    source: AudioModuleId,
+    slot: usize,
+    target: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ProbeRoutes {
+    entries: [Option<ProbeSlotRoute>; PROBE_SLOTS],
+}
+
+impl ProbeRoutes {
+    fn empty() -> Self {
+        Self {
+            entries: [None; PROBE_SLOTS],
+        }
+    }
+
+    fn new(routes: &[ProbeRoute]) -> Self {
+        let mut routes_out = Self::empty();
+        for (slot, route) in routes.iter().take(PROBE_SLOTS).enumerate() {
+            routes_out.entries[slot] = Some(ProbeSlotRoute {
+                source: route.source,
+                slot,
+                target: route.target,
+            });
+        }
+        routes_out
+    }
+
+    fn iter(&self) -> impl Iterator<Item = ProbeSlotRoute> + '_ {
+        self.entries.iter().flatten().copied()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MeterSlotRoute {
+    source: AudioModuleId,
+    slot: usize,
+    target: u32,
+    inputs: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MeterRoutes {
+    entries: [Option<MeterSlotRoute>; METER_SLOTS],
+}
+
+impl MeterRoutes {
+    fn empty() -> Self {
+        Self {
+            entries: [None; METER_SLOTS],
+        }
+    }
+
+    fn new(routes: &[MeterRoute]) -> Self {
+        let mut routes_out = Self::empty();
+        for (slot, route) in routes.iter().take(METER_SLOTS).enumerate() {
+            routes_out.entries[slot] = Some(MeterSlotRoute {
+                source: route.source,
+                slot,
+                target: route.target,
+                inputs: route.input_count.get() as usize,
+            });
+        }
+        routes_out
+    }
+
+    fn iter(&self) -> impl Iterator<Item = MeterSlotRoute> + '_ {
+        self.entries.iter().flatten().copied()
+    }
+}
+
 #[derive(Debug)]
 struct ProbeBus {
     ids: [AtomicU32; PROBE_SLOTS],
+    generations: [AtomicU32; PROBE_SLOTS],
     values: Box<[AtomicU32]>,
+    sample_generations: Box<[AtomicU32]>,
     cursor: AtomicUsize,
 }
 
@@ -255,40 +415,36 @@ impl ProbeBus {
     fn new() -> Self {
         let count = VOICES * PROBE_SLOTS * PROBE_HISTORY;
         let mut values = Vec::with_capacity(count);
+        let mut sample_generations = Vec::with_capacity(count);
         for _ in 0..count {
             values.push(AtomicU32::new(0.0f32.to_bits()));
+            sample_generations.push(AtomicU32::new(0));
         }
         Self {
             ids: std::array::from_fn(|_| AtomicU32::new(0)),
+            generations: std::array::from_fn(|_| AtomicU32::new(0)),
             values: values.into_boxed_slice(),
+            sample_generations: sample_generations.into_boxed_slice(),
             cursor: AtomicUsize::new(0),
         }
     }
 
-    fn set_routes(&self, routes: &[ProbeRoute]) -> Box<[(AudioModuleId, usize)]> {
+    fn publish_routes(&self, routes: &ProbeRoutes) {
         for id in &self.ids {
             id.store(0, Ordering::Release);
         }
-        let mut slots = Vec::new();
-        for (slot, route) in routes.iter().take(PROBE_SLOTS).enumerate() {
-            self.clear_slot(slot);
+        for route in routes.iter() {
+            let slot = route.slot;
+            self.generations[slot].fetch_add(1, Ordering::AcqRel);
             self.ids[slot].store(route.target.saturating_add(1), Ordering::Release);
-            slots.push((route.source, slot));
-        }
-        slots.into_boxed_slice()
-    }
-
-    fn clear_slot(&self, slot: usize) {
-        for voice in 0..VOICES {
-            for cursor in 0..PROBE_HISTORY {
-                self.values[probe_value_index(voice, slot, cursor)]
-                    .store(0.0f32.to_bits(), Ordering::Release);
-            }
         }
     }
 
     fn write(&self, slot: usize, voice: usize, cursor: usize, value: f32) {
-        self.values[probe_value_index(voice, slot, cursor)].store(value.to_bits(), Ordering::Release);
+        let index = probe_value_index(voice, slot, cursor);
+        let generation = self.generations[slot].load(Ordering::Acquire);
+        self.values[index].store(value.to_bits(), Ordering::Release);
+        self.sample_generations[index].store(generation, Ordering::Release);
     }
 
     fn advance(&self, cursor: usize) {
@@ -305,6 +461,7 @@ impl ProbeBus {
         else {
             return Vec::new();
         };
+        let generation = self.generations[slot].load(Ordering::Acquire);
         let voice = voice.min(VOICES - 1);
         let count = len.min(PROBE_HISTORY);
         let cursor = self.cursor.load(Ordering::Acquire);
@@ -312,9 +469,14 @@ impl ProbeBus {
         let mut values = Vec::with_capacity(count);
         for offset in 0..count {
             let index = (start + offset) % PROBE_HISTORY;
-            values.push(f32::from_bits(
-                self.values[probe_value_index(voice, slot, index)].load(Ordering::Acquire),
-            ));
+            let value_index = probe_value_index(voice, slot, index);
+            let value =
+                if self.sample_generations[value_index].load(Ordering::Acquire) == generation {
+                    f32::from_bits(self.values[value_index].load(Ordering::Acquire))
+                } else {
+                    0.0
+                };
+            values.push(value);
         }
         values
     }
@@ -325,92 +487,186 @@ fn probe_value_index(voice: usize, slot: usize, cursor: usize) -> usize {
 }
 
 #[derive(Debug)]
-struct PatchBankExchange {
-    pending: std::sync::atomic::AtomicPtr<PatchBank>,
-    retired: std::sync::atomic::AtomicPtr<PatchBank>,
+struct MeterBus {
+    ids: [AtomicU32; METER_SLOTS],
+    inputs: [AtomicUsize; METER_SLOTS],
+    values: Box<[AtomicU32]>,
 }
 
+impl MeterBus {
+    fn new() -> Self {
+        let count = VOICES * METER_SLOTS * METER_INPUTS;
+        let mut values = Vec::with_capacity(count);
+        for _ in 0..count {
+            values.push(AtomicU32::new(0.0f32.to_bits()));
+        }
+        Self {
+            ids: std::array::from_fn(|_| AtomicU32::new(0)),
+            inputs: std::array::from_fn(|_| AtomicUsize::new(0)),
+            values: values.into_boxed_slice(),
+        }
+    }
+
+    fn publish_routes(&self, routes: &MeterRoutes) {
+        for slot in 0..METER_SLOTS {
+            self.ids[slot].store(0, Ordering::Release);
+            self.inputs[slot].store(0, Ordering::Release);
+        }
+        for route in routes.iter() {
+            let slot = route.slot;
+            self.clear_slot(slot);
+            self.ids[slot].store(route.target.saturating_add(1), Ordering::Release);
+            self.inputs[slot].store(route.inputs, Ordering::Release);
+        }
+    }
+
+    fn clear_slot(&self, slot: usize) {
+        for voice in 0..VOICES {
+            for input in 0..METER_INPUTS {
+                self.values[meter_value_index(voice, slot, input)]
+                    .store(0.0f32.to_bits(), Ordering::Release);
+            }
+        }
+    }
+
+    fn write(&self, slot: usize, voice: usize, input: usize, value: f32) {
+        if voice >= VOICES || input >= METER_INPUTS {
+            return;
+        }
+        self.values[meter_value_index(voice, slot, input)]
+            .store(value.to_bits(), Ordering::Release);
+    }
+
+    fn values(&self, module: u32, voice: usize) -> Vec<f32> {
+        let slot_id = module.saturating_add(1);
+        let Some(slot) = self
+            .ids
+            .iter()
+            .position(|id| id.load(Ordering::Acquire) == slot_id)
+        else {
+            return Vec::new();
+        };
+        let voice = voice.min(VOICES - 1);
+        let inputs = self.inputs[slot].load(Ordering::Acquire);
+        let mut values = Vec::with_capacity(inputs);
+        for input in 0..inputs {
+            values.push(f32::from_bits(
+                self.values[meter_value_index(voice, slot, input)].load(Ordering::Acquire),
+            ));
+        }
+        values
+    }
+}
+
+fn meter_value_index(voice: usize, slot: usize, input: usize) -> usize {
+    ((voice * METER_SLOTS) + slot) * METER_INPUTS + input
+}
+
+#[derive(Debug)]
 struct PatchBank {
-    voices: [Box<CompiledPatch>; VOICES],
-    probes: Box<[(AudioModuleId, usize)]>,
+    voices: [CompiledPatch; VOICES],
+    probes: ProbeRoutes,
+    meters: MeterRoutes,
+    voice_mode: VoiceMode,
 }
 
 struct VoicePatchRuntime {
     voices: [PatchEngine; VOICES],
-    exchange: Arc<PatchBankExchange>,
+    pending: Consumer<PatchBank>,
+    retired_output: Producer<PatchBank>,
     probe_bus: Arc<ProbeBus>,
-    probes: Box<[(AudioModuleId, usize)]>,
+    meter_bus: Arc<MeterBus>,
+    probes: ProbeRoutes,
+    meters: MeterRoutes,
+    voice_mode: VoiceMode,
+    retired: Option<PatchBank>,
     probe_cursor: usize,
-}
-
-impl PatchBankExchange {
-    fn new() -> Self {
-        Self {
-            pending: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-            retired: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        }
-    }
-
-    fn submit(&self, bank: Box<PatchBank>) -> Option<Box<PatchBank>> {
-        patch_bank_ptr_to_box(self.pending.swap(Box::into_raw(bank), Ordering::AcqRel))
-    }
-
-    fn take_retired(&self) -> Option<Box<PatchBank>> {
-        patch_bank_ptr_to_box(self.retired.swap(std::ptr::null_mut(), Ordering::AcqRel))
-    }
-
-    fn take_pending(&self) -> Option<Box<PatchBank>> {
-        patch_bank_ptr_to_box(self.pending.swap(std::ptr::null_mut(), Ordering::AcqRel))
-    }
-
-    fn retired_is_empty(&self) -> bool {
-        self.retired.load(Ordering::Acquire).is_null()
-    }
-
-    fn retire(&self, bank: Box<PatchBank>) {
-        self.retired.store(Box::into_raw(bank), Ordering::Release);
-    }
-}
-
-impl Drop for PatchBankExchange {
-    fn drop(&mut self) {
-        drop(patch_bank_ptr_to_box(*self.pending.get_mut()));
-        drop(patch_bank_ptr_to_box(*self.retired.get_mut()));
-    }
 }
 
 impl PatchBank {
     fn new(patch: CompiledPatch) -> Self {
-        Self::new_with_probes(patch, Vec::new().into_boxed_slice())
+        Self::new_with_telemetry(
+            patch,
+            ProbeRoutes::empty(),
+            MeterRoutes::empty(),
+            VoiceMode::Polyphonic,
+        )
     }
 
-    fn new_with_probes(patch: CompiledPatch, probes: Box<[(AudioModuleId, usize)]>) -> Self {
+    fn new_with_telemetry(
+        patch: CompiledPatch,
+        probes: ProbeRoutes,
+        meters: MeterRoutes,
+        voice_mode: VoiceMode,
+    ) -> Self {
         Self {
-            voices: std::array::from_fn(|_| Box::new(patch.clone())),
+            voices: std::array::from_fn(|_| patch.clone()),
             probes,
+            meters,
+            voice_mode,
         }
     }
 }
 
 impl VoicePatchRuntime {
-    fn new(bank: PatchBank, exchange: Arc<PatchBankExchange>, probe_bus: Arc<ProbeBus>) -> Self {
+    fn new(
+        bank: PatchBank,
+        pending: Consumer<PatchBank>,
+        retired_output: Producer<PatchBank>,
+        probe_bus: Arc<ProbeBus>,
+        meter_bus: Arc<MeterBus>,
+    ) -> Self {
+        let probes = bank.probes;
+        let meters = bank.meters;
+        let voice_mode = bank.voice_mode;
+        probe_bus.publish_routes(&probes);
+        meter_bus.publish_routes(&meters);
         Self {
-            voices: bank.voices.map(PatchEngine::new_boxed),
-            exchange,
+            voices: bank.voices.map(PatchEngine::new),
+            pending,
+            retired_output,
             probe_bus,
-            probes: bank.probes,
+            meter_bus,
+            probes,
+            meters,
+            voice_mode,
+            retired: None,
             probe_cursor: 0,
         }
     }
 
+    #[cfg(test)]
     fn next_with_controls(&mut self, controls: [PatchControls; VOICES]) -> Frame {
+        self.begin_buffer();
+        self.next_frame(controls, true)
+    }
+
+    fn begin_buffer(&mut self) {
         self.return_retired();
         self.accept_pending();
+    }
+
+    fn next_frame(&mut self, controls: [PatchControls; VOICES], record_meters: bool) -> Frame {
         let mut left = 0.0;
         let mut right = 0.0;
-        for (voice, (engine, controls)) in self.voices.iter_mut().zip(controls).enumerate() {
+        for (voice, (engine, controls)) in self
+            .voices
+            .iter_mut()
+            .zip(controls)
+            .take(self.voice_mode.count())
+            .enumerate()
+        {
             let frame = engine.next_with_controls(controls);
-            record_probe_values(&self.probe_bus, &self.probes, self.probe_cursor, voice, engine);
+            record_probe_values(
+                &self.probe_bus,
+                &self.probes,
+                self.probe_cursor,
+                voice,
+                engine,
+            );
+            if record_meters {
+                record_meter_values(&self.meter_bus, &self.meters, voice, engine);
+            }
             left += frame.left().value();
             right += frame.right().value();
         }
@@ -423,69 +679,76 @@ impl VoicePatchRuntime {
     }
 
     fn return_retired(&mut self) {
-        if !self.exchange.retired_is_empty()
-            || self
-                .voices
-                .iter()
-                .any(|engine| !engine.retired_pending())
+        if let Some(bank) = self.retired.take()
+            && let Err(error) = self.retired_output.push(bank)
         {
+            let rtrb::PushError::Full(bank) = error;
+            self.retired = Some(bank);
             return;
         }
-        let retired = std::array::from_fn(|index| {
-            self.voices[index]
-                .take_retired_boxed()
-                .unwrap_or_else(|| Box::new(CompiledPatch::silence()))
-        });
-        self.exchange.retire(Box::new(PatchBank {
-            voices: retired,
-            probes: Vec::new().into_boxed_slice(),
-        }));
+        if self.voices.iter().any(|engine| !engine.retired_pending()) {
+            return;
+        }
+        let bank = PatchBank {
+            voices: std::array::from_fn(|index| self.voices[index].take_retired().unwrap()),
+            probes: ProbeRoutes::empty(),
+            meters: MeterRoutes::empty(),
+            voice_mode: self.voice_mode,
+        };
+        if let Err(error) = self.retired_output.push(bank) {
+            let rtrb::PushError::Full(bank) = error;
+            self.retired = Some(bank);
+        }
     }
 
     fn accept_pending(&mut self) {
-        if self.voices.iter().any(|engine| !engine.can_replace()) {
+        if self.retired.is_some() || self.voices.iter().any(|engine| !engine.can_replace()) {
             return;
         }
-        let Some(bank) = self.exchange.take_pending() else {
+        let Ok(bank) = self.pending.pop() else {
             return;
         };
-        self.probes = bank.probes;
-        for (engine, next) in self.voices.iter_mut().zip(bank.voices) {
+        let PatchBank {
+            voices,
+            probes,
+            meters,
+            voice_mode,
+        } = bank;
+        for (engine, next) in self.voices.iter_mut().zip(voices) {
             if let Err(UpdateRejected::Busy(_) | UpdateRejected::RetiredPatchPending(_)) =
-                engine.replace_boxed(next)
+                engine.replace(next)
             {
                 return;
             }
         }
+        self.probe_bus.publish_routes(&probes);
+        self.meter_bus.publish_routes(&meters);
+        self.probes = probes;
+        self.meters = meters;
+        self.voice_mode = voice_mode;
     }
 }
 
 fn record_probe_values(
     bus: &ProbeBus,
-    probes: &[(AudioModuleId, usize)],
+    probes: &ProbeRoutes,
     cursor: usize,
     voice: usize,
     engine: &PatchEngine,
 ) {
     for (id, value) in engine.probe_values() {
-        if let Some((_, slot)) = probes.iter().find(|(probe, _)| *probe == id) {
-            bus.write(*slot, voice, cursor, value.value());
+        if let Some(route) = probes.iter().find(|route| route.source == id) {
+            bus.write(route.slot, voice, cursor, value.value());
         }
     }
 }
 
-fn patch_bank_ptr_to_box(ptr: *mut PatchBank) -> Option<Box<PatchBank>> {
-    if ptr.is_null() {
-        None
-    } else {
-        Some(unsafe { Box::from_raw(ptr) })
-    }
-}
-
-#[derive(Debug)]
-struct TrackExchange {
-    pending: std::sync::atomic::AtomicPtr<TrackRuntime>,
-    retired: std::sync::atomic::AtomicPtr<TrackRuntime>,
+fn record_meter_values(bus: &MeterBus, meters: &MeterRoutes, voice: usize, engine: &PatchEngine) {
+    engine.visit_input_values(|module, input, value| {
+        if let Some(route) = meters.iter().find(|route| route.source == module) {
+            bus.write(route.slot, voice, input, value.value());
+        }
+    });
 }
 
 struct TrackRuntime {
@@ -505,38 +768,6 @@ struct Voice {
     gate: f32,
     degree: i32,
     age: usize,
-}
-
-impl TrackExchange {
-    fn new() -> Self {
-        Self {
-            pending: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-            retired: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        }
-    }
-
-    fn submit(&self, track: Box<TrackRuntime>) -> Option<Box<TrackRuntime>> {
-        track_ptr_to_box(self.pending.swap(Box::into_raw(track), Ordering::AcqRel))
-    }
-
-    fn take_retired(&self) -> Option<Box<TrackRuntime>> {
-        track_ptr_to_box(self.retired.swap(std::ptr::null_mut(), Ordering::AcqRel))
-    }
-
-    fn take_pending(&self) -> Option<Box<TrackRuntime>> {
-        track_ptr_to_box(self.pending.swap(std::ptr::null_mut(), Ordering::AcqRel))
-    }
-
-    fn retire(&self, track: Box<TrackRuntime>) {
-        self.retired.store(Box::into_raw(track), Ordering::Release);
-    }
-}
-
-impl Drop for TrackExchange {
-    fn drop(&mut self) {
-        drop(track_ptr_to_box(*self.pending.get_mut()));
-        drop(track_ptr_to_box(*self.retired.get_mut()));
-    }
 }
 
 impl TrackRuntime {
@@ -618,25 +849,37 @@ impl TrackRuntime {
     }
 }
 
-fn accept_track(exchange: &TrackExchange, track: &mut Option<Box<TrackRuntime>>) {
-    if let Some(next) = exchange.take_pending() {
-        if let Some(old) = track.replace(next) {
-            exchange.retire(old);
-        }
+fn return_retired_track(
+    retired_output: &mut Producer<TrackRuntime>,
+    retired: &mut Option<TrackRuntime>,
+) {
+    if let Some(track) = retired.take()
+        && let Err(error) = retired_output.push(track)
+    {
+        let rtrb::PushError::Full(track) = error;
+        *retired = Some(track);
     }
 }
 
-fn track_ptr_to_box(ptr: *mut TrackRuntime) -> Option<Box<TrackRuntime>> {
-    if ptr.is_null() {
-        None
-    } else {
-        Some(unsafe { Box::from_raw(ptr) })
+fn accept_track(
+    pending: &mut Consumer<TrackRuntime>,
+    track: &mut Option<TrackRuntime>,
+    retired: &mut Option<TrackRuntime>,
+) {
+    if retired.is_some() {
+        return;
+    }
+    if let Ok(next) = pending.pop() {
+        if let Some(old) = track.replace(next) {
+            *retired = Some(old);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use assert_no_alloc::assert_no_alloc;
     use brainwash::patch::{Module, Patch, Wave};
     use brainwash::sample::Unit;
     use brainwash::scale::cmin;
@@ -667,9 +910,15 @@ mod tests {
         patch.connect(freq, osc).unwrap();
         patch.output(osc).unwrap();
         let compiled = CompiledPatch::new(&patch, rate).unwrap();
-        let exchange = Arc::new(PatchBankExchange::new());
-        let mut runtime =
-            VoicePatchRuntime::new(PatchBank::new(compiled), exchange, Arc::new(ProbeBus::new()));
+        let (_pending_input, pending_output) = RingBuffer::new(2);
+        let (retired_input, _retired_output) = RingBuffer::new(2);
+        let mut runtime = VoicePatchRuntime::new(
+            PatchBank::new(compiled),
+            pending_output,
+            retired_input,
+            Arc::new(ProbeBus::new()),
+            Arc::new(MeterBus::new()),
+        );
         let mut controls = [PatchControls::default(); VOICES];
         controls[0] = PatchControls {
             frequency: Hertz::new(220.0),
@@ -692,17 +941,62 @@ mod tests {
     }
 
     #[test]
+    fn single_voice_mode_does_not_stack_track_independent_patch() {
+        let rate = SampleRate::new(44_100).unwrap();
+        let (_single_pending_input, single_pending_output) = RingBuffer::new(2);
+        let (single_retired_input, _single_retired_output) = RingBuffer::new(2);
+        let (_gated_pending_input, gated_pending_output) = RingBuffer::new(2);
+        let (gated_retired_input, _gated_retired_output) = RingBuffer::new(2);
+        let mut single = VoicePatchRuntime::new(
+            PatchBank::new_with_telemetry(
+                unmodulated_osc_patch(rate),
+                ProbeRoutes::empty(),
+                MeterRoutes::empty(),
+                VoiceMode::Single,
+            ),
+            single_pending_output,
+            single_retired_input,
+            Arc::new(ProbeBus::new()),
+            Arc::new(MeterBus::new()),
+        );
+        let mut gated = VoicePatchRuntime::new(
+            PatchBank::new(gated_osc_patch(rate)),
+            gated_pending_output,
+            gated_retired_input,
+            Arc::new(ProbeBus::new()),
+            Arc::new(MeterBus::new()),
+        );
+        let mut controls = [PatchControls::default(); VOICES];
+        controls[0] = PatchControls {
+            frequency: Hertz::new(330.0),
+            gate: 1.0,
+            degree: 0,
+        };
+
+        for _ in 0..256 {
+            let default = single.next_with_controls(controls).left().value();
+            let gated = gated.next_with_controls(controls).left().value();
+            assert!((default - gated).abs() < 0.0001, "{default} {gated}");
+        }
+    }
+
+    #[test]
     fn voice_patch_runtime_returns_retired_bank_after_crossfade() {
         let rate = SampleRate::new(44_100).unwrap();
-        let exchange = Arc::new(PatchBankExchange::new());
+        let (mut pending_input, pending_output) = RingBuffer::new(2);
+        let (retired_input, mut retired_output) = RingBuffer::new(2);
         let mut runtime = VoicePatchRuntime::new(
             PatchBank::new(compiled_saw_patch(110.0, rate)),
-            Arc::clone(&exchange),
+            pending_output,
+            retired_input,
             Arc::new(ProbeBus::new()),
+            Arc::new(MeterBus::new()),
         );
-        assert!(exchange
-            .submit(Box::new(PatchBank::new(compiled_saw_patch(220.0, rate))))
-            .is_none());
+        assert!(
+            pending_input
+                .push(PatchBank::new(compiled_saw_patch(220.0, rate)))
+                .is_ok()
+        );
         let controls = [PatchControls {
             frequency: Hertz::new(330.0),
             gate: 1.0,
@@ -710,14 +1004,382 @@ mod tests {
         }; VOICES];
 
         runtime.next_with_controls(controls);
-        assert!(exchange.take_retired().is_none());
+        assert!(retired_output.pop().is_err());
 
         for _ in 0..127 {
             runtime.next_with_controls(controls);
         }
         runtime.next_with_controls(controls);
 
-        assert!(exchange.take_retired().is_some());
+        assert!(retired_output.pop().is_ok());
+    }
+
+    #[test]
+    fn voice_patch_runtime_swaps_and_records_meters_without_allocation() {
+        let rate = SampleRate::new(44_100).unwrap();
+        let (mut pending_input, pending_output) = RingBuffer::new(2);
+        let (retired_input, mut retired_output) = RingBuffer::new(2);
+        let meter_bus = Arc::new(MeterBus::new());
+        let mut runtime = VoicePatchRuntime::new(
+            PatchBank::new(compiled_saw_patch(110.0, rate)),
+            pending_output,
+            retired_input,
+            Arc::new(ProbeBus::new()),
+            Arc::clone(&meter_bus),
+        );
+        let (patch, route) = metered_patch(rate);
+        assert!(
+            pending_input
+                .push(PatchBank::new_with_telemetry(
+                    patch,
+                    ProbeRoutes::empty(),
+                    MeterRoutes::new(&[route]),
+                    VoiceMode::Polyphonic,
+                ))
+                .is_ok()
+        );
+        let controls = [PatchControls::default(); VOICES];
+
+        assert_no_alloc(|| {
+            for _ in 0..130 {
+                runtime.next_with_controls(controls);
+            }
+        });
+
+        assert!(retired_output.pop().is_ok());
+        assert_eq!(meter_bus.values(77, 0).len(), 1);
+    }
+
+    #[test]
+    fn voice_patch_runtime_skips_meter_recording_until_requested() {
+        let rate = SampleRate::new(44_100).unwrap();
+        let (_pending_input, pending_output) = RingBuffer::new(2);
+        let (retired_input, _retired_output) = RingBuffer::new(2);
+        let meter_bus = Arc::new(MeterBus::new());
+        let (patch, route) = metered_patch(rate);
+        let mut runtime = VoicePatchRuntime::new(
+            PatchBank::new_with_telemetry(
+                patch,
+                ProbeRoutes::empty(),
+                MeterRoutes::new(&[route]),
+                VoiceMode::Polyphonic,
+            ),
+            pending_output,
+            retired_input,
+            Arc::new(ProbeBus::new()),
+            Arc::clone(&meter_bus),
+        );
+        let controls = [PatchControls::default(); VOICES];
+
+        runtime.begin_buffer();
+        for _ in 0..64 {
+            runtime.next_frame(controls, false);
+        }
+
+        assert_eq!(meter_bus.values(77, 0), vec![0.0]);
+
+        runtime.next_frame(controls, true);
+
+        assert_ne!(meter_bus.values(77, 0), vec![0.0]);
+    }
+
+    #[test]
+    fn track_swap_accepts_and_retires_without_allocation() {
+        let rate = SampleRate::new(44_100).unwrap();
+        let (mut pending_input, mut pending_output) = RingBuffer::new(2);
+        let (mut retired_input, mut retired_output) = RingBuffer::new(2);
+        let mut track = None;
+        let mut retired = None;
+        assert!(
+            pending_input
+                .push(TrackRuntime::new(
+                    Track::parse("{0&2}", &cmin()).unwrap(),
+                    120,
+                    rate,
+                ))
+                .is_ok()
+        );
+
+        assert_no_alloc(|| {
+            return_retired_track(&mut retired_input, &mut retired);
+            accept_track(&mut pending_output, &mut track, &mut retired);
+            let _ = track.as_mut().map(|track| track.next(true));
+        });
+        assert!(track.is_some());
+
+        assert!(
+            pending_input
+                .push(TrackRuntime::new(
+                    Track::parse("{4}", &cmin()).unwrap(),
+                    120,
+                    rate,
+                ))
+                .is_ok()
+        );
+
+        assert_no_alloc(|| {
+            return_retired_track(&mut retired_input, &mut retired);
+            accept_track(&mut pending_output, &mut track, &mut retired);
+            return_retired_track(&mut retired_input, &mut retired);
+        });
+
+        assert!(retired_output.pop().is_ok());
+    }
+
+    #[test]
+    fn write_output_processes_swaps_and_telemetry_without_allocation() {
+        let rate = SampleRate::new(44_100).unwrap();
+        let (mut patch_input, patch_output) = RingBuffer::new(2);
+        let (patch_retired_input, mut patch_retired_output) = RingBuffer::new(2);
+        let (mut track_input, mut track_output) = RingBuffer::new(2);
+        let (mut track_retired_input, mut track_retired_output) = RingBuffer::new(2);
+        let (mut play_input, mut play_output) = RingBuffer::new(2);
+        let meter_bus = Arc::new(MeterBus::new());
+        let mut runtime = VoicePatchRuntime::new(
+            PatchBank::new(compiled_saw_patch(110.0, rate)),
+            patch_output,
+            patch_retired_input,
+            Arc::new(ProbeBus::new()),
+            Arc::clone(&meter_bus),
+        );
+        let (patch, route) = metered_patch(rate);
+        assert!(
+            patch_input
+                .push(PatchBank::new_with_telemetry(
+                    patch,
+                    ProbeRoutes::empty(),
+                    MeterRoutes::new(&[route]),
+                    VoiceMode::Polyphonic,
+                ))
+                .is_ok()
+        );
+        assert!(
+            track_input
+                .push(TrackRuntime::new(
+                    Track::parse("{0&2}", &cmin()).unwrap(),
+                    120,
+                    rate,
+                ))
+                .is_ok()
+        );
+        assert!(
+            track_input
+                .push(TrackRuntime::new(
+                    Track::parse("{4}", &cmin()).unwrap(),
+                    120,
+                    rate,
+                ))
+                .is_ok()
+        );
+        assert!(play_input.push(true).is_ok());
+        let mut track = None;
+        let mut retired_track = None;
+        let mut gain = 0.0;
+        let mut playing = false;
+        let mut data = [0.0f32; 128];
+
+        assert_no_alloc(|| {
+            for _ in 0..130 {
+                write_output(
+                    &mut data,
+                    2,
+                    &mut play_output,
+                    &mut playing,
+                    &mut runtime,
+                    &mut track_output,
+                    &mut track_retired_input,
+                    &mut track,
+                    &mut retired_track,
+                    &mut gain,
+                );
+            }
+        });
+
+        assert!(patch_retired_output.pop().is_ok());
+        assert!(track_retired_output.pop().is_ok());
+        assert_eq!(meter_bus.values(77, 0).len(), 1);
+    }
+
+    #[test]
+    fn write_output_handles_retired_backpressure_without_allocation() {
+        let rate = SampleRate::new(44_100).unwrap();
+        let (mut patch_input, patch_output) = RingBuffer::new(2);
+        let (mut patch_retired_input, mut patch_retired_output) = RingBuffer::new(1);
+        let (mut track_input, mut track_output) = RingBuffer::new(2);
+        let (mut track_retired_input, mut track_retired_output) = RingBuffer::new(1);
+        let (mut play_input, mut play_output) = RingBuffer::new(2);
+        assert!(
+            patch_retired_input
+                .push(PatchBank::new(compiled_saw_patch(55.0, rate)))
+                .is_ok()
+        );
+        assert!(
+            track_retired_input
+                .push(TrackRuntime::new(
+                    Track::parse("{7}", &cmin()).unwrap(),
+                    120,
+                    rate,
+                ))
+                .is_ok()
+        );
+        let mut runtime = VoicePatchRuntime::new(
+            PatchBank::new(compiled_saw_patch(110.0, rate)),
+            patch_output,
+            patch_retired_input,
+            Arc::new(ProbeBus::new()),
+            Arc::new(MeterBus::new()),
+        );
+        assert!(
+            patch_input
+                .push(PatchBank::new(compiled_saw_patch(220.0, rate)))
+                .is_ok()
+        );
+        assert!(
+            track_input
+                .push(TrackRuntime::new(
+                    Track::parse("{0&2}", &cmin()).unwrap(),
+                    120,
+                    rate,
+                ))
+                .is_ok()
+        );
+        assert!(
+            track_input
+                .push(TrackRuntime::new(
+                    Track::parse("{4}", &cmin()).unwrap(),
+                    120,
+                    rate,
+                ))
+                .is_ok()
+        );
+        assert!(play_input.push(true).is_ok());
+        let mut track = None;
+        let mut retired_track = None;
+        let mut gain = 0.0;
+        let mut playing = false;
+        let mut data = [0.0f32; 128];
+
+        assert_no_alloc(|| {
+            for _ in 0..4 {
+                write_output(
+                    &mut data,
+                    2,
+                    &mut play_output,
+                    &mut playing,
+                    &mut runtime,
+                    &mut track_output,
+                    &mut track_retired_input,
+                    &mut track,
+                    &mut retired_track,
+                    &mut gain,
+                );
+            }
+        });
+
+        assert!(patch_retired_output.pop().is_ok());
+        assert!(track_retired_output.pop().is_ok());
+
+        assert_no_alloc(|| {
+            write_output(
+                &mut data,
+                2,
+                &mut play_output,
+                &mut playing,
+                &mut runtime,
+                &mut track_output,
+                &mut track_retired_input,
+                &mut track,
+                &mut retired_track,
+                &mut gain,
+            );
+        });
+
+        assert!(patch_retired_output.pop().is_ok());
+        assert!(track_retired_output.pop().is_ok());
+    }
+
+    #[test]
+    fn audio_realtime_source_excludes_forbidden_primitives() {
+        let source = include_str!("audio.rs");
+        for token in [
+            concat!("un", "safe"),
+            concat!("Unsafe", "Cell"),
+            concat!("Atomic", "Ptr"),
+            concat!("into", "_raw"),
+            concat!("from", "_raw"),
+            concat!("Mut", "ex"),
+            concat!("Rw", "Lock"),
+            concat!(".lo", "ck("),
+            concat!("try", "_lock"),
+        ] {
+            assert!(!source.contains(token), "{token}");
+        }
+    }
+
+    #[test]
+    fn audio_callback_functions_exclude_allocator_shapes() {
+        let source = include_str!("audio.rs");
+        for name in [
+            "fn write_output",
+            "fn return_retired_track",
+            "fn accept_track",
+            "fn next_with_controls",
+            "fn begin_buffer",
+            "fn next_frame",
+            "fn return_retired",
+            "fn accept_pending",
+            "fn record_probe_values",
+            "fn record_meter_values",
+        ] {
+            let body = function_body(source, name);
+            for token in [
+                "Vec::",
+                "vec!",
+                "Box::",
+                ".collect(",
+                concat!("while ", "let Ok"),
+                concat!("un", "safe"),
+                concat!("Mut", "ex"),
+                concat!("Rw", "Lock"),
+                concat!(".lo", "ck("),
+                concat!("try", "_lock"),
+            ] {
+                assert!(!body.contains(token), "{name} {token}");
+            }
+        }
+    }
+
+    fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
+        let start = source.find(name).unwrap();
+        let open = source[start..].find('{').unwrap() + start;
+        let mut depth = 0usize;
+        for (offset, byte) in source[open..].bytes().enumerate() {
+            match byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &source[open..=open + offset];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("{name}");
+    }
+
+    fn metered_patch(rate: SampleRate) -> (CompiledPatch, MeterRoute) {
+        let mut patch = Patch::new();
+        let source = patch.insert(Module::Constant(0.5));
+        let lowpass = patch.insert(Module::Lowpass {
+            cutoff: Hertz::new(1000.0).unwrap(),
+        });
+        patch.connect(source, lowpass).unwrap();
+        patch.output(lowpass).unwrap();
+        (
+            CompiledPatch::new(&patch, rate).unwrap(),
+            MeterRoute::new(lowpass, 77, 1).unwrap(),
+        )
     }
 
     fn compiled_saw_patch(frequency: f32, rate: SampleRate) -> CompiledPatch {
@@ -731,6 +1393,34 @@ mod tests {
             unipolar: false,
         });
         patch.connect(freq, osc).unwrap();
+        patch.output(osc).unwrap();
+        CompiledPatch::new(&patch, rate).unwrap()
+    }
+
+    fn unmodulated_osc_patch(rate: SampleRate) -> CompiledPatch {
+        let mut patch = Patch::new();
+        let osc = patch.insert(Module::Osc {
+            wave: Wave::Saw,
+            frequency: Hertz::new(440.0).unwrap(),
+            shift: 0.0,
+            gain: Unit::ONE,
+            unipolar: false,
+        });
+        patch.output(osc).unwrap();
+        CompiledPatch::new(&patch, rate).unwrap()
+    }
+
+    fn gated_osc_patch(rate: SampleRate) -> CompiledPatch {
+        let mut patch = Patch::new();
+        let gate = patch.insert(Module::Gate);
+        let osc = patch.insert(Module::Osc {
+            wave: Wave::Saw,
+            frequency: Hertz::new(440.0).unwrap(),
+            shift: 0.0,
+            gain: Unit::ONE,
+            unipolar: false,
+        });
+        patch.connect_input(gate, osc, 2).unwrap();
         patch.output(osc).unwrap();
         CompiledPatch::new(&patch, rate).unwrap()
     }

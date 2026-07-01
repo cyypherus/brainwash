@@ -1,16 +1,18 @@
 use brainwash::compile::PatchControls;
 use brainwash::time::{Hertz, SampleRate};
 use brainwash_gui::model::{
-    GridPos, GuiAction, GuiState, Mode, ModuleCategory, ModuleKind, Orientation, ParameterValue,
-    TimeUnit, all_modules,
+    AudioPatchError, GridPos, GuiAction, GuiState, Mode, ModuleCategory, ModuleKind, Orientation,
+    ParameterValue, TimeUnit, all_modules,
 };
 use brainwash_gui::view::main_view;
-use haven::{Key, NamedKey, PaneBuilder, Point};
+use haven::{Key, MouseButton, NamedKey, PaneBuilder, Point, render::Frame, render::RenderItem};
 use std::fs;
 
 #[test]
 fn module_inventory_matches_tui_surface_count() {
     assert_eq!(all_modules().len(), 38);
+    assert_eq!(all_modules()[0], ModuleKind::Osc);
+    assert_eq!(all_modules()[1], ModuleKind::Output);
     assert_eq!(
         all_modules()
             .iter()
@@ -24,6 +26,23 @@ fn module_inventory_matches_tui_surface_count() {
             .filter(|kind| kind.category() == ModuleCategory::Routing)
             .count(),
         6
+    );
+}
+
+#[test]
+fn default_oscillator_uses_hertz() {
+    let mut state = GuiState::new(8, 8);
+    state.apply(GuiAction::OpenPalette);
+    state.apply(GuiAction::Confirm);
+
+    let module = state.module_at(GridPos::new(0, 0)).unwrap();
+    assert_eq!(module.kind(), ModuleKind::Osc);
+    assert_eq!(
+        module.parameters()[1].value(),
+        &ParameterValue::Time {
+            value: 440,
+            unit: TimeUnit::Hertz,
+        }
     );
 }
 
@@ -60,7 +79,7 @@ fn palette_places_selected_module_at_cursor() {
     state.apply(GuiAction::Confirm);
 
     let module = state.module_at(GridPos::new(1, 1)).unwrap();
-    assert_eq!(module.kind(), ModuleKind::Gate);
+    assert_eq!(module.kind(), ModuleKind::Freq);
     assert_eq!(module.orientation(), Orientation::Right);
     assert_eq!(state.mode(), Mode::Normal);
 }
@@ -71,8 +90,8 @@ fn palette_category_changes_reset_selection() {
     state.apply(GuiAction::OpenPalette);
     state.apply(GuiAction::PaletteRight);
 
-    assert_eq!(state.palette_category(), ModuleCategory::Shape);
-    assert_eq!(state.selected_palette_module(), ModuleKind::Rise);
+    assert_eq!(state.palette_category(), ModuleCategory::Output);
+    assert_eq!(state.selected_palette_module(), ModuleKind::Output);
 }
 
 #[test]
@@ -204,7 +223,24 @@ fn move_confirm_cancel_delete_and_rotate_match_tui_basics() {
 }
 
 #[test]
-fn copy_places_module_and_rejects_occupied_target() {
+fn move_places_multi_cell_module_relative_to_grabbed_cell() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Adsr);
+    let id = state.module_at(GridPos::new(0, 0)).unwrap().id();
+
+    state.apply(GuiAction::Down);
+    assert_eq!(state.module_at(GridPos::new(0, 1)).unwrap().id(), id);
+    state.apply(GuiAction::Move);
+    state.apply(GuiAction::Right);
+    state.apply(GuiAction::Confirm);
+
+    assert!(state.module_at(GridPos::new(0, 0)).is_none());
+    assert_eq!(state.module_at(GridPos::new(1, 0)).unwrap().id(), id);
+    assert_eq!(state.module_at(GridPos::new(1, 1)).unwrap().id(), id);
+}
+
+#[test]
+fn copy_can_overlap_and_disables_overlapping_modules() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 0, 0);
     let source = state.module_at(GridPos::new(0, 0)).unwrap().id();
@@ -212,13 +248,38 @@ fn copy_places_module_and_rejects_occupied_target() {
     state.apply(GuiAction::Copy);
     assert_eq!(state.mode(), Mode::Copy { source });
     state.apply(GuiAction::Confirm);
-    assert_eq!(state.modules().len(), 1);
-    assert_eq!(state.mode(), Mode::Copy { source });
+    assert_eq!(state.modules().len(), 2);
+    assert_eq!(
+        state
+            .modules()
+            .iter()
+            .filter(|module| module.disabled())
+            .count(),
+        2
+    );
+    assert_eq!(state.mode(), Mode::Normal);
+}
 
+#[test]
+fn copy_places_module_at_empty_target() {
+    let mut state = GuiState::new(8, 8);
+    place_module(&mut state, 0, 0);
+    let source = state.module_at(GridPos::new(0, 0)).unwrap().id();
+
+    state.apply(GuiAction::Copy);
+    assert_eq!(state.mode(), Mode::Copy { source });
     state.apply(GuiAction::Right);
     state.apply(GuiAction::Confirm);
 
     assert_eq!(state.modules().len(), 2);
+    assert_eq!(
+        state
+            .modules()
+            .iter()
+            .filter(|module| module.disabled())
+            .count(),
+        0
+    );
     assert!(state.module_at(GridPos::new(0, 0)).is_some());
     assert!(state.module_at(GridPos::new(1, 0)).is_some());
     assert_ne!(
@@ -272,8 +333,8 @@ fn edit_mode_adjusts_parameters_ports_units_and_undoes() {
     assert_eq!(
         parameter.value(),
         &ParameterValue::Time {
-            value: 100,
-            unit: TimeUnit::Samples
+            value: 440,
+            unit: TimeUnit::Seconds
         }
     );
 
@@ -282,8 +343,8 @@ fn edit_mode_adjusts_parameters_ports_units_and_undoes() {
     assert_eq!(
         parameter.value(),
         &ParameterValue::Time {
-            value: 102,
-            unit: TimeUnit::Samples
+            value: 442,
+            unit: TimeUnit::Seconds
         }
     );
     assert!(!parameter.connected());
@@ -297,8 +358,8 @@ fn edit_mode_adjusts_parameters_ports_units_and_undoes() {
     assert_eq!(
         parameter.value(),
         &ParameterValue::Time {
-            value: 102,
-            unit: TimeUnit::Samples
+            value: 442,
+            unit: TimeUnit::Seconds
         }
     );
     assert!(!parameter.connected());
@@ -312,6 +373,7 @@ fn typed_value_input_commits_numeric_parameter() {
 
     state.apply(GuiAction::Edit);
     state.apply(GuiAction::Down);
+    state.apply(GuiAction::CycleUnit);
     state.apply(GuiAction::TypeValue);
     assert_eq!(
         state.mode(),
@@ -321,7 +383,10 @@ fn typed_value_input_commits_numeric_parameter() {
         }
     );
 
-    state.apply(GuiAction::Backspace);
+    state.apply(GuiAction::TextStart);
+    for _ in 0..3 {
+        state.apply(GuiAction::DeleteChar);
+    }
     state.apply(GuiAction::InputChar('2'));
     state.apply(GuiAction::InputChar('.'));
     state.apply(GuiAction::InputChar('5'));
@@ -361,10 +426,10 @@ fn typed_value_input_filters_characters_like_tui() {
             parameter: 1
         }
     );
-    assert_eq!(state.prompt_text(), "1");
+    assert_eq!(state.prompt_text(), "440");
     state.apply(GuiAction::InputChar('/'));
     state.apply(GuiAction::InputChar('a'));
-    assert_eq!(state.prompt_text(), "1/");
+    assert_eq!(state.prompt_text(), "440/");
     state.apply(GuiAction::Cancel);
 
     state.apply(GuiAction::Down);
@@ -524,12 +589,7 @@ fn subpatch_navigation_uses_isolated_surface() {
     assert_eq!(state.cursor(), GridPos::new(0, 0));
     assert!(state.modules().is_empty());
 
-    state.apply(GuiAction::OpenPalette);
-    for _ in 0..6 {
-        state.apply(GuiAction::PaletteLeft);
-    }
-    state.apply(GuiAction::PaletteDown);
-    state.apply(GuiAction::Confirm);
+    place_module_kind(&mut state, ModuleKind::Gate);
     assert_eq!(
         state.module_at(GridPos::new(0, 0)).unwrap().kind(),
         ModuleKind::Gate
@@ -556,12 +616,7 @@ fn moving_module_can_enter_subpatch_surface() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 6, 2);
     state.apply(GuiAction::Right);
-    state.apply(GuiAction::OpenPalette);
-    for _ in 0..6 {
-        state.apply(GuiAction::PaletteLeft);
-    }
-    state.apply(GuiAction::PaletteDown);
-    state.apply(GuiAction::Confirm);
+    place_module_kind(&mut state, ModuleKind::Gate);
     let module = state.module_at(GridPos::new(1, 0)).unwrap().id();
 
     state.apply(GuiAction::Move);
@@ -586,12 +641,7 @@ fn cancelling_subpatch_move_restores_module_to_origin_surface() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 6, 2);
     state.apply(GuiAction::Right);
-    state.apply(GuiAction::OpenPalette);
-    for _ in 0..6 {
-        state.apply(GuiAction::PaletteLeft);
-    }
-    state.apply(GuiAction::PaletteDown);
-    state.apply(GuiAction::Confirm);
+    place_module_kind(&mut state, ModuleKind::Gate);
     let module = state.module_at(GridPos::new(1, 0)).unwrap().id();
 
     state.apply(GuiAction::Move);
@@ -706,7 +756,7 @@ fn haven_transient_mode_confirm_keys_match_tui() {
     pane.key_pressed(&mut state, Key::character("n"));
     assert_eq!(
         state.module_at(GridPos::new(0, 0)).unwrap().kind(),
-        ModuleKind::Gate
+        ModuleKind::Freq
     );
 
     pane.key_pressed(&mut state, Key::character("m"));
@@ -797,7 +847,7 @@ fn haven_palette_category_keys_match_tui_action() {
     pane.key_pressed(&mut state, Key::character("@"));
     assert_eq!(state.mode(), Mode::Palette);
     assert_eq!(state.palette_category(), ModuleCategory::Shape);
-    assert_eq!(state.selected_palette_module(), ModuleKind::Rise);
+    assert_eq!(state.selected_palette_module(), ModuleKind::Adsr);
 
     pane.key_pressed(&mut state, Key::character("#"));
     assert_eq!(state.palette_category(), ModuleCategory::Filter);
@@ -826,11 +876,10 @@ fn haven_palette_lays_out_categories_horizontally_and_modules_vertically() {
     let gate = pane.location(2_001).unwrap();
     assert_point_near_x(gate, freq.x);
     assert!(gate.y > freq.y);
-
 }
 
 #[test]
-fn haven_palette_background_follows_browser_contents() {
+fn haven_palette_background_stays_centered_across_contents() {
     let mut normal = GuiState::new(8, 8);
     normal.apply(GuiAction::OpenPalette);
     let mut normal_pane = PaneBuilder::new("main", main_view).build();
@@ -847,10 +896,7 @@ fn haven_palette_background_follows_browser_contents() {
     search_pane.redraw(&mut search, 760, 560, 1.0);
     let search_background = search_pane.location(200).unwrap();
 
-    assert!(
-        search_background.x > normal_background.x + 20.,
-        "{search_background:?} {normal_background:?}"
-    );
+    assert!((search_background.x - normal_background.x).abs() < 10.);
 }
 
 #[test]
@@ -1017,12 +1063,7 @@ fn haven_move_key_can_place_module_inside_subpatch() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 6, 2);
     state.apply(GuiAction::Right);
-    state.apply(GuiAction::OpenPalette);
-    for _ in 0..6 {
-        state.apply(GuiAction::PaletteLeft);
-    }
-    state.apply(GuiAction::PaletteDown);
-    state.apply(GuiAction::Confirm);
+    place_module_kind(&mut state, ModuleKind::Gate);
     let module = state.module_at(GridPos::new(1, 0)).unwrap().id();
     let mut pane = PaneBuilder::new("main", main_view).build();
     pane.redraw(&mut state, 640, 480, 1.0);
@@ -1085,7 +1126,7 @@ fn haven_edit_keys_drive_parameter_editor() {
     assert!(matches!(
         state.module_at(GridPos::new(0, 0)).unwrap().parameters()[1].value(),
         ParameterValue::Time {
-            unit: TimeUnit::Samples,
+            unit: TimeUnit::Seconds,
             ..
         }
     ));
@@ -1110,7 +1151,15 @@ fn haven_module_info_modal_does_not_duplicate_bottom_shortcuts() {
     pane.redraw(&mut state, 760, 560, 1.0);
 
     assert!(pane.location(501).is_some());
-    assert!(pane.location(70_000).is_some());
+    assert!(pane.location(69_900).is_some());
+    assert!(pane.location(301).is_none());
+    let panel = pane.location(300).unwrap();
+    let first_row = pane.location(600).unwrap();
+    let last_row = pane.location(640).unwrap();
+    assert_point_near_x(first_row, panel.x);
+    assert_point_near_x(last_row, panel.x);
+    assert!(first_row.y < panel.y);
+    assert!(last_row.y > panel.y);
     assert!(pane.location(3_048).is_none());
     assert!(pane.location(3_052).is_none());
     assert!(pane.location(3_055).is_none());
@@ -1136,7 +1185,10 @@ fn haven_visual_editors_redraw() {
     envelope.apply(GuiAction::Confirm);
     pane.redraw(&mut envelope, 920, 720, 1.0);
     assert!(pane.location(842).is_some());
+    assert!(pane.location(843).is_some());
     assert!(pane.location(841).is_some());
+    assert!(pane.location(880).is_some());
+    assert!(pane.location(881).is_some());
 
     let mut probe = GuiState::new(8, 8);
     place_module(&mut probe, 4, 0);
@@ -1146,6 +1198,10 @@ fn haven_visual_editors_redraw() {
     pane.redraw(&mut probe, 920, 720, 1.0);
     assert!(pane.location(901).is_some());
     assert!(pane.location(902).is_some());
+    assert!(pane.location(903).is_some());
+    assert!(pane.location(904).is_some());
+    assert!(pane.location(905).is_some());
+    assert!(pane.location(906).is_some());
 
     let mut sample = GuiState::new(8, 8);
     place_module(&mut sample, 0, 6);
@@ -1200,6 +1256,42 @@ fn haven_envelope_move_keys_match_tui_bindings() {
             point: 0,
             editing: false,
         }
+    );
+}
+
+#[test]
+fn haven_envelope_points_drag_with_mouse() {
+    let mut state = GuiState::new(8, 8);
+    place_module(&mut state, 1, 4);
+    let module = state.module_at(GridPos::new(0, 0)).unwrap().id();
+    let mut pane = PaneBuilder::new("main", main_view).build();
+
+    state.apply(GuiAction::Edit);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::Confirm);
+    pane.redraw(&mut state, 920, 720, 1.0);
+
+    let target = pane.location(842).unwrap();
+    let start = Point::new(target.x - 60., target.y);
+    pane.move_to(&mut state, start);
+    pane.press_button(&mut state, MouseButton::Left);
+    pane.move_to(&mut state, target);
+    pane.release_button(&mut state, MouseButton::Left);
+
+    assert_eq!(
+        state.mode(),
+        Mode::EnvEdit {
+            module,
+            point: 0,
+            editing: false,
+        }
+    );
+    let points = state.module_at(GridPos::new(0, 0)).unwrap().env_points();
+    assert!(
+        points
+            .iter()
+            .any(|point| point.time >= 45 && point.time <= 55 && point.value.abs() <= 5),
+        "{points:?}"
     );
 }
 
@@ -1579,16 +1671,67 @@ fn haven_grid_renders_connections_and_ports() {
     assert!(pane.location(60_001).is_none());
     assert!(pane.location(10_005).is_none());
 
-    let grid = pane.location(990).unwrap();
-    let left = grid.x - grid_width() * 0.5;
-    let top = grid.y - grid_height() * 0.5;
+    let origin = grid_cell_origin(&pane, GridPos::new(0, 0));
     assert_point_near(
         pane.location(10_004).unwrap(),
-        Point::new(left + 22.5, top + 15.),
+        Point::new(origin.x + 22.5, origin.y + 15.),
     );
     assert_point_near(
         pane.location(40_020).unwrap(),
-        Point::new(left + 73.5, top + 15.),
+        Point::new(origin.x + 73.5, origin.y + 15.),
+    );
+}
+
+#[test]
+fn haven_grid_renders_routing_ports_on_physical_edges() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::TopSplit);
+
+    let mut pane = PaneBuilder::new("main", main_view).build();
+    pane.redraw(&mut state, 760, 560, 1.0);
+
+    let origin = grid_cell_origin(&pane, GridPos::new(0, 0));
+    assert_point_near(
+        pane.location(41_000).unwrap(),
+        Point::new(origin.x + 15., origin.y + 7.5),
+    );
+    assert_point_near(
+        pane.location(43_000).unwrap(),
+        Point::new(origin.x + 15., origin.y + 22.5),
+    );
+    assert_point_near(
+        pane.location(42_001).unwrap(),
+        Point::new(origin.x + 22.5, origin.y + 15.),
+    );
+    assert!(pane.location(42_000).is_none());
+    assert!(pane.location(43_001).is_none());
+}
+
+#[test]
+fn haven_grid_renders_subpatch_input_port() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Subpatch);
+
+    let mut pane = PaneBuilder::new("main", main_view).build();
+    pane.redraw(&mut state, 760, 560, 1.0);
+    assert!(pane.location(40_000).is_none());
+    assert!(pane.location(10_004).is_none());
+
+    state.apply(GuiAction::EditSubpatch);
+    place_module_kind(&mut state, ModuleKind::SubpatchInput);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::SubpatchOutput);
+    state.apply(GuiAction::ExitSubpatch);
+    pane.redraw(&mut state, 760, 560, 1.0);
+
+    let origin = grid_cell_origin(&pane, GridPos::new(0, 0));
+    assert_point_near(
+        pane.location(40_000).unwrap(),
+        Point::new(origin.x + 7.5, origin.y + 15.),
+    );
+    assert_point_near(
+        pane.location(10_004).unwrap(),
+        Point::new(origin.x + 22.5, origin.y + 15.),
     );
 }
 
@@ -1603,7 +1746,10 @@ fn haven_grid_renders_multi_port_modules_as_multi_cell_tiles() {
     state.apply(GuiAction::Confirm);
 
     let compressor = state.module_at(GridPos::new(0, 0)).unwrap().id();
-    assert_eq!(state.module_at(GridPos::new(0, 5)).unwrap().id(), compressor);
+    assert_eq!(
+        state.module_at(GridPos::new(0, 5)).unwrap().id(),
+        compressor
+    );
 
     for _ in 0..3 {
         state.apply(GuiAction::Down);
@@ -1627,15 +1773,17 @@ fn haven_grid_renders_fixed_input_as_x_instead_of_port() {
     state.apply(GuiAction::Edit);
     state.apply(GuiAction::Down);
     state.apply(GuiAction::ValueUp);
+    state.apply(GuiAction::Cancel);
 
     let mut pane = PaneBuilder::new("main", main_view).build();
     pane.redraw(&mut state, 760, 560, 1.0);
 
     assert!(pane.location(40_000).is_none());
-    let grid = pane.location(990).unwrap();
-    let left = grid.x - grid_width() * 0.5;
-    let top = grid.y - grid_height() * 0.5;
-    assert_point_near(pane.location(45_000).unwrap(), Point::new(left + 7.5, top + 15.));
+    let origin = grid_cell_origin(&pane, GridPos::new(0, 0));
+    assert_point_near(
+        pane.location(45_000).unwrap(),
+        Point::new(origin.x + 7.5, origin.y + 15.),
+    );
 }
 
 #[test]
@@ -1644,9 +1792,6 @@ fn gui_built_osc_output_patch_emits_audio() {
     place_module(&mut state, 0, 4);
     state.apply(GuiAction::Edit);
     state.apply(GuiAction::Down);
-    state.apply(GuiAction::CycleUnit);
-    state.apply(GuiAction::CycleUnit);
-    state.apply(GuiAction::CycleUnit);
     state.apply(GuiAction::TypeValue);
     state.apply(GuiAction::TextStart);
     state.apply(GuiAction::DeleteChar);
@@ -1684,6 +1829,129 @@ fn gui_built_osc_output_patch_emits_audio() {
 }
 
 #[test]
+fn gui_subpatch_routes_parent_input_to_child_subpatch_input() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Freq);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Subpatch);
+    state.apply(GuiAction::EditSubpatch);
+    place_module_kind(&mut state, ModuleKind::SubpatchInput);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Osc);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::SubpatchOutput);
+    state.apply(GuiAction::ExitSubpatch);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Output);
+
+    let mut compiled = state
+        .compile_audio_patch(SampleRate::new(44_100).unwrap())
+        .unwrap();
+    let controls = PatchControls {
+        frequency: Hertz::new(330.0),
+        gate: 1.0,
+        degree: 0,
+    };
+
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    for _ in 0..256 {
+        let value = compiled.next_with_controls(controls).left().value();
+        min = min.min(value);
+        max = max.max(value);
+    }
+    assert!(max - min > 0.1, "{min} {max}");
+}
+
+#[test]
+fn probe_branch_does_not_need_to_feed_audio_output() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Gate);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Probe);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::Left);
+    place_module_kind(&mut state, ModuleKind::Freq);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Output);
+
+    let mut compiled = state
+        .compile_audio_patch(SampleRate::new(44_100).unwrap())
+        .unwrap();
+    compiled.next_with_controls(PatchControls {
+        frequency: Hertz::new(330.0),
+        gate: 1.0,
+        degree: 0,
+    });
+    let values = compiled.probe_values().collect::<Vec<_>>();
+
+    assert_eq!(values.len(), 1);
+    assert!((values[0].1.value() - 1.0).abs() < 0.001, "{values:?}");
+}
+
+#[test]
+fn subpatch_probe_branch_receives_parent_input_without_feeding_output() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Gate);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Subpatch);
+    state.apply(GuiAction::EditSubpatch);
+    place_module_kind(&mut state, ModuleKind::SubpatchInput);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Probe);
+    state.apply(GuiAction::ExitSubpatch);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::Left);
+    place_module_kind(&mut state, ModuleKind::Freq);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Output);
+
+    let mut compiled = state
+        .compile_audio_patch(SampleRate::new(44_100).unwrap())
+        .unwrap();
+    compiled.next_with_controls(PatchControls {
+        frequency: Hertz::new(330.0),
+        gate: 1.0,
+        degree: 0,
+    });
+    let values = compiled.probe_values().collect::<Vec<_>>();
+
+    assert_eq!(values.len(), 1);
+    assert!((values[0].1.value() - 1.0).abs() < 0.001, "{values:?}");
+}
+
+#[test]
+fn overlapping_modules_are_excluded_from_audio_patch() {
+    let mut state = GuiState::new(8, 8);
+    place_module(&mut state, 0, 0);
+    state.apply(GuiAction::Right);
+    place_module(&mut state, 7, 0);
+
+    assert!(
+        state
+            .compile_audio_patch(SampleRate::new(44_100).unwrap())
+            .is_ok()
+    );
+
+    state.apply(GuiAction::Move);
+    state.apply(GuiAction::Left);
+    state.apply(GuiAction::Confirm);
+
+    assert_eq!(
+        state
+            .modules()
+            .iter()
+            .filter(|module| module.disabled())
+            .count(),
+        2
+    );
+    assert!(matches!(
+        state.compile_audio_patch(SampleRate::new(44_100).unwrap()),
+        Err(AudioPatchError::MissingOutput)
+    ));
+}
+
+#[test]
 fn gui_built_freq_osc_output_patch_uses_track_controls() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 0, 0);
@@ -1714,6 +1982,124 @@ fn gui_built_freq_osc_output_patch_uses_track_controls() {
         audible |= frame.left().value().abs() > 0.001 || frame.right().value().abs() > 0.001;
     }
     assert!(audible);
+}
+
+#[test]
+fn gate_into_osc_gain_matches_default_gain_when_gate_is_high() {
+    let rate = SampleRate::new(44_100).unwrap();
+    let controls_high = PatchControls {
+        frequency: Hertz::new(330.0),
+        gate: 1.0,
+        degree: 0,
+    };
+    let controls_low = PatchControls {
+        frequency: Hertz::new(330.0),
+        gate: 0.0,
+        degree: 0,
+    };
+
+    let mut default_state = GuiState::new(8, 8);
+    place_module_kind(&mut default_state, ModuleKind::Osc);
+    default_state.apply(GuiAction::Right);
+    place_module_kind(&mut default_state, ModuleKind::Output);
+
+    let mut gated_state = GuiState::new(8, 8);
+    gated_state.apply(GuiAction::Down);
+    gated_state.apply(GuiAction::Down);
+    place_module_kind(&mut gated_state, ModuleKind::Gate);
+    gated_state.apply(GuiAction::Up);
+    gated_state.apply(GuiAction::Up);
+    gated_state.apply(GuiAction::Right);
+    place_module_kind(&mut gated_state, ModuleKind::Osc);
+    gated_state.apply(GuiAction::Right);
+    place_module_kind(&mut gated_state, ModuleKind::Output);
+
+    let mut default_patch = default_state.compile_audio_patch(rate).unwrap();
+    let mut gated_high_patch = gated_state.compile_audio_patch(rate).unwrap();
+    let mut gated_low_patch = gated_state.compile_audio_patch(rate).unwrap();
+
+    for _ in 0..256 {
+        let default = default_patch
+            .next_with_controls(controls_high)
+            .left()
+            .value();
+        let gated = gated_high_patch
+            .next_with_controls(controls_high)
+            .left()
+            .value();
+        let silent = gated_low_patch
+            .next_with_controls(controls_low)
+            .left()
+            .value();
+
+        assert!((default - gated).abs() < 0.0001, "{default} {gated}");
+        assert!(silent.abs() < 0.0001, "{silent}");
+    }
+}
+
+#[test]
+fn output_gain_connection_is_not_treated_as_output_signal() {
+    let rate = SampleRate::new(44_100).unwrap();
+    let controls_high = PatchControls {
+        frequency: Hertz::new(330.0),
+        gate: 1.0,
+        degree: 0,
+    };
+    let controls_low = PatchControls {
+        frequency: Hertz::new(330.0),
+        gate: 0.0,
+        degree: 0,
+    };
+
+    let mut state = GuiState::new(8, 8);
+    state.apply(GuiAction::Down);
+    place_module_kind(&mut state, ModuleKind::Gate);
+    state.apply(GuiAction::Up);
+    place_module_kind(&mut state, ModuleKind::Freq);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Output);
+
+    let mut high = state.compile_audio_patch(rate).unwrap();
+    let mut low = state.compile_audio_patch(rate).unwrap();
+
+    let mut high_max = 0.0f32;
+    let mut low_max = 0.0f32;
+    for _ in 0..256 {
+        let high_value = high.next_with_controls(controls_high).left().value();
+        let low_value = low.next_with_controls(controls_low).left().value();
+        high_max = high_max.max(high_value.abs());
+        low_max = low_max.max(low_value.abs());
+    }
+
+    assert!(high_max > 0.9, "{high_max}");
+    assert!(low_max < 0.0001, "{low_max}");
+}
+
+#[test]
+fn unrelated_subpatch_does_not_silence_direct_osc_output() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Subpatch);
+    state.apply(GuiAction::EditSubpatch);
+    place_module_kind(&mut state, ModuleKind::SubpatchOutput);
+    state.apply(GuiAction::ExitSubpatch);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::Down);
+    place_module_kind(&mut state, ModuleKind::Osc);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Output);
+
+    let mut compiled = state
+        .compile_audio_patch(SampleRate::new(44_100).unwrap())
+        .unwrap();
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    for _ in 0..256 {
+        let value = compiled.next().left().value();
+        min = min.min(value);
+        max = max.max(value);
+    }
+
+    assert!(max - min > 0.1, "{min} {max}");
 }
 
 #[test]
@@ -1892,6 +2278,205 @@ fn haven_grid_drag_moves_selected_group() {
 }
 
 #[test]
+fn haven_grid_view_scrolls_after_two_cell_edge_margin() {
+    let mut state = GuiState::default();
+    let mut pane = PaneBuilder::new("main", main_view).build();
+    let (frame, _) = pane.redraw(&mut state, 920, 720, 1.0);
+
+    let area = grid_area(&pane, &frame);
+    let columns = visible_cells(area.width);
+    let rows = visible_cells(area.height);
+    let right_edge = columns - 3;
+    let scrolled_right = right_edge + 1;
+    let bottom_edge = rows - 3;
+    let scrolled_down = bottom_edge + 1;
+    let origin = pane.location(view_cell_id(GridPos::new(0, 0))).unwrap();
+
+    press_key(&mut pane, &mut state, Key::character("l"), right_edge);
+    pane.redraw(&mut state, 920, 720, 1.0);
+    assert_point_near(
+        pane.location(view_cell_id(GridPos::new(0, 0))).unwrap(),
+        origin,
+    );
+
+    press_key(&mut pane, &mut state, Key::character("l"), 1);
+    pane.redraw(&mut state, 920, 720, 1.0);
+    assert_point_near(
+        pane.location(view_cell_id(GridPos::new(1, 0))).unwrap(),
+        origin,
+    );
+    assert_eq!(state.cursor(), GridPos::new(scrolled_right, 0));
+
+    press_key(&mut pane, &mut state, Key::character("j"), scrolled_down);
+    pane.redraw(&mut state, 920, 720, 1.0);
+    assert_point_near(
+        pane.location(view_cell_id(GridPos::new(1, 1))).unwrap(),
+        origin,
+    );
+    assert_eq!(state.cursor(), GridPos::new(scrolled_right, scrolled_down));
+
+    press_key(
+        &mut pane,
+        &mut state,
+        Key::character("h"),
+        scrolled_right - 3,
+    );
+    pane.redraw(&mut state, 920, 720, 1.0);
+    assert_point_near(
+        pane.location(view_cell_id(GridPos::new(1, 1))).unwrap(),
+        origin,
+    );
+    assert_eq!(state.cursor(), GridPos::new(3, scrolled_down));
+
+    press_key(&mut pane, &mut state, Key::character("h"), 1);
+    pane.redraw(&mut state, 920, 720, 1.0);
+    assert_point_near(
+        pane.location(view_cell_id(GridPos::new(0, 1))).unwrap(),
+        origin,
+    );
+    assert_eq!(state.cursor(), GridPos::new(2, scrolled_down));
+
+    press_key(
+        &mut pane,
+        &mut state,
+        Key::character("k"),
+        scrolled_down - 3,
+    );
+    pane.redraw(&mut state, 920, 720, 1.0);
+    assert_point_near(
+        pane.location(view_cell_id(GridPos::new(0, 1))).unwrap(),
+        origin,
+    );
+    assert_eq!(state.cursor(), GridPos::new(2, 3));
+
+    press_key(&mut pane, &mut state, Key::character("k"), 1);
+    pane.redraw(&mut state, 920, 720, 1.0);
+    assert_point_near(
+        pane.location(view_cell_id(GridPos::new(0, 0))).unwrap(),
+        origin,
+    );
+    assert_eq!(state.cursor(), GridPos::new(2, 2));
+}
+
+#[test]
+fn haven_selection_move_preview_offsets_clipped_grid() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Freq);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Gate);
+    state.apply(GuiAction::Left);
+    state.apply(GuiAction::Select);
+    state.apply(GuiAction::Right);
+    state.apply(GuiAction::Move);
+    state.apply(GuiAction::Right);
+    state.apply(GuiAction::Down);
+
+    let mut pane = PaneBuilder::new("main", main_view).build();
+    pane.redraw(&mut state, 640, 480, 1.0);
+
+    assert!(pane.location(10_001).is_none());
+    assert!(pane.location(10_011).is_none());
+    assert_point_near(
+        pane.location(110_001).unwrap(),
+        pane.location(10_110).unwrap(),
+    );
+    assert_point_near(
+        pane.location(110_011).unwrap(),
+        pane.location(10_120).unwrap(),
+    );
+}
+
+#[test]
+fn haven_single_module_move_preview_ignores_overlapped_modules() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Adsr);
+    state.apply(GuiAction::Right);
+    state.apply(GuiAction::Down);
+    place_module_kind(&mut state, ModuleKind::Freq);
+    state.apply(GuiAction::Move);
+    state.apply(GuiAction::Left);
+    state.apply(GuiAction::Confirm);
+
+    state.apply(GuiAction::Move);
+    state.apply(GuiAction::Right);
+
+    let mut pane = PaneBuilder::new("main", main_view).build();
+    pane.redraw(&mut state, 640, 480, 1.0);
+
+    assert!(
+        pane.location(view_module_id(GridPos::new(0, 1), false))
+            .is_some()
+    );
+    assert!(
+        pane.location(view_module_id(GridPos::new(0, 1), true))
+            .is_none()
+    );
+    assert_point_near_x(
+        pane.location(view_module_id(GridPos::new(0, 0), true))
+            .unwrap(),
+        pane.location(view_cell_id(GridPos::new(1, 0))).unwrap().x,
+    );
+}
+
+#[test]
+fn haven_module_move_preview_renders_inside_subpatch() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Subpatch);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Gate);
+    state.apply(GuiAction::Move);
+    state.apply(GuiAction::Left);
+    state.apply(GuiAction::EditSubpatch);
+
+    let mut pane = PaneBuilder::new("main", main_view).build();
+    pane.redraw(&mut state, 640, 480, 1.0);
+
+    assert_point_near(
+        pane.location(view_module_id(GridPos::new(1, 0), true))
+            .unwrap(),
+        pane.location(view_cell_id(GridPos::new(0, 0))).unwrap(),
+    );
+}
+
+#[test]
+fn haven_selection_move_preview_shifts_viewport_at_grid_edge() {
+    let mut state = GuiState::default();
+    for _ in 0..14 {
+        state.apply(GuiAction::Right);
+    }
+    place_module_kind(&mut state, ModuleKind::Freq);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Gate);
+    state.apply(GuiAction::Left);
+    state.apply(GuiAction::Select);
+    state.apply(GuiAction::Right);
+    state.apply(GuiAction::Move);
+    state.apply(GuiAction::RightFast);
+
+    let mut pane = PaneBuilder::new("main", main_view).build();
+    pane.redraw(&mut state, 920, 720, 1.0);
+
+    assert!(
+        pane.location(view_module_id(GridPos::new(14, 0), false))
+            .is_none()
+    );
+    assert!(
+        pane.location(view_module_id(GridPos::new(15, 0), false))
+            .is_none()
+    );
+    assert_point_near(
+        pane.location(view_module_id(GridPos::new(14, 0), true))
+            .unwrap(),
+        pane.location(view_cell_id(GridPos::new(18, 0))).unwrap(),
+    );
+    assert_point_near(
+        pane.location(view_module_id(GridPos::new(15, 0), true))
+            .unwrap(),
+        pane.location(view_cell_id(GridPos::new(19, 0))).unwrap(),
+    );
+}
+
+#[test]
 fn haven_grid_click_inside_selection_starts_selected_move() {
     let mut state = GuiState::new(8, 8);
     state.apply(GuiAction::Select);
@@ -1961,11 +2546,12 @@ fn undo_redo_restore_patch_mutations() {
 #[test]
 fn instruments_are_separate_patch_surfaces() {
     let mut state = GuiState::new(8, 8);
+    assert_eq!(state.instrument_count(), 5);
+
     place_module(&mut state, 0, 0);
 
-    state.apply(GuiAction::NewInstrument);
+    state.apply(GuiAction::Instrument(1));
     assert_eq!(state.active_instrument(), 1);
-    assert_eq!(state.instrument_count(), 2);
     assert!(state.modules().is_empty());
 
     place_module(&mut state, 0, 1);
@@ -1982,21 +2568,21 @@ fn instruments_are_separate_patch_surfaces() {
         state.module_at(GridPos::new(0, 0)).unwrap().kind(),
         ModuleKind::Gate
     );
+
+    state.apply(GuiAction::Instrument(4));
+    assert_eq!(state.active_instrument(), 4);
+    assert!(state.modules().is_empty());
 }
 
 #[test]
-fn global_toggles_and_help_scroll_match_normal_mode_actions() {
+fn global_toggles_match_normal_mode_actions() {
     let mut state = GuiState::new(8, 8);
 
     state.apply(GuiAction::TogglePlay);
     state.apply(GuiAction::ToggleMeters);
-    state.apply(GuiAction::HelpScrollDown);
-    state.apply(GuiAction::HelpScrollDown);
-    state.apply(GuiAction::HelpScrollUp);
 
     assert!(state.playing());
     assert!(state.show_meters());
-    assert_eq!(state.help_scroll(), 1);
 }
 
 #[test]
@@ -2090,11 +2676,58 @@ fn load_project_replaces_state_from_project_file() {
 }
 
 fn place_module(state: &mut GuiState, category_rights: usize, selection_downs: usize) {
-    state.apply(GuiAction::OpenPalette);
-    for _ in 0..category_rights {
-        state.apply(GuiAction::PaletteRight);
-    }
-    for _ in 0..selection_downs {
+    let kind = match (category_rights, selection_downs) {
+        (0, 0) => ModuleKind::Freq,
+        (0, 1) => ModuleKind::Gate,
+        (0, 2) => ModuleKind::Degree,
+        (0, 3) => ModuleKind::DegreeGate,
+        (0, 4) => ModuleKind::Osc,
+        (0, 5) => ModuleKind::Random,
+        (0, 6) => ModuleKind::Sample,
+        (1, 0) => ModuleKind::Rise,
+        (1, 1) => ModuleKind::Fall,
+        (1, 2) => ModuleKind::Ramp,
+        (1, 3) => ModuleKind::Adsr,
+        (1, 4) => ModuleKind::Envelope,
+        (2, 0) => ModuleKind::Lowpass,
+        (2, 1) => ModuleKind::Highpass,
+        (3, 0) => ModuleKind::Comb,
+        (3, 1) => ModuleKind::Allpass,
+        (3, 2) => ModuleKind::Delay,
+        (3, 3) => ModuleKind::DelayTap,
+        (3, 4) => ModuleKind::Reverb,
+        (3, 5) => ModuleKind::Distortion,
+        (3, 6) => ModuleKind::Compressor,
+        (3, 7) => ModuleKind::Flanger,
+        (4, 0) => ModuleKind::Probe,
+        (4, 1) => ModuleKind::Multiply,
+        (4, 2) => ModuleKind::Add,
+        (4, 3) => ModuleKind::GreaterThan,
+        (4, 4) => ModuleKind::LessThan,
+        (4, 5) => ModuleKind::Switch,
+        (5, 0) => ModuleKind::TurnRightDown,
+        (5, 1) => ModuleKind::TurnDownRight,
+        (5, 2) => ModuleKind::LeftSplit,
+        (5, 3) => ModuleKind::TopSplit,
+        (5, 4) => ModuleKind::RightJoin,
+        (5, 5) => ModuleKind::DownJoin,
+        (6, 0) => ModuleKind::SubpatchInput,
+        (6, 1) => ModuleKind::SubpatchOutput,
+        (6, 2) => ModuleKind::Subpatch,
+        (7, 0) => ModuleKind::Output,
+        _ => panic!("unknown module fixture"),
+    };
+    place_module_kind(state, kind);
+}
+
+fn place_module_kind(state: &mut GuiState, kind: ModuleKind) {
+    state.apply(GuiAction::Palette(kind.category()));
+    let index = all_modules()
+        .iter()
+        .filter(|module| module.category() == kind.category())
+        .position(|module| *module == kind)
+        .unwrap();
+    for _ in 0..index {
         state.apply(GuiAction::PaletteDown);
     }
     state.apply(GuiAction::Confirm);
@@ -2102,28 +2735,58 @@ fn place_module(state: &mut GuiState, category_rights: usize, selection_downs: u
 
 fn grid_cell_center(pane: &haven::Pane<GuiState>, x: u16, y: u16) -> Point {
     const CELL: f32 = 30.;
-    const GAP: f32 = 3.;
-    let grid = pane.location(990).unwrap();
-    let left = grid.x - grid_width() * 0.5;
-    let top = grid.y - grid_height() * 0.5;
-    Point::new(
-        left + x as f32 * (CELL + GAP) + CELL * 0.5,
-        top + y as f32 * (CELL + GAP) + CELL * 0.5,
-    )
+    let origin = grid_cell_origin(pane, GridPos::new(x, y));
+    Point::new(origin.x + CELL * 0.5, origin.y + CELL * 0.5)
 }
 
-fn grid_width() -> f32 {
+fn grid_cell_origin(pane: &haven::Pane<GuiState>, position: GridPos) -> Point {
     const CELL: f32 = 30.;
-    const GAP: f32 = 3.;
-    const COLUMNS: f32 = 16.;
-    COLUMNS * CELL + (COLUMNS - 1.) * GAP
+    let center = pane.location(view_cell_id(position)).unwrap();
+    Point::new(center.x - CELL * 0.5, center.y - CELL * 0.5)
 }
 
-fn grid_height() -> f32 {
+fn grid_area(pane: &haven::Pane<GuiState>, frame: &Frame) -> haven::Area {
+    let center = pane.location(990).unwrap();
+    frame
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            RenderItem::Path { area, .. }
+                if (area.x + area.width * 0.5 - center.x).abs() < 0.5
+                    && (area.y + area.height * 0.5 - center.y).abs() < 0.5
+                    && area.width > 30.
+                    && area.height > 30. =>
+            {
+                Some(*area)
+            }
+            _ => None,
+        })
+        .min_by(|a, b| (a.width * a.height).total_cmp(&(b.width * b.height)))
+        .unwrap()
+}
+
+fn visible_cells(length: f32) -> u16 {
     const CELL: f32 = 30.;
     const GAP: f32 = 3.;
-    const ROWS: f32 = 12.;
-    ROWS * CELL + (ROWS - 1.) * GAP
+    ((length + GAP) / (CELL + GAP)).floor() as u16
+}
+
+fn press_key(pane: &mut haven::Pane<GuiState>, state: &mut GuiState, key: Key, count: u16) {
+    for _ in 0..count {
+        pane.key_pressed(state, key.clone());
+    }
+}
+
+fn view_cell_id(position: GridPos) -> u64 {
+    if position.x < 10 && position.y < 10 {
+        10_000 + position.y as u64 * 100 + position.x as u64 * 10
+    } else {
+        700_000 + position.y as u64 * 1_000 + position.x as u64 * 10
+    }
+}
+
+fn view_module_id(position: GridPos, preview: bool) -> u64 {
+    view_cell_id(position) + 1 + if preview { 100_000 } else { 0 }
 }
 
 fn assert_point_near(actual: Point, expected: Point) {
@@ -2133,9 +2796,15 @@ fn assert_point_near(actual: Point, expected: Point) {
 }
 
 fn assert_point_near_x(actual: Point, expected: f32) {
-    assert!((actual.x - expected).abs() < 0.5, "{actual:?} != {expected}");
+    assert!(
+        (actual.x - expected).abs() < 0.5,
+        "{actual:?} != {expected}"
+    );
 }
 
 fn assert_point_near_y(actual: Point, expected: f32) {
-    assert!((actual.y - expected).abs() < 0.5, "{actual:?} != {expected}");
+    assert!(
+        (actual.y - expected).abs() < 0.5,
+        "{actual:?} != {expected}"
+    );
 }

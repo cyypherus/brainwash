@@ -512,6 +512,7 @@ dependencies = [
  "nom 8.0.0",
  "rlsf",
  "ron",
+ "rtrb",
  "serde",
 ]
 
@@ -519,10 +520,12 @@ dependencies = [
 name = "brainwash-gui"
 version = "0.1.0"
 dependencies = [
+ "assert_no_alloc",
  "brainwash",
  "cpal",
  "haven-ui",
  "rfd",
+ "rtrb",
 ]
 
 [[package]]
@@ -2861,6 +2864,12 @@ checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "rtrb"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ade083ccbb4bf536df69d1f6432cc23deb7acccff86b183f3923a6fd56a1153"
 
 [[package]]
 name = "rustc-demangle"

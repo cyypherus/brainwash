@@ -28,6 +28,7 @@ assert_no_alloc = { git = "https://github.com/Windfisch/rust-assert-no-alloc.git
     "backtrace",
 ] }
 rlsf = "0.2"
+rtrb = "0.3.4"
 
 # LIVE
 cpal = { version = "0.15", optional = true }

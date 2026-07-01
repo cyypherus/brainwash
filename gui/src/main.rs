@@ -5,7 +5,7 @@ use haven::winit::WinitApp;
 use haven::*;
 
 fn main() {
-    let audio = match AudioRuntime::start() {
+    let mut audio = match AudioRuntime::start() {
         Ok(audio) => Some(audio),
         Err(err) => {
             let reason = format!("{err:?}");
@@ -14,8 +14,11 @@ fn main() {
         }
     };
     let mut state = GuiState::default();
-    match &audio {
-        Some(audio) => state.set_audio(audio.handle()),
+    match &mut audio {
+        Some(audio) => match audio.handle() {
+            Some(handle) => state.set_audio(handle),
+            None => state.set_audio_unavailable("handle unavailable"),
+        },
         None => state.set_audio_unavailable("device unavailable"),
     }
     WinitApp::new(state)

@@ -9,3 +9,9 @@ brainwash = { path = ".." }
 cpal = "0.15"
 haven = { package = "haven-ui", path = "../../haven", default-features = false, features = ["renderer-skia"] }
 rfd = "0.15"
+rtrb = "0.3.4"
+
+[dev-dependencies]
+assert_no_alloc = { git = "https://github.com/Windfisch/rust-assert-no-alloc.git", rev = "d31f2d5f550ce339d1c2f0c1ab7da951224b20df", features = [
+    "backtrace",
+] }

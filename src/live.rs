@@ -1,8 +1,6 @@
 use crate::compile::{CompiledPatch, PatchControls, PatchEngine, UpdateRejected};
 use crate::sample::Frame;
-use std::ptr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use rtrb::{Consumer, Producer, RingBuffer};
 
 #[cfg(feature = "live")]
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -46,65 +44,51 @@ impl AudioPlayer {
 
 #[derive(Debug)]
 pub struct PatchExchange {
-    pending: AtomicPtr<CompiledPatch>,
-    retired: AtomicPtr<CompiledPatch>,
+    pending: Producer<CompiledPatch>,
+    retired: Consumer<CompiledPatch>,
 }
 
 #[derive(Debug)]
 pub struct RealtimePatchEngine {
     engine: PatchEngine,
-    exchange: Arc<PatchExchange>,
+    pending: Consumer<CompiledPatch>,
+    retired: Producer<CompiledPatch>,
+    pending_retry: Option<CompiledPatch>,
+    retired_retry: Option<CompiledPatch>,
 }
 
 impl PatchExchange {
-    pub fn new() -> Self {
-        Self {
-            pending: AtomicPtr::new(ptr::null_mut()),
-            retired: AtomicPtr::new(ptr::null_mut()),
+    pub fn submit(&mut self, patch: CompiledPatch) -> Option<CompiledPatch> {
+        match self.pending.push(patch) {
+            Ok(()) => None,
+            Err(error) => match error {
+                rtrb::PushError::Full(patch) => Some(patch),
+            },
         }
     }
 
-    pub fn submit(&self, patch: Box<CompiledPatch>) -> Option<Box<CompiledPatch>> {
-        ptr_to_box(self.pending.swap(Box::into_raw(patch), Ordering::AcqRel))
-    }
-
-    pub fn take_retired(&self) -> Option<Box<CompiledPatch>> {
-        ptr_to_box(self.retired.swap(ptr::null_mut(), Ordering::AcqRel))
-    }
-
-    fn take_pending(&self) -> Option<Box<CompiledPatch>> {
-        ptr_to_box(self.pending.swap(ptr::null_mut(), Ordering::AcqRel))
-    }
-
-    fn retired_is_empty(&self) -> bool {
-        self.retired.load(Ordering::Acquire).is_null()
-    }
-
-    fn retire(&self, patch: Box<CompiledPatch>) {
-        debug_assert!(self.retired_is_empty());
-        self.retired.store(Box::into_raw(patch), Ordering::Release);
-    }
-}
-
-impl Default for PatchExchange {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Drop for PatchExchange {
-    fn drop(&mut self) {
-        drop(ptr_to_box(*self.pending.get_mut()));
-        drop(ptr_to_box(*self.retired.get_mut()));
+    pub fn take_retired(&mut self) -> Option<CompiledPatch> {
+        self.retired.pop().ok()
     }
 }
 
 impl RealtimePatchEngine {
-    pub fn new(active: Box<CompiledPatch>, exchange: Arc<PatchExchange>) -> Self {
-        Self {
-            engine: PatchEngine::new_boxed(active),
-            exchange,
-        }
+    pub fn new(active: CompiledPatch) -> (Self, PatchExchange) {
+        let (pending_producer, pending_consumer) = RingBuffer::new(2);
+        let (retired_producer, retired_consumer) = RingBuffer::new(2);
+        (
+            Self {
+                engine: PatchEngine::new(active),
+                pending: pending_consumer,
+                retired: retired_producer,
+                pending_retry: None,
+                retired_retry: None,
+            },
+            PatchExchange {
+                pending: pending_producer,
+                retired: retired_consumer,
+            },
+        )
     }
 
     pub fn next(&mut self) -> Frame {
@@ -118,41 +102,38 @@ impl RealtimePatchEngine {
     }
 
     fn return_retired(&mut self) {
-        if self.exchange.retired_is_empty()
-            && let Some(retired) = self.engine.take_retired_boxed()
+        if let Some(retired) = self.retired_retry.take()
+            && let Err(error) = self.retired.push(retired)
         {
-            self.exchange.retire(retired);
+            let rtrb::PushError::Full(retired) = error;
+            self.retired_retry = Some(retired);
+            return;
+        }
+        if let Some(retired) = self.engine.take_retired()
+            && let Err(error) = self.retired.push(retired)
+        {
+            let rtrb::PushError::Full(retired) = error;
+            self.retired_retry = Some(retired);
         }
     }
 
     fn accept_pending(&mut self) {
-        if !self.engine.can_replace() {
+        if self.retired_retry.is_some() || !self.engine.can_replace() {
             return;
         }
-        let Some(next) = self.exchange.take_pending() else {
-            return;
+        let next = if let Some(next) = self.pending_retry.take() {
+            next
+        } else {
+            let Ok(next) = self.pending.pop() else {
+                return;
+            };
+            next
         };
-        match self.engine.replace_boxed(next) {
+        match self.engine.replace(next) {
             Ok(()) => {}
             Err(UpdateRejected::Busy(next) | UpdateRejected::RetiredPatchPending(next)) => {
-                let ptr = Box::into_raw(next);
-                if self
-                    .exchange
-                    .pending
-                    .compare_exchange(ptr::null_mut(), ptr, Ordering::AcqRel, Ordering::Acquire)
-                    .is_err()
-                {
-                    let _ = ptr;
-                }
+                self.pending_retry = Some(next);
             }
         }
-    }
-}
-
-fn ptr_to_box(ptr: *mut CompiledPatch) -> Option<Box<CompiledPatch>> {
-    if ptr.is_null() {
-        None
-    } else {
-        Some(unsafe { Box::from_raw(ptr) })
     }
 }

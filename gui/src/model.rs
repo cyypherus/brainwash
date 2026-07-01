@@ -1,8 +1,16 @@
-use crate::audio::{AudioHandle, ProbeRoute};
+use crate::audio::{AudioHandle, MeterRoute, ProbeRoute, VoiceMode};
 use brainwash::compile::{CompileError, CompiledPatch};
 use brainwash::patch::{
     BinaryOp, ConnectError, Distortion as AudioDistortion, Drive, EnvPoint as AudioEnvPoint,
-    Module as AudioModule, Patch, Wave,
+    Module as AudioModule, ModuleId as AudioModuleId, Patch, Wave,
+};
+use brainwash::project::{
+    self, DistType as ProjectDistType, ModuleDef as ProjectModuleDef,
+    ModuleKind as ProjectModuleKind, ModuleParams as ProjectModuleParams,
+    Orientation as ProjectOrientation, Project, RoutingModule as ProjectRoutingModule,
+    StandardModule as ProjectStandardModule, SubpatchDef as ProjectSubpatchDef,
+    SubpatchModule as ProjectSubpatchModule, TimeUnit as ProjectTimeUnit,
+    TimeValue as ProjectTimeValue, WaveType as ProjectWaveType,
 };
 use brainwash::sample::Unit;
 use brainwash::scale::{
@@ -10,24 +18,43 @@ use brainwash::scale::{
     dmaj, dmin, dsharpmaj, dsharpmin, emaj, emin, fmaj, fmin, fsharpmaj, fsharpmin, gmaj, gmin,
     gsharpmaj, gsharpmin,
 };
-use brainwash::project::{
-    self, DistType as ProjectDistType, ModuleDef as ProjectModuleDef,
-    ModuleKind as ProjectModuleKind, ModuleParams as ProjectModuleParams, Orientation as ProjectOrientation,
-    Project, RoutingModule as ProjectRoutingModule, StandardModule as ProjectStandardModule,
-    SubpatchDef as ProjectSubpatchDef, SubpatchModule as ProjectSubpatchModule,
-    TimeUnit as ProjectTimeUnit, TimeValue as ProjectTimeValue, WaveType as ProjectWaveType,
-};
 use brainwash::time::{Duration, Hertz, SampleRate, Samples, Seconds};
 use brainwash::{Scale, track::Track};
-use haven::TextState;
+use haven::{ButtonState, TextState};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+
+const GRID_VIEW_MARGIN: u16 = 2;
+const INSTRUMENT_COUNT: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GridPos {
     pub x: u16,
     pub y: u16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GridViewSize {
+    columns: u16,
+    rows: u16,
+}
+
+impl GridViewSize {
+    pub(crate) fn new(columns: u16, rows: u16) -> Self {
+        Self {
+            columns: columns.max(1),
+            rows: rows.max(1),
+        }
+    }
+
+    pub(crate) fn columns(self) -> u16 {
+        self.columns
+    }
+
+    pub(crate) fn rows(self) -> u16 {
+        self.rows
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -81,9 +108,6 @@ pub enum GuiAction {
     Undo,
     Redo,
     Instrument(usize),
-    NewInstrument,
-    HelpScrollUp,
-    HelpScrollDown,
     ValueDown,
     ValueUp,
     ValueDownFast,
@@ -104,6 +128,13 @@ pub enum GuiAction {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GridPointerPhase {
+    Start,
+    Drag,
+    End,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EnvPointerPhase {
     Start,
     Drag,
     End,
@@ -180,6 +211,14 @@ pub enum AudioPatchError {
 struct GuiAudioPatch {
     patch: CompiledPatch,
     probes: Vec<ProbeRoute>,
+    meters: Vec<MeterRoute>,
+    voice_mode: VoiceMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AudioKey {
+    Root(ModuleId),
+    Subpatch { owner: ModuleId, module: ModuleId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -244,6 +283,7 @@ pub struct Module {
     orientation: Orientation,
     parameters: Vec<ModuleParameter>,
     env_points: Vec<EnvPoint>,
+    disabled: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -356,13 +396,10 @@ fn int_parameter(name: &'static str, min: i32, max: i32, value: i32) -> ModulePa
     }
 }
 
-fn time_parameter(name: &'static str, value: i32) -> ModuleParameter {
+fn time_parameter(name: &'static str, value: i32, unit: TimeUnit) -> ModuleParameter {
     ModuleParameter {
         name,
-        value: ParameterValue::Time {
-            value,
-            unit: TimeUnit::Seconds,
-        },
+        value: ParameterValue::Time { value, unit },
         connected: true,
     }
 }
@@ -395,10 +432,12 @@ fn toggle_parameter(name: &'static str, value: bool) -> ModuleParameter {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct GuiState {
     width: u16,
     height: u16,
+    grid_view: GridPos,
+    grid_view_size: GridViewSize,
     mode: Mode,
     instruments: Vec<Instrument>,
     active_instrument: usize,
@@ -410,7 +449,6 @@ pub struct GuiState {
     track_edit_requested: bool,
     dirty: bool,
     should_quit: bool,
-    help_scroll: usize,
     step_size: usize,
     probe_len: u32,
     palette_category: ModuleCategory,
@@ -428,6 +466,14 @@ pub struct GuiState {
     export_loops: u16,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
+    pub(crate) play_button: ButtonState,
+    pub(crate) meters_button: ButtonState,
+    pub(crate) load_button: ButtonState,
+    pub(crate) save_button: ButtonState,
+    pub(crate) export_button: ButtonState,
+    pub(crate) track_button: ButtonState,
+    pub(crate) cancel_button: ButtonState,
+    pub(crate) confirm_button: ButtonState,
     pointer_drag: Option<PointerDrag>,
     held_move: Option<HeldMove>,
     held_selection: Option<HeldSelection>,
@@ -486,6 +532,7 @@ enum PointerDrag {
     Module {
         module: ModuleId,
         origin: GridPos,
+        grab: GridPos,
     },
     Selection {
         anchor: GridPos,
@@ -642,17 +689,20 @@ impl ModuleKind {
             ModuleKind::DegreeGate => vec![int_parameter("Deg", 0, 12, 0)],
             ModuleKind::Osc => vec![
                 enum_parameter("Wave", &["sin", "square", "tri", "saw", "rsaw", "noise"], 0),
-                time_parameter("Freq", 100),
+                time_parameter("Freq", 440, TimeUnit::Hertz),
                 float_parameter("Shift", -2400, 2400, 100, 0),
                 float_parameter("Gain", 0, 100, 5, 100),
                 toggle_parameter("Uni", false),
             ],
             ModuleKind::Rise | ModuleKind::Fall => {
-                vec![input_parameter("Gate"), time_parameter("Time", 10)]
+                vec![
+                    input_parameter("Gate"),
+                    time_parameter("Time", 10, TimeUnit::Seconds),
+                ]
             }
             ModuleKind::Ramp => vec![
                 float_parameter("Val", -100_000, 100_000, 10, 0),
-                time_parameter("Time", 10),
+                time_parameter("Time", 10, TimeUnit::Seconds),
             ],
             ModuleKind::Adsr => vec![
                 input_parameter("Rise"),
@@ -673,18 +723,18 @@ impl ModuleKind {
             ],
             ModuleKind::Comb => vec![
                 float_parameter("In", -100, 100, 1, 0),
-                time_parameter("Time", 10),
+                time_parameter("Time", 441, TimeUnit::Samples),
                 float_parameter("Fdbk", 0, 99, 1, 30),
                 float_parameter("Damp", 0, 100, 1, 20),
             ],
             ModuleKind::Allpass => vec![
                 float_parameter("In", -100, 100, 1, 0),
-                time_parameter("Time", 10),
+                time_parameter("Time", 441, TimeUnit::Samples),
                 float_parameter("Fdbk", 0, 99, 1, 50),
             ],
             ModuleKind::Delay => vec![
                 float_parameter("In", -100, 100, 1, 0),
-                time_parameter("Time", 25),
+                time_parameter("Time", 4410, TimeUnit::Samples),
             ],
             ModuleKind::DelayTap => vec![
                 enum_parameter("Src", &["delay 1"], 0),
@@ -700,7 +750,7 @@ impl ModuleKind {
             ModuleKind::Distortion => vec![
                 float_parameter("In", -100, 100, 1, 0),
                 enum_parameter("Type", &["tube", "tape", "fuzz", "fold", "clip"], 0),
-                float_parameter("Drive", 10, 2000, 10, 100),
+                float_parameter("Drive", 10, 2000, 10, 200),
                 float_parameter("Asym", -100, 100, 5, 0),
             ],
             ModuleKind::Compressor => vec![
@@ -825,13 +875,13 @@ enum SpecialEditor {
 impl ModuleCategory {
     pub const ALL: [Self; 8] = [
         Self::Source,
+        Self::Output,
         Self::Shape,
         Self::Filter,
         Self::Effect,
         Self::Logic,
         Self::Routing,
         Self::Subpatch,
-        Self::Output,
     ];
 
     pub fn label(self) -> &'static str {
@@ -873,38 +923,8 @@ impl Module {
         &self.env_points
     }
 
-    pub(crate) fn width(&self) -> u16 {
-        if self.kind.is_routing() {
-            return 1;
-        }
-        match self.orientation {
-            Orientation::Right => self.output_count().max(1),
-            Orientation::Down => self.input_count().max(1),
-        }
-    }
-
-    pub(crate) fn height(&self) -> u16 {
-        if self.kind.is_routing() {
-            return 1;
-        }
-        match self.orientation {
-            Orientation::Right => self.input_count().max(1),
-            Orientation::Down => self.output_count().max(1),
-        }
-    }
-
-    fn contains(&self, position: GridPos) -> bool {
-        position.x >= self.position.x
-            && position.x < self.position.x + self.width()
-            && position.y >= self.position.y
-            && position.y < self.position.y + self.height()
-    }
-
-    fn overlaps(&self, position: GridPos, width: u16, height: u16) -> bool {
-        self.position.x < position.x + width
-            && self.position.x + self.width() > position.x
-            && self.position.y < position.y + height
-            && self.position.y + self.height() > position.y
+    pub fn disabled(&self) -> bool {
+        self.disabled
     }
 
     pub(crate) fn input_count(&self) -> u16 {
@@ -935,7 +955,10 @@ impl Module {
             return false;
         }
         match self.kind {
-            ModuleKind::TopSplit | ModuleKind::TurnDownRight | ModuleKind::RightJoin | ModuleKind::DownJoin => true,
+            ModuleKind::TopSplit
+            | ModuleKind::TurnDownRight
+            | ModuleKind::RightJoin
+            | ModuleKind::DownJoin => true,
             ModuleKind::LeftSplit | ModuleKind::TurnRightDown => false,
             _ => self.orientation == Orientation::Down,
         }
@@ -946,7 +969,10 @@ impl Module {
             return false;
         }
         match self.kind {
-            ModuleKind::LeftSplit | ModuleKind::TurnRightDown | ModuleKind::RightJoin | ModuleKind::DownJoin => true,
+            ModuleKind::LeftSplit
+            | ModuleKind::TurnRightDown
+            | ModuleKind::RightJoin
+            | ModuleKind::DownJoin => true,
             ModuleKind::TopSplit | ModuleKind::TurnDownRight => false,
             _ => self.orientation == Orientation::Right,
         }
@@ -957,7 +983,10 @@ impl Module {
             return false;
         }
         match self.kind {
-            ModuleKind::LeftSplit | ModuleKind::TopSplit | ModuleKind::TurnRightDown | ModuleKind::DownJoin => true,
+            ModuleKind::LeftSplit
+            | ModuleKind::TopSplit
+            | ModuleKind::TurnRightDown
+            | ModuleKind::DownJoin => true,
             ModuleKind::RightJoin | ModuleKind::TurnDownRight => false,
             _ => self.orientation == Orientation::Down,
         }
@@ -968,7 +997,10 @@ impl Module {
             return false;
         }
         match self.kind {
-            ModuleKind::LeftSplit | ModuleKind::TopSplit | ModuleKind::TurnDownRight | ModuleKind::RightJoin => true,
+            ModuleKind::LeftSplit
+            | ModuleKind::TopSplit
+            | ModuleKind::TurnDownRight
+            | ModuleKind::RightJoin => true,
             ModuleKind::DownJoin | ModuleKind::TurnRightDown => false,
             _ => self.orientation == Orientation::Right,
         }
@@ -1191,6 +1223,43 @@ impl PatchSurface {
     }
 }
 
+fn update_surface_disabled_states(surface: &mut PatchSurface, footprints: &[(ModuleId, u16, u16)]) {
+    let mut disabled = Vec::new();
+    for left in 0..surface.modules.len() {
+        for right in left + 1..surface.modules.len() {
+            let a = &surface.modules[left];
+            let b = &surface.modules[right];
+            let (_, a_width, a_height) = footprints[left];
+            let (_, b_width, b_height) = footprints[right];
+            if a.position.x < b.position.x + b_width
+                && b.position.x < a.position.x + a_width
+                && a.position.y < b.position.y + b_height
+                && b.position.y < a.position.y + a_height
+            {
+                disabled.push(a.id);
+                disabled.push(b.id);
+            }
+        }
+    }
+    disabled.sort_by_key(|id| id.0);
+    disabled.dedup();
+    for module in &mut surface.modules {
+        module.disabled = disabled.contains(&module.id);
+    }
+}
+
+fn module_footprint(module: &Module, subpatch_ports: Option<(u16, u16)>) -> (u16, u16) {
+    if module.kind.is_routing() {
+        return (1, 1);
+    }
+    let (inputs, outputs) =
+        subpatch_ports.unwrap_or_else(|| (module.input_count(), module.output_count()));
+    match module.orientation {
+        Orientation::Right => (outputs.max(1), inputs.max(1)),
+        Orientation::Down => (inputs.max(1), outputs.max(1)),
+    }
+}
+
 impl Default for GuiState {
     fn default() -> Self {
         Self::new(32, 24)
@@ -1202,8 +1271,10 @@ impl GuiState {
         Self {
             width,
             height,
+            grid_view: GridPos::new(0, 0),
+            grid_view_size: GridViewSize::new(width, height),
             mode: Mode::Normal,
-            instruments: vec![Instrument::new()],
+            instruments: (0..INSTRUMENT_COUNT).map(|_| Instrument::new()).collect(),
             active_instrument: 0,
             playing: false,
             show_meters: false,
@@ -1213,7 +1284,6 @@ impl GuiState {
             track_edit_requested: false,
             dirty: false,
             should_quit: false,
-            help_scroll: 0,
             step_size: 1,
             probe_len: 4410,
             palette_category: ModuleCategory::Source,
@@ -1231,6 +1301,14 @@ impl GuiState {
             export_loops: 1,
             undo: Vec::new(),
             redo: Vec::new(),
+            play_button: ButtonState::default(),
+            meters_button: ButtonState::default(),
+            load_button: ButtonState::default(),
+            save_button: ButtonState::default(),
+            export_button: ButtonState::default(),
+            track_button: ButtonState::default(),
+            cancel_button: ButtonState::default(),
+            confirm_button: ButtonState::default(),
             pointer_drag: None,
             held_move: None,
             held_selection: None,
@@ -1239,7 +1317,7 @@ impl GuiState {
         }
     }
 
-    pub fn set_audio(&mut self, audio: AudioHandle) {
+    pub fn set_audio(&mut self, mut audio: AudioHandle) {
         audio.set_playing(self.playing);
         self.audio = Some(audio);
         self.sync_audio_patch();
@@ -1253,6 +1331,25 @@ impl GuiState {
 
     pub fn cursor(&self) -> GridPos {
         self.instrument().surface().cursor
+    }
+
+    pub(crate) fn grid_size(&self) -> (u16, u16) {
+        (self.width, self.height)
+    }
+
+    pub(crate) fn set_grid_view_size(&mut self, size: GridViewSize) {
+        if self.grid_view_size != size {
+            self.grid_view_size = size;
+            self.update_grid_view();
+        }
+    }
+
+    pub(crate) fn grid_view_offset_for_size(&self, size: GridViewSize) -> GridPos {
+        let (min, max) = self.active_grid_rect();
+        GridPos::new(
+            updated_axis_view(self.grid_view.x, min.x, max.x, self.width, size.columns()),
+            updated_axis_view(self.grid_view.y, min.y, max.y, self.height, size.rows()),
+        )
     }
 
     pub fn mode(&self) -> Mode {
@@ -1303,10 +1400,6 @@ impl GuiState {
         self.should_quit
     }
 
-    pub fn help_scroll(&self) -> usize {
-        self.help_scroll
-    }
-
     pub fn step_size(&self) -> usize {
         self.step_size
     }
@@ -1318,7 +1411,16 @@ impl GuiState {
     pub(crate) fn probe_history(&self, module: ModuleId) -> Vec<f32> {
         self.audio
             .as_ref()
-            .map(|audio| audio.probe_history(module.value(), self.probe_voice, self.probe_len as usize))
+            .map(|audio| {
+                audio.probe_history(module.value(), self.probe_voice, self.probe_len as usize)
+            })
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn meter_values(&self, module: ModuleId) -> Vec<f32> {
+        self.audio
+            .as_ref()
+            .map(|audio| audio.meter_values(module.value(), self.probe_voice))
             .unwrap_or_default()
     }
 
@@ -1386,14 +1488,6 @@ impl GuiState {
         self.palette_searching
     }
 
-    pub(crate) fn text_input_active(&self) -> bool {
-        self.palette_searching
-            || matches!(
-                self.mode,
-                Mode::ValueInput { .. } | Mode::SavePrompt | Mode::ExportPrompt
-            )
-    }
-
     pub fn palette_filter(&self) -> &str {
         &self.palette_filter
     }
@@ -1432,7 +1526,158 @@ impl GuiState {
     pub fn module_at(&self, position: GridPos) -> Option<&Module> {
         self.modules()
             .iter()
-            .find(|module| module.contains(position))
+            .find(|module| self.module_contains(module, position))
+    }
+
+    pub(crate) fn moving_module(&self, module: ModuleId) -> Option<&Module> {
+        self.modules()
+            .iter()
+            .find(|candidate| candidate.id == module)
+            .or_else(|| {
+                self.held_move
+                    .as_ref()
+                    .and_then(|held| (held.module.id == module).then_some(&held.module))
+            })
+    }
+
+    pub(crate) fn module_width(&self, module: &Module) -> u16 {
+        if module.kind.is_routing() {
+            return 1;
+        }
+        match module.orientation {
+            Orientation::Right => self.module_output_count(module).max(1),
+            Orientation::Down => self.module_input_count(module).max(1),
+        }
+    }
+
+    pub(crate) fn module_height(&self, module: &Module) -> u16 {
+        if module.kind.is_routing() {
+            return 1;
+        }
+        match module.orientation {
+            Orientation::Right => self.module_input_count(module).max(1),
+            Orientation::Down => self.module_output_count(module).max(1),
+        }
+    }
+
+    pub(crate) fn module_input_count(&self, module: &Module) -> u16 {
+        if module.kind == ModuleKind::Subpatch {
+            return self.subpatch_port_counts(module.id).0;
+        }
+        module.input_count()
+    }
+
+    pub(crate) fn module_output_count(&self, module: &Module) -> u16 {
+        if module.kind == ModuleKind::Subpatch {
+            return self.subpatch_port_counts(module.id).1;
+        }
+        module.output_count()
+    }
+
+    pub(crate) fn module_input_connected(&self, module: &Module, port: u16) -> bool {
+        if module.kind == ModuleKind::Subpatch {
+            return true;
+        }
+        module.input_connected(port)
+    }
+
+    pub(crate) fn module_has_input_top(&self, module: &Module) -> bool {
+        if self.module_input_count(module) == 0 {
+            return false;
+        }
+        if module.kind == ModuleKind::Subpatch {
+            return module.orientation == Orientation::Down;
+        }
+        module.has_input_top()
+    }
+
+    pub(crate) fn module_has_input_left(&self, module: &Module) -> bool {
+        if self.module_input_count(module) == 0 {
+            return false;
+        }
+        if module.kind == ModuleKind::Subpatch {
+            return module.orientation == Orientation::Right;
+        }
+        module.has_input_left()
+    }
+
+    pub(crate) fn module_has_output_bottom(&self, module: &Module) -> bool {
+        if self.module_output_count(module) == 0 {
+            return false;
+        }
+        if module.kind == ModuleKind::Subpatch {
+            return module.orientation == Orientation::Down;
+        }
+        module.has_output_bottom()
+    }
+
+    pub(crate) fn module_has_output_right(&self, module: &Module) -> bool {
+        if self.module_output_count(module) == 0 {
+            return false;
+        }
+        if module.kind == ModuleKind::Subpatch {
+            return module.orientation == Orientation::Right;
+        }
+        module.has_output_right()
+    }
+
+    fn subpatch_port_counts(&self, owner: ModuleId) -> (u16, u16) {
+        self.instrument()
+            .subpatches
+            .iter()
+            .find(|subpatch| subpatch.owner == owner)
+            .map(|subpatch| {
+                let inputs = subpatch
+                    .surface
+                    .modules
+                    .iter()
+                    .filter(|module| module.kind == ModuleKind::SubpatchInput)
+                    .count() as u16;
+                let outputs = subpatch
+                    .surface
+                    .modules
+                    .iter()
+                    .filter(|module| module.kind == ModuleKind::SubpatchOutput)
+                    .count() as u16;
+                (inputs, outputs)
+            })
+            .unwrap_or((0, 0))
+    }
+
+    fn module_contains(&self, module: &Module, position: GridPos) -> bool {
+        position.x >= module.position.x
+            && position.x < module.position.x + self.module_width(module)
+            && position.y >= module.position.y
+            && position.y < module.position.y + self.module_height(module)
+    }
+
+    fn module_overlaps(&self, module: &Module, position: GridPos, width: u16, height: u16) -> bool {
+        module.position.x < position.x + width
+            && module.position.x + self.module_width(module) > position.x
+            && module.position.y < position.y + height
+            && module.position.y + self.module_height(module) > position.y
+    }
+
+    fn moved_position(
+        &self,
+        module: &Module,
+        _origin: GridPos,
+        grab: GridPos,
+        target: GridPos,
+    ) -> GridPos {
+        let x = module.position.x as i16 + target.x as i16 - grab.x as i16;
+        let y = module.position.y as i16 + target.y as i16 - grab.y as i16;
+        self.bounded_module_position(module, x, y)
+            .unwrap_or(module.position)
+    }
+
+    fn bounded_module_position(&self, module: &Module, x: i16, y: i16) -> Option<GridPos> {
+        let max_x = self.width.checked_sub(self.module_width(module))? as i16;
+        let max_y = self.height.checked_sub(self.module_height(module))? as i16;
+        Some(GridPos::new(
+            x.clamp(0, max_x) as u16,
+            y.clamp(0, max_y) as u16,
+        ))
     }
 
     pub fn selected_modules(&self) -> Vec<ModuleId> {
@@ -1443,14 +1688,12 @@ impl GuiState {
         let max_x = anchor.x.max(extent.x);
         let min_y = anchor.y.min(extent.y);
         let max_y = anchor.y.max(extent.y);
+        let position = GridPos::new(min_x, min_y);
+        let width = max_x - min_x + 1;
+        let height = max_y - min_y + 1;
         self.modules()
             .iter()
-            .filter(|module| {
-                module.position.x >= min_x
-                    && module.position.x <= max_x
-                    && module.position.y >= min_y
-                    && module.position.y <= max_y
-            })
+            .filter(|module| self.module_overlaps(module, position, width, height))
             .map(|module| module.id)
             .collect()
     }
@@ -1481,20 +1724,29 @@ impl GuiState {
     }
 
     pub fn connections(&self) -> Vec<Connection> {
+        self.surface_connections(self.modules())
+    }
+
+    fn surface_connections(&self, modules: &[Module]) -> Vec<Connection> {
         let mut connections = Vec::new();
-        for source in self.modules() {
-            if source.has_output_right() {
+        for source in modules {
+            if source.disabled {
+                continue;
+            }
+            if self.module_has_output_right(source) {
                 let y = source.position.y;
-                let from_cell = GridPos::new(source.position.x + source.width() - 1, y);
-                for x in source.position.x + source.width()..self.width {
-                    let Some(target) = self.module_at(GridPos::new(x, y)) else {
+                let from_cell = GridPos::new(source.position.x + self.module_width(source) - 1, y);
+                for x in source.position.x + self.module_width(source)..self.width {
+                    let Some(target) = modules.iter().find(|module| {
+                        !module.disabled && self.module_contains(module, GridPos::new(x, y))
+                    }) else {
                         continue;
                     };
                     if target.id == source.id {
                         continue;
                     }
                     let local_y = y - target.position.y;
-                    if x == target.position.x && target.has_input_left() {
+                    if x == target.position.x && self.module_has_input_left(target) {
                         connections.push(Connection {
                             from: source.id,
                             to: target.id,
@@ -1507,18 +1759,20 @@ impl GuiState {
                 }
             }
 
-            if source.has_output_bottom() {
+            if self.module_has_output_bottom(source) {
                 let x = source.position.x;
-                let from_cell = GridPos::new(x, source.position.y + source.height() - 1);
-                for y in source.position.y + source.height()..self.height {
-                    let Some(target) = self.module_at(GridPos::new(x, y)) else {
+                let from_cell = GridPos::new(x, source.position.y + self.module_height(source) - 1);
+                for y in source.position.y + self.module_height(source)..self.height {
+                    let Some(target) = modules.iter().find(|module| {
+                        !module.disabled && self.module_contains(module, GridPos::new(x, y))
+                    }) else {
                         continue;
                     };
                     if target.id == source.id {
                         continue;
                     }
                     let local_x = x - target.position.x;
-                    if y == target.position.y && target.has_input_top() {
+                    if y == target.position.y && self.module_has_input_top(target) {
                         connections.push(Connection {
                             from: source.id,
                             to: target.id,
@@ -1535,7 +1789,12 @@ impl GuiState {
     }
 
     fn module_fits(&self, module: &Module, position: GridPos, ignored: &[ModuleId]) -> bool {
-        self.area_fits(module.width(), module.height(), position, ignored)
+        self.area_fits(
+            self.module_width(module),
+            self.module_height(module),
+            position,
+            ignored,
+        )
     }
 
     fn kind_fits(&self, kind: ModuleKind, orientation: Orientation, position: GridPos) -> bool {
@@ -1544,13 +1803,7 @@ impl GuiState {
         self.area_fits(width, height, position, &[])
     }
 
-    fn area_fits(
-        &self,
-        width: u16,
-        height: u16,
-        position: GridPos,
-        ignored: &[ModuleId],
-    ) -> bool {
+    fn area_fits(&self, width: u16, height: u16, position: GridPos, ignored: &[ModuleId]) -> bool {
         if position.x + width > self.width || position.y + height > self.height {
             return false;
         }
@@ -1558,7 +1811,7 @@ impl GuiState {
             .modules()
             .iter()
             .filter(|module| !ignored.contains(&module.id))
-            .any(|module| module.overlaps(position, width, height))
+            .any(|module| self.module_overlaps(module, position, width, height))
     }
 
     pub fn compile_audio_patch(&self, rate: SampleRate) -> Result<CompiledPatch, AudioPatchError> {
@@ -1566,28 +1819,91 @@ impl GuiState {
     }
 
     fn compile_gui_audio_patch(&self, rate: SampleRate) -> Result<GuiAudioPatch, AudioPatchError> {
+        let instrument = self.instrument();
+        let root_modules = &instrument.root.modules;
         let output = self
-            .modules()
+            .instrument()
+            .root
+            .modules
             .iter()
-            .find(|module| module.kind == ModuleKind::Output)
+            .find(|module| !module.disabled && module.kind == ModuleKind::Output)
             .ok_or(AudioPatchError::MissingOutput)?;
-        let connections = self.connections();
-        let output_source = connections
-            .iter()
-            .find_map(|connection| (connection.to == output.id).then_some(connection.from))
-            .ok_or(AudioPatchError::MissingOutput)?;
+        let connections = self.surface_connections(root_modules);
         let mut needed = Vec::new();
-        collect_audio_inputs(output_source, &connections, &mut needed);
+        let mut has_output_signal = false;
+        for connection in connections
+            .iter()
+            .filter(|connection| connection.to == output.id)
+        {
+            let Some(input) = connection_input(connection, output, self.module_input_count(output))
+            else {
+                continue;
+            };
+            if !self.module_input_connected(output, input as u16) {
+                continue;
+            }
+            if input == 0 {
+                has_output_signal = true;
+            }
+            collect_audio_inputs(connection.from, &connections, &mut needed);
+        }
+        if !has_output_signal {
+            return Err(AudioPatchError::MissingOutput);
+        }
+        for module in root_modules
+            .iter()
+            .filter(|module| !module.disabled && module.kind == ModuleKind::Probe)
+        {
+            collect_audio_inputs(module.id, &connections, &mut needed);
+        }
+        for subpatch in &instrument.subpatches {
+            if subpatch
+                .surface
+                .modules
+                .iter()
+                .any(|module| !module.disabled && module.kind == ModuleKind::Probe)
+                && let Some(owner) = root_modules
+                    .iter()
+                    .find(|module| !module.disabled && module.id == subpatch.owner)
+            {
+                collect_audio_inputs(owner.id, &connections, &mut needed);
+            }
+        }
+        let voice_mode = if root_modules
+            .iter()
+            .any(|module| needed.contains(&module.id) && module_uses_voice_controls(module.kind))
+            || needed
+                .iter()
+                .filter_map(|id| {
+                    instrument
+                        .subpatches
+                        .iter()
+                        .find(|subpatch| subpatch.owner == *id)
+                })
+                .any(|subpatch| {
+                    subpatch
+                        .surface
+                        .modules
+                        .iter()
+                        .any(|module| !module.disabled && module_uses_voice_controls(module.kind))
+                }) {
+            VoiceMode::Polyphonic
+        } else {
+            VoiceMode::Single
+        };
 
         let mut patch = Patch::new();
         let mut ids = Vec::new();
         let mut probes = Vec::new();
+        let mut meters = Vec::new();
         for id in needed.iter().rev().copied() {
-            let module = self
-                .modules()
+            let module = root_modules
                 .iter()
-                .find(|module| module.id == id)
+                .find(|module| !module.disabled && module.id == id)
                 .ok_or(AudioPatchError::Compile(CompileError::MissingModule))?;
+            if module.kind == ModuleKind::Subpatch {
+                continue;
+            }
             let audio = audio_module(module, rate, self.bpm)?;
             let audio_id = patch.insert(audio);
             if module.kind == ModuleKind::Probe {
@@ -1596,7 +1912,63 @@ impl GuiState {
                     target: module.id.value(),
                 });
             }
-            ids.push((id, audio_id));
+            let input_count = self.module_input_count(module);
+            if self.show_meters && input_count > 0 {
+                if let Some(route) =
+                    MeterRoute::new(audio_id, module.id.value(), input_count as usize)
+                {
+                    meters.push(route);
+                }
+            }
+            ids.push((AudioKey::Root(id), audio_id));
+        }
+
+        for owner in needed
+            .iter()
+            .filter_map(|id| {
+                root_modules
+                    .iter()
+                    .find(|module| module.id == *id && module.kind == ModuleKind::Subpatch)
+            })
+            .filter_map(|module| {
+                instrument
+                    .subpatches
+                    .iter()
+                    .find(|subpatch| subpatch.owner == module.id)
+                    .map(|subpatch| (module.id, subpatch))
+            })
+        {
+            let (owner_id, subpatch) = owner;
+            for module in subpatch
+                .surface
+                .modules
+                .iter()
+                .filter(|module| !module.disabled)
+            {
+                let audio = audio_module(module, rate, self.bpm)?;
+                let audio_id = patch.insert(audio);
+                if module.kind == ModuleKind::Probe {
+                    probes.push(ProbeRoute {
+                        source: audio_id,
+                        target: module.id.value(),
+                    });
+                }
+                let input_count = self.module_input_count(module);
+                if self.show_meters && input_count > 0 {
+                    if let Some(route) =
+                        MeterRoute::new(audio_id, module.id.value(), input_count as usize)
+                    {
+                        meters.push(route);
+                    }
+                }
+                ids.push((
+                    AudioKey::Subpatch {
+                        owner: owner_id,
+                        module: module.id,
+                    },
+                    audio_id,
+                ));
+            }
         }
 
         let output_gain = audio_float(output, 1)?;
@@ -1607,42 +1979,136 @@ impl GuiState {
         });
 
         for connection in &connections {
-            let Some(from) = ids
-                .iter()
-                .find_map(|(id, audio_id)| (*id == connection.from).then_some(*audio_id))
-            else {
-                continue;
-            };
+            let from = root_connection_source(root_modules, instrument, &ids, connection);
             if connection.to == output.id {
+                let Some(input) =
+                    connection_input(connection, output, self.module_input_count(output))
+                else {
+                    continue;
+                };
+                if !self.module_input_connected(output, input as u16) {
+                    continue;
+                }
+                let Some(from) = from else {
+                    if input == 0 {
+                        return Err(AudioPatchError::MissingOutput);
+                    }
+                    continue;
+                };
                 patch
-                    .connect_input(from, output_id, 0)
+                    .connect_input(from, output_id, input)
                     .map_err(AudioPatchError::Connect)?;
                 continue;
             }
-            let Some(target) = self.modules().iter().find(|module| module.id == connection.to)
-            else {
-                continue;
-            };
-            let Some(to) = ids
+            let Some(target) = root_modules
                 .iter()
-                .find_map(|(id, audio_id)| (*id == connection.to).then_some(*audio_id))
+                .find(|module| module.id == connection.to)
             else {
                 continue;
             };
-            let Some(input) = connection_input(connection, target) else {
+            let Some(input) = connection_input(connection, target, self.module_input_count(target))
+            else {
                 continue;
             };
-            if !target.input_connected(input as u16) {
+            if !self.module_input_connected(target, input as u16) {
                 continue;
             }
-            patch
-                .connect_input(from, to, input)
-                .map_err(AudioPatchError::Connect)?;
+            if target.kind == ModuleKind::Subpatch {
+                let Some(from) = from else {
+                    continue;
+                };
+                let Some(subpatch) = instrument
+                    .subpatches
+                    .iter()
+                    .find(|subpatch| subpatch.owner == target.id)
+                else {
+                    continue;
+                };
+                let inputs = subpatch_inputs(&subpatch.surface);
+                let Some(input_id) = inputs.get(input).copied() else {
+                    continue;
+                };
+                let Some(to) = audio_id(
+                    &ids,
+                    AudioKey::Subpatch {
+                        owner: target.id,
+                        module: input_id,
+                    },
+                ) else {
+                    continue;
+                };
+                patch
+                    .connect_input(from, to, 0)
+                    .map_err(AudioPatchError::Connect)?;
+            } else {
+                let Some(from) = from else {
+                    continue;
+                };
+                let Some(to) = audio_id(&ids, AudioKey::Root(connection.to)) else {
+                    continue;
+                };
+                patch
+                    .connect_input(from, to, input)
+                    .map_err(AudioPatchError::Connect)?;
+            }
+        }
+
+        for (owner, subpatch) in needed.iter().filter_map(|id| {
+            instrument
+                .subpatches
+                .iter()
+                .find(|subpatch| subpatch.owner == *id)
+                .map(|subpatch| (*id, subpatch))
+        }) {
+            for connection in self.surface_connections(&subpatch.surface.modules) {
+                let Some(from) = audio_id(
+                    &ids,
+                    AudioKey::Subpatch {
+                        owner,
+                        module: connection.from,
+                    },
+                ) else {
+                    continue;
+                };
+                let Some(target) = subpatch
+                    .surface
+                    .modules
+                    .iter()
+                    .find(|module| module.id == connection.to)
+                else {
+                    continue;
+                };
+                let Some(to) = audio_id(
+                    &ids,
+                    AudioKey::Subpatch {
+                        owner,
+                        module: connection.to,
+                    },
+                ) else {
+                    continue;
+                };
+                let Some(input) =
+                    connection_input(&connection, target, self.module_input_count(target))
+                else {
+                    continue;
+                };
+                if !self.module_input_connected(target, input as u16) {
+                    continue;
+                }
+                patch
+                    .connect_input(from, to, input)
+                    .map_err(AudioPatchError::Connect)?;
+            }
         }
 
         patch.output(output_id).map_err(AudioPatchError::Connect)?;
         let patch = CompiledPatch::new(&patch, rate).map_err(AudioPatchError::Compile)?;
-        Ok(GuiAudioPatch { patch, probes })
+        Ok(GuiAudioPatch {
+            patch,
+            probes,
+            meters,
+            voice_mode,
+        })
     }
 
     fn instrument(&self) -> &Instrument {
@@ -1662,11 +2128,67 @@ impl GuiState {
     }
 
     fn commit(&mut self, before: Snapshot) {
+        self.update_disabled_states();
         if before != self.snapshot() {
             self.undo.push(before);
             self.redo.clear();
             self.dirty = true;
             self.sync_audio_patch();
+        }
+    }
+
+    fn update_disabled_states(&mut self) {
+        for instrument in &mut self.instruments {
+            let root_footprints = instrument
+                .root
+                .modules
+                .iter()
+                .map(|module| {
+                    let subpatch_ports = if module.kind == ModuleKind::Subpatch {
+                        Some(
+                            instrument
+                                .subpatches
+                                .iter()
+                                .find(|subpatch| subpatch.owner == module.id)
+                                .map(|subpatch| {
+                                    let inputs = subpatch
+                                        .surface
+                                        .modules
+                                        .iter()
+                                        .filter(|module| module.kind == ModuleKind::SubpatchInput)
+                                        .count()
+                                        as u16;
+                                    let outputs = subpatch
+                                        .surface
+                                        .modules
+                                        .iter()
+                                        .filter(|module| module.kind == ModuleKind::SubpatchOutput)
+                                        .count()
+                                        as u16;
+                                    (inputs, outputs)
+                                })
+                                .unwrap_or((0, 0)),
+                        )
+                    } else {
+                        None
+                    };
+                    let (width, height) = module_footprint(module, subpatch_ports);
+                    (module.id, width, height)
+                })
+                .collect::<Vec<_>>();
+            update_surface_disabled_states(&mut instrument.root, &root_footprints);
+            for subpatch in &mut instrument.subpatches {
+                let footprints = subpatch
+                    .surface
+                    .modules
+                    .iter()
+                    .map(|module| {
+                        let (width, height) = module_footprint(module, None);
+                        (module.id, width, height)
+                    })
+                    .collect::<Vec<_>>();
+                update_surface_disabled_states(&mut subpatch.surface, &footprints);
+            }
         }
     }
 
@@ -1678,32 +2200,47 @@ impl GuiState {
         self.pointer_drag = None;
         self.held_move = None;
         self.held_selection = None;
+        self.update_disabled_states();
         self.sync_audio_patch();
     }
 
     fn sync_audio_patch(&mut self) {
-        let Some(audio) = &self.audio else {
+        let Some(rate) = self.audio.as_ref().map(AudioHandle::sample_rate) else {
             self.audio_status = "Audio disabled".to_string();
             return;
         };
-        match self.compile_gui_audio_patch(audio.sample_rate()) {
+        match self.compile_gui_audio_patch(rate) {
             Ok(patch) => {
-                audio.submit_with_probes(patch.patch, &patch.probes);
+                let Some(audio) = self.audio.as_mut() else {
+                    self.audio_status = "Audio disabled".to_string();
+                    return;
+                };
+                audio.submit_with_telemetry(
+                    patch.patch,
+                    &patch.probes,
+                    &patch.meters,
+                    patch.voice_mode,
+                );
                 self.audio_status = "Audio ready".to_string();
             }
             Err(error) => {
-                audio.collect_retired();
+                if let Some(audio) = self.audio.as_mut() {
+                    audio.collect_retired();
+                }
                 self.audio_status = format!("Silent: {}", audio_patch_error_message(&error));
             }
         }
     }
 
     fn sync_audio_track(&mut self) {
-        let Some(audio) = &self.audio else {
+        if self.audio.is_none() {
             return;
-        };
+        }
         match Track::parse(self.track_text(), &scale_from_index(self.scale_index)) {
             Ok(track) => {
+                let Some(audio) = self.audio.as_mut() else {
+                    return;
+                };
                 audio.submit_track(track, self.bpm);
                 self.audio_status = "Audio ready".to_string();
             }
@@ -1713,14 +2250,14 @@ impl GuiState {
         }
     }
 
-    fn sync_audio_playing(&self) {
-        if let Some(audio) = &self.audio {
+    fn sync_audio_playing(&mut self) {
+        if let Some(audio) = &mut self.audio {
             audio.set_playing(self.playing);
         }
     }
 
-    fn collect_audio_retired(&self) {
-        if let Some(audio) = &self.audio {
+    fn collect_audio_retired(&mut self) {
+        if let Some(audio) = &mut self.audio {
             audio.collect_retired();
         }
     }
@@ -1749,7 +2286,9 @@ impl GuiState {
             subpatch_stack: Vec::new(),
         };
         add_project_subpatches(&mut instrument, subpatch_owners, &subpatches);
-        self.instruments = vec![instrument];
+        let mut instruments = vec![instrument];
+        instruments.resize_with(INSTRUMENT_COUNT, Instrument::new);
+        self.instruments = instruments;
         self.active_instrument = 0;
         self.bpm = project.bpm.round().clamp(1.0, u16::MAX as f32) as u16;
         self.scale_index = project.scale_idx.min(SCALE_NAMES.len().saturating_sub(1));
@@ -1757,13 +2296,12 @@ impl GuiState {
             .instruments
             .iter()
             .flat_map(|instrument| {
-                instrument
-                    .root
-                    .modules
-                    .iter()
-                    .chain(instrument.subpatches.iter().flat_map(|subpatch| {
-                        subpatch.surface.modules.iter()
-                    }))
+                instrument.root.modules.iter().chain(
+                    instrument
+                        .subpatches
+                        .iter()
+                        .flat_map(|subpatch| subpatch.surface.modules.iter()),
+                )
             })
             .map(|module| module.id.0)
             .max()
@@ -1782,6 +2320,7 @@ impl GuiState {
         self.pointer_drag = None;
         self.held_move = None;
         self.held_selection = None;
+        self.update_disabled_states();
         self.sync_audio_patch();
         self.sync_audio_track();
     }
@@ -1838,6 +2377,7 @@ impl GuiState {
         if self.bpm != bpm || self.scale_index != scale_index {
             self.sync_audio_track();
         }
+        self.update_grid_view();
         self.collect_audio_retired();
     }
 
@@ -1845,6 +2385,7 @@ impl GuiState {
         let x = position.x.min(self.width.saturating_sub(1));
         let y = position.y.min(self.height.saturating_sub(1));
         self.instrument_mut().surface_mut().cursor = GridPos::new(x, y);
+        self.update_grid_view();
     }
 
     pub(crate) fn open_category(&mut self, category: ModuleCategory) {
@@ -1919,6 +2460,70 @@ impl GuiState {
         }
     }
 
+    pub(crate) fn drag_env_point(
+        &mut self,
+        phase: EnvPointerPhase,
+        module: ModuleId,
+        time: f32,
+        value: f32,
+    ) {
+        let Some(module_index) = self
+            .modules()
+            .iter()
+            .position(|candidate| candidate.id == module)
+        else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        let point_count = self.modules()[module_index].env_points.len();
+        if point_count == 0 {
+            self.mode = Mode::Normal;
+            return;
+        }
+        let target_time = (time * 100.).round().clamp(0., 100.) as i32;
+        let target_value = (value * 100.).round().clamp(-100., 100.) as i32;
+        let point = match (phase, self.mode) {
+            (
+                EnvPointerPhase::Drag | EnvPointerPhase::End,
+                Mode::EnvEdit {
+                    module: active,
+                    point,
+                    editing: true,
+                },
+            ) if active == module => point.min(point_count - 1),
+            _ => self.modules()[module_index]
+                .env_points
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, point)| {
+                    let time_delta = point.time - target_time;
+                    let value_delta = point.value - target_value;
+                    time_delta * time_delta + value_delta * value_delta
+                })
+                .map(|(index, _)| index)
+                .unwrap_or(0),
+        };
+        let before = self.snapshot();
+        let (point, changed) = {
+            let points = &mut self.instrument_mut().surface_mut().modules[module_index].env_points;
+            let changed = points[point].time != target_time || points[point].value != target_value;
+            points[point].time = target_time;
+            points[point].value = target_value;
+            let moved = points[point];
+            points.sort_by_key(|point| point.time);
+            let point = points.iter().position(|point| *point == moved).unwrap_or(0);
+            (point, changed)
+        };
+        if changed {
+            self.commit(before);
+        }
+        self.mode = Mode::EnvEdit {
+            module,
+            point,
+            editing: phase != EnvPointerPhase::End,
+        };
+    }
+
     fn start_grid_drag(&mut self, position: GridPos) {
         let cursor = self.cursor();
         self.focus_cell(position);
@@ -1948,7 +2553,8 @@ impl GuiState {
             Mode::Normal => {
                 let module_drag = self.module_at(position).map(|module| PointerDrag::Module {
                     module: module.id,
-                    origin: position,
+                    origin: module.position,
+                    grab: position,
                 });
                 module_drag.or(Some(PointerDrag::Selection { anchor: position }))
             }
@@ -1961,7 +2567,11 @@ impl GuiState {
             return;
         };
         match drag {
-            PointerDrag::Module { module, origin } => {
+            PointerDrag::Module {
+                module,
+                origin,
+                grab,
+            } => {
                 if position == self.cursor() {
                     return;
                 }
@@ -1969,9 +2579,7 @@ impl GuiState {
                 let Some(found) = self.modules().iter().find(|found| found.id == module) else {
                     return;
                 };
-                if !self.module_fits(found, position, &[module]) {
-                    return;
-                }
+                let next = self.moved_position(found, origin, grab, position);
                 let before = self.snapshot();
                 if let Some(found) = self
                     .instrument_mut()
@@ -1980,8 +2588,12 @@ impl GuiState {
                     .iter_mut()
                     .find(|found| found.id == module)
                 {
-                    found.position = position;
-                    self.pointer_drag = Some(PointerDrag::Module { module, origin });
+                    found.position = next;
+                    self.pointer_drag = Some(PointerDrag::Module {
+                        module,
+                        origin,
+                        grab,
+                    });
                     self.commit(before);
                 }
             }
@@ -2224,7 +2836,10 @@ impl GuiState {
             }
             GuiAction::Palette(category) => self.open_category(category),
             GuiAction::TogglePlay => self.playing = !self.playing,
-            GuiAction::ToggleMeters => self.show_meters = !self.show_meters,
+            GuiAction::ToggleMeters => {
+                self.show_meters = !self.show_meters;
+                self.sync_audio_patch();
+            }
             GuiAction::Undo => {
                 if let Some(snapshot) = self.undo.pop() {
                     self.redo.push(self.snapshot());
@@ -2244,15 +2859,6 @@ impl GuiState {
                     self.sync_audio_patch();
                 }
             }
-            GuiAction::NewInstrument => {
-                let before = self.snapshot();
-                self.instruments.push(Instrument::new());
-                self.active_instrument = self.instruments.len() - 1;
-                self.mode = Mode::Normal;
-                self.commit(before);
-            }
-            GuiAction::HelpScrollUp => self.help_scroll = self.help_scroll.saturating_sub(1),
-            GuiAction::HelpScrollDown => self.help_scroll += 1,
             GuiAction::Delete => {
                 if let Some(module) = self.module_at(self.cursor()) {
                     let before = self.snapshot();
@@ -2279,7 +2885,7 @@ impl GuiState {
                 if let Some(module) = self.module_at(self.cursor()) {
                     self.mode = Mode::Move {
                         module: module.id,
-                        origin: module.position,
+                        origin: self.cursor(),
                     };
                 }
             }
@@ -2442,9 +3048,6 @@ impl GuiState {
             | GuiAction::Undo
             | GuiAction::Redo
             | GuiAction::Instrument(_)
-            | GuiAction::NewInstrument
-            | GuiAction::HelpScrollUp
-            | GuiAction::HelpScrollDown
             | GuiAction::ValueDown
             | GuiAction::ValueUp
             | GuiAction::ValueDownFast
@@ -2513,12 +3116,10 @@ impl GuiState {
             GuiAction::Confirm | GuiAction::Move | GuiAction::Copy => {
                 let cursor = self.cursor();
                 if let Some(mut held) = self.held_move.take() {
-                    if !self.module_fits(&held.module, cursor, &[]) {
-                        self.held_move = Some(held);
-                        return;
-                    }
                     let before = held.before.clone();
-                    held.module.position = cursor;
+                    held.module.position = self
+                        .bounded_module_position(&held.module, cursor.x as i16, cursor.y as i16)
+                        .unwrap_or(cursor);
                     let kind = held.module.kind;
                     self.instrument_mut()
                         .surface_mut()
@@ -2542,18 +3143,17 @@ impl GuiState {
                     self.mode = Mode::Normal;
                     return;
                 };
-                if self.module_fits(found, cursor, &[module]) {
-                    let before = self.snapshot();
-                    if let Some(found) = self
-                        .instrument_mut()
-                        .surface_mut()
-                        .modules
-                        .iter_mut()
-                        .find(|found| found.id == module)
-                    {
-                        found.position = cursor;
-                        self.commit(before);
-                    }
+                let next = self.moved_position(found, found.position, origin, cursor);
+                let before = self.snapshot();
+                if let Some(found) = self
+                    .instrument_mut()
+                    .surface_mut()
+                    .modules
+                    .iter_mut()
+                    .find(|found| found.id == module)
+                {
+                    found.position = next;
+                    self.commit(before);
                 }
                 self.mode = Mode::Normal;
             }
@@ -2568,15 +3168,6 @@ impl GuiState {
                     inst.surface_mut().modules.push(held.module);
                     self.mode = Mode::Normal;
                     return;
-                }
-                if let Some(found) = self
-                    .instrument_mut()
-                    .surface_mut()
-                    .modules
-                    .iter_mut()
-                    .find(|found| found.id == module)
-                {
-                    found.position = origin;
                 }
                 self.instrument_mut().surface_mut().cursor = origin;
                 self.mode = Mode::Normal;
@@ -2606,9 +3197,6 @@ impl GuiState {
             | GuiAction::Undo
             | GuiAction::Redo
             | GuiAction::Instrument(_)
-            | GuiAction::NewInstrument
-            | GuiAction::HelpScrollUp
-            | GuiAction::HelpScrollDown
             | GuiAction::ValueDown
             | GuiAction::ValueUp
             | GuiAction::ValueDownFast
@@ -2686,22 +3274,23 @@ impl GuiState {
                     self.mode = Mode::Normal;
                     return;
                 };
-                if !self.module_fits(module, cursor, &[]) {
-                    return;
-                }
                 let before = self.snapshot();
                 let kind = module.kind;
                 let orientation = module.orientation;
                 let parameters = module.parameters.clone();
                 let env_points = module.env_points.clone();
+                let position = self
+                    .bounded_module_position(module, cursor.x as i16, cursor.y as i16)
+                    .unwrap_or(cursor);
                 let id = ModuleId(self.next_module_id);
                 self.instrument_mut().surface_mut().modules.push(Module {
                     id,
                     kind,
-                    position: cursor,
+                    position,
                     orientation,
                     parameters,
                     env_points,
+                    disabled: false,
                 });
                 if kind == ModuleKind::Subpatch {
                     self.instrument_mut().ensure_subpatch(id);
@@ -2736,9 +3325,6 @@ impl GuiState {
             | GuiAction::Undo
             | GuiAction::Redo
             | GuiAction::Instrument(_)
-            | GuiAction::NewInstrument
-            | GuiAction::HelpScrollUp
-            | GuiAction::HelpScrollDown
             | GuiAction::ValueDown
             | GuiAction::ValueUp
             | GuiAction::ValueDownFast
@@ -2922,9 +3508,6 @@ impl GuiState {
             | GuiAction::Undo
             | GuiAction::Redo
             | GuiAction::Instrument(_)
-            | GuiAction::NewInstrument
-            | GuiAction::HelpScrollUp
-            | GuiAction::HelpScrollDown
             | GuiAction::Quit
             | GuiAction::Save
             | GuiAction::SaveAs
@@ -3112,9 +3695,6 @@ impl GuiState {
             | GuiAction::Undo
             | GuiAction::Redo
             | GuiAction::Instrument(_)
-            | GuiAction::NewInstrument
-            | GuiAction::HelpScrollUp
-            | GuiAction::HelpScrollDown
             | GuiAction::ValueDown
             | GuiAction::ValueUp
             | GuiAction::ValueDownFast
@@ -3301,9 +3881,6 @@ impl GuiState {
             | GuiAction::Undo
             | GuiAction::Redo
             | GuiAction::Instrument(_)
-            | GuiAction::NewInstrument
-            | GuiAction::HelpScrollUp
-            | GuiAction::HelpScrollDown
             | GuiAction::Left
             | GuiAction::Right
             | GuiAction::LeftFast
@@ -3612,9 +4189,6 @@ impl GuiState {
             | GuiAction::Undo
             | GuiAction::Redo
             | GuiAction::Instrument(_)
-            | GuiAction::NewInstrument
-            | GuiAction::HelpScrollUp
-            | GuiAction::HelpScrollDown
             | GuiAction::ValueDown
             | GuiAction::ValueUp
             | GuiAction::ValueDownFast
@@ -3660,19 +4234,14 @@ impl GuiState {
                         .modules
                         .iter()
                         .map(|module| {
-                            let x = (module.position.x as i16 + dx)
-                                .clamp(0, self.width.saturating_sub(1) as i16);
-                            let y = (module.position.y as i16 + dy)
-                                .clamp(0, self.height.saturating_sub(1) as i16);
-                            GridPos::new(x as u16, y as u16)
+                            self.bounded_module_position(
+                                module,
+                                module.position.x as i16 + dx,
+                                module.position.y as i16 + dy,
+                            )
+                            .unwrap_or(module.position)
                         })
                         .collect::<Vec<_>>();
-                    if held.modules.iter().zip(&targets).any(|(module, position)| {
-                        !self.area_fits(module.width(), module.height(), *position, &[])
-                    }) {
-                        self.held_selection = Some(held);
-                        return;
-                    }
                     for (module, position) in held.modules.iter_mut().zip(targets) {
                         module.position = position;
                     }
@@ -3690,33 +4259,30 @@ impl GuiState {
                     .iter()
                     .filter(|module| ids.contains(&module.id))
                     .map(|module| {
-                        let x = (module.position.x as i16 + dx)
-                            .clamp(0, self.width.saturating_sub(1) as i16);
-                        let y = (module.position.y as i16 + dy)
-                            .clamp(0, self.height.saturating_sub(1) as i16);
-                        (module.id, GridPos::new(x as u16, y as u16))
+                        (
+                            module.id,
+                            self.bounded_module_position(
+                                module,
+                                module.position.x as i16 + dx,
+                                module.position.y as i16 + dy,
+                            )
+                            .unwrap_or(module.position),
+                        )
                     })
                     .collect();
-                if !targets.iter().any(|(id, position)| {
-                    let Some(module) = self.modules().iter().find(|module| module.id == *id) else {
-                        return true;
-                    };
-                    !self.module_fits(module, *position, &ids)
-                }) {
-                    let before = self.snapshot();
-                    for (id, position) in targets {
-                        if let Some(module) = self
-                            .instrument_mut()
-                            .surface_mut()
-                            .modules
-                            .iter_mut()
-                            .find(|module| module.id == id)
-                        {
-                            module.position = position;
-                        }
+                let before = self.snapshot();
+                for (id, position) in targets {
+                    if let Some(module) = self
+                        .instrument_mut()
+                        .surface_mut()
+                        .modules
+                        .iter_mut()
+                        .find(|module| module.id == id)
+                    {
+                        module.position = position;
                     }
-                    self.commit(before);
                 }
+                self.commit(before);
                 self.mode = Mode::Normal;
             }
             GuiAction::Cancel => {
@@ -3759,9 +4325,6 @@ impl GuiState {
             | GuiAction::Undo
             | GuiAction::Redo
             | GuiAction::Instrument(_)
-            | GuiAction::NewInstrument
-            | GuiAction::HelpScrollUp
-            | GuiAction::HelpScrollDown
             | GuiAction::ValueDown
             | GuiAction::ValueUp
             | GuiAction::ValueDownFast
@@ -3908,12 +4471,9 @@ impl GuiState {
                             module.env_points.clone(),
                         )
                     })
-                .collect();
+                    .collect();
                 let before = self.snapshot();
                 for (kind, orientation, position, parameters, env_points) in copies {
-                    if !self.kind_fits(kind, orientation, position) {
-                        continue;
-                    }
                     let id = ModuleId(self.next_module_id);
                     self.instrument_mut().surface_mut().modules.push(Module {
                         id,
@@ -3922,6 +4482,7 @@ impl GuiState {
                         orientation,
                         parameters,
                         env_points,
+                        disabled: false,
                     });
                     if kind == ModuleKind::Subpatch {
                         self.instrument_mut().ensure_subpatch(id);
@@ -3957,9 +4518,6 @@ impl GuiState {
             | GuiAction::Undo
             | GuiAction::Redo
             | GuiAction::Instrument(_)
-            | GuiAction::NewInstrument
-            | GuiAction::HelpScrollUp
-            | GuiAction::HelpScrollDown
             | GuiAction::ValueDown
             | GuiAction::ValueUp
             | GuiAction::ValueDownFast
@@ -4002,6 +4560,98 @@ impl GuiState {
         self.instrument_mut().surface_mut().cursor = GridPos::new(x as u16, y as u16);
     }
 
+    fn update_grid_view(&mut self) {
+        let (min, max) = self.active_grid_rect();
+        self.grid_view.x = updated_axis_view(
+            self.grid_view.x,
+            min.x,
+            max.x,
+            self.width,
+            self.grid_view_size.columns(),
+        );
+        self.grid_view.y = updated_axis_view(
+            self.grid_view.y,
+            min.y,
+            max.y,
+            self.height,
+            self.grid_view_size.rows(),
+        );
+    }
+
+    fn active_grid_rect(&self) -> (GridPos, GridPos) {
+        match self.mode {
+            Mode::Move { module, origin } => {
+                let Some(module) = self.moving_module(module) else {
+                    let cursor = self.cursor();
+                    return (cursor, cursor);
+                };
+                let width = self.module_width(module).saturating_sub(1);
+                let height = self.module_height(module).saturating_sub(1);
+                let dx = bounded_grid_delta(
+                    module.position.x,
+                    module.position.x + width,
+                    self.cursor().x as i16 - origin.x as i16,
+                    self.width,
+                );
+                let dy = bounded_grid_delta(
+                    module.position.y,
+                    module.position.y + height,
+                    self.cursor().y as i16 - origin.y as i16,
+                    self.height,
+                );
+                let min_x = (module.position.x as i16 + dx).max(0) as u16;
+                let min_y = (module.position.y as i16 + dy).max(0) as u16;
+                let max_x = (module.position.x + width) as i16 + dx;
+                let max_y = (module.position.y + height) as i16 + dy;
+                (
+                    GridPos::new(min_x, min_y),
+                    GridPos::new(max_x.max(0) as u16, max_y.max(0) as u16),
+                )
+            }
+            Mode::SelectMove {
+                anchor,
+                extent,
+                origin,
+            }
+            | Mode::CopySelection {
+                anchor,
+                extent,
+                origin,
+            } => {
+                let source_min = GridPos::new(anchor.x.min(extent.x), anchor.y.min(extent.y));
+                let source_max = GridPos::new(anchor.x.max(extent.x), anchor.y.max(extent.y));
+                let dx = bounded_grid_delta(
+                    source_min.x,
+                    source_max.x,
+                    self.cursor().x as i16 - origin.x as i16,
+                    self.width,
+                );
+                let dy = bounded_grid_delta(
+                    source_min.y,
+                    source_max.y,
+                    self.cursor().y as i16 - origin.y as i16,
+                    self.height,
+                );
+                let min_x = (source_min.x as i16 + dx).max(0) as u16;
+                let min_y = (source_min.y as i16 + dy).max(0) as u16;
+                let max_x = source_max.x as i16 + dx;
+                let max_y = source_max.y as i16 + dy;
+                (
+                    GridPos::new(min_x, min_y),
+                    GridPos::new(max_x.max(0) as u16, max_y.max(0) as u16),
+                )
+            }
+            Mode::Select { anchor } => (
+                GridPos::new(anchor.x.min(self.cursor().x), anchor.y.min(self.cursor().y)),
+                GridPos::new(anchor.x.max(self.cursor().x), anchor.y.max(self.cursor().y)),
+            ),
+            _ => {
+                let cursor = self.cursor();
+                (cursor, cursor)
+            }
+        }
+    }
+
     fn move_palette_category(&mut self, delta: i16) {
         let current = ModuleCategory::ALL
             .iter()
@@ -4032,6 +4682,7 @@ impl GuiState {
             orientation: Orientation::Right,
             parameters: kind.default_parameters(),
             env_points: kind.default_env_points(),
+            disabled: false,
         };
         self.next_module_id += 1;
         self.instrument_mut().surface_mut().modules.push(module);
@@ -4052,7 +4703,9 @@ impl GuiState {
     }
 }
 
-fn surface_from_project_modules(modules: &[ProjectModuleDef]) -> (PatchSurface, Vec<(ModuleId, u32)>) {
+fn surface_from_project_modules(
+    modules: &[ProjectModuleDef],
+) -> (PatchSurface, Vec<(ModuleId, u32)>) {
     let mut subpatch_owners = Vec::new();
     let modules = modules
         .iter()
@@ -4083,7 +4736,9 @@ fn add_project_subpatches(
             continue;
         };
         let (surface, nested_owners) = surface_from_project_modules(&definition.modules);
-        instrument.subpatches.push(SubpatchSurface { owner, surface });
+        instrument
+            .subpatches
+            .push(SubpatchSurface { owner, surface });
         add_project_subpatches(instrument, nested_owners, subpatches);
     }
 }
@@ -4097,6 +4752,7 @@ fn module_from_project(definition: &ProjectModuleDef) -> Option<(Module, Option<
         orientation: orientation_from_project(definition.orientation),
         parameters: kind.default_parameters(),
         env_points: kind.default_env_points(),
+        disabled: false,
     };
     apply_project_params(&mut module, &definition.params);
     Some((module, subpatch_id))
@@ -4329,7 +4985,11 @@ fn set_float(parameters: &mut [ModuleParameter], index: usize, value: f32) {
 
 fn set_int(parameters: &mut [ModuleParameter], index: usize, value: i32) {
     if let Some(parameter) = parameters.get_mut(index)
-        && let ParameterValue::Int { value: target, min, max } = &mut parameter.value
+        && let ParameterValue::Int {
+            value: target,
+            min,
+            max,
+        } = &mut parameter.value
     {
         *target = value.clamp(*min, *max);
     }
@@ -4350,7 +5010,10 @@ fn set_time(parameters: &mut [ModuleParameter], index: usize, value: ProjectTime
 
 fn set_enum(parameters: &mut [ModuleParameter], index: usize, value: usize) {
     if let Some(parameter) = parameters.get_mut(index)
-        && let ParameterValue::Enum { index: target, options } = &mut parameter.value
+        && let ParameterValue::Enum {
+            index: target,
+            options,
+        } = &mut parameter.value
         && value < options.len()
     {
         *target = value;
@@ -4429,6 +5092,7 @@ mod tests {
                 orientation: Orientation::Right,
                 parameters: kind.default_parameters(),
                 env_points: kind.default_env_points(),
+                disabled: false,
             };
             assert!(audio_module(&module, rate, 120).is_ok(), "{kind:?}");
         }
@@ -4568,6 +5232,13 @@ fn collect_audio_inputs(module: ModuleId, connections: &[Connection], needed: &m
     }
 }
 
+fn module_uses_voice_controls(kind: ModuleKind) -> bool {
+    matches!(
+        kind,
+        ModuleKind::Freq | ModuleKind::Gate | ModuleKind::Degree | ModuleKind::DegreeGate
+    )
+}
+
 fn audio_patch_error_message(error: &AudioPatchError) -> &'static str {
     match error {
         AudioPatchError::MissingOutput => "connect Osc to Output",
@@ -4581,7 +5252,11 @@ fn audio_patch_error_message(error: &AudioPatchError) -> &'static str {
     }
 }
 
-fn audio_module(module: &Module, rate: SampleRate, bpm: u16) -> Result<AudioModule, AudioPatchError> {
+fn audio_module(
+    module: &Module,
+    rate: SampleRate,
+    bpm: u16,
+) -> Result<AudioModule, AudioPatchError> {
     match module.kind {
         ModuleKind::Freq => Ok(AudioModule::Freq),
         ModuleKind::Gate => Ok(AudioModule::Gate),
@@ -4709,12 +5384,81 @@ fn audio_module(module: &Module, rate: SampleRate, bpm: u16) -> Result<AudioModu
     }
 }
 
-fn connection_input(connection: &Connection, target: &Module) -> Option<usize> {
+fn connection_input(connection: &Connection, target: &Module, input_count: u16) -> Option<usize> {
     let input = match connection.orientation {
         Orientation::Right => connection.to_cell.y.checked_sub(target.position.y)?,
         Orientation::Down => connection.to_cell.x.checked_sub(target.position.x)?,
     } as usize;
-    (input < target.input_count() as usize).then_some(input)
+    (input < input_count as usize).then_some(input)
+}
+
+fn audio_id(ids: &[(AudioKey, AudioModuleId)], key: AudioKey) -> Option<AudioModuleId> {
+    ids.iter()
+        .find_map(|(candidate, audio_id)| (*candidate == key).then_some(*audio_id))
+}
+
+fn root_connection_source(
+    root_modules: &[Module],
+    instrument: &Instrument,
+    ids: &[(AudioKey, AudioModuleId)],
+    connection: &Connection,
+) -> Option<AudioModuleId> {
+    let source = root_modules
+        .iter()
+        .find(|module| module.id == connection.from)?;
+    if source.kind != ModuleKind::Subpatch {
+        return audio_id(ids, AudioKey::Root(source.id));
+    }
+    let output = subpatch_output_index(connection, source)?;
+    let subpatch = instrument
+        .subpatches
+        .iter()
+        .find(|subpatch| subpatch.owner == source.id)?;
+    let outputs = subpatch_outputs(&subpatch.surface);
+    let module = outputs.get(output).copied()?;
+    audio_id(
+        ids,
+        AudioKey::Subpatch {
+            owner: source.id,
+            module,
+        },
+    )
+}
+
+fn subpatch_input_key(module: &Module) -> u16 {
+    module.position.y
+}
+
+fn subpatch_output_key(module: &Module) -> u16 {
+    module.position.x
+}
+
+fn subpatch_inputs(surface: &PatchSurface) -> Vec<ModuleId> {
+    let mut modules = surface
+        .modules
+        .iter()
+        .filter(|module| !module.disabled && module.kind == ModuleKind::SubpatchInput)
+        .collect::<Vec<_>>();
+    modules.sort_by_key(|module| subpatch_input_key(module));
+    modules.into_iter().map(|module| module.id).collect()
+}
+
+fn subpatch_outputs(surface: &PatchSurface) -> Vec<ModuleId> {
+    let mut modules = surface
+        .modules
+        .iter()
+        .filter(|module| !module.disabled && module.kind == ModuleKind::SubpatchOutput)
+        .collect::<Vec<_>>();
+    modules.sort_by_key(|module| subpatch_output_key(module));
+    modules.into_iter().map(|module| module.id).collect()
+}
+
+fn subpatch_output_index(connection: &Connection, source: &Module) -> Option<usize> {
+    let index = match connection.orientation {
+        Orientation::Right => connection.from_cell.y.checked_sub(source.position.y)?,
+        Orientation::Down => connection.from_cell.x.checked_sub(source.position.x)?,
+    };
+    Some(index as usize)
 }
 
 fn audio_wave(module: &Module) -> Result<Wave, AudioPatchError> {
@@ -4792,7 +5536,8 @@ fn audio_float(module: &Module, parameter: usize) -> Result<f32, AudioPatchError
 }
 
 fn audio_int(module: &Module, parameter: usize) -> Result<i32, AudioPatchError> {
-    let Some(ParameterValue::Int { value, .. }) = module.parameters.get(parameter).map(|p| p.value())
+    let Some(ParameterValue::Int { value, .. }) =
+        module.parameters.get(parameter).map(|p| p.value())
     else {
         return Err(AudioPatchError::InvalidParameter);
     };
@@ -4908,37 +5653,64 @@ fn normalized_rect(anchor: GridPos, extent: GridPos) -> (GridPos, GridPos) {
     )
 }
 
+fn bounded_grid_delta(min: u16, max: u16, delta: i16, size: u16) -> i16 {
+    let lower = -(min as i16);
+    let upper = size.saturating_sub(1).saturating_sub(max) as i16;
+    delta.clamp(lower, upper)
+}
+
+fn updated_axis_view(offset: u16, min: u16, max: u16, size: u16, visible: u16) -> u16 {
+    if size <= visible {
+        return 0;
+    }
+    let max_offset = size - visible;
+    let margin = GRID_VIEW_MARGIN.min(visible.saturating_sub(1) / 2);
+    let low = offset.saturating_add(margin);
+    if min < low {
+        return min.saturating_sub(margin).min(max_offset);
+    }
+    let high = offset + visible - 1 - margin;
+    if max > high {
+        return max
+            .saturating_add(margin)
+            .saturating_add(1)
+            .saturating_sub(visible)
+            .min(max_offset);
+    }
+    offset.min(max_offset)
+}
+
 pub fn all_modules() -> &'static [ModuleKind] {
     &[
+        ModuleKind::Osc,
+        ModuleKind::Output,
         ModuleKind::Freq,
         ModuleKind::Gate,
         ModuleKind::Degree,
-        ModuleKind::DegreeGate,
-        ModuleKind::Osc,
+        ModuleKind::Adsr,
+        ModuleKind::Envelope,
         ModuleKind::Rise,
         ModuleKind::Fall,
         ModuleKind::Ramp,
-        ModuleKind::Adsr,
-        ModuleKind::Envelope,
         ModuleKind::Lowpass,
         ModuleKind::Highpass,
-        ModuleKind::Comb,
-        ModuleKind::Allpass,
         ModuleKind::Delay,
-        ModuleKind::DelayTap,
         ModuleKind::Reverb,
         ModuleKind::Distortion,
         ModuleKind::Compressor,
         ModuleKind::Flanger,
-        ModuleKind::Probe,
-        ModuleKind::Multiply,
         ModuleKind::Add,
+        ModuleKind::Multiply,
+        ModuleKind::Switch,
+        ModuleKind::Probe,
+        ModuleKind::Sample,
+        ModuleKind::Random,
+        ModuleKind::DegreeGate,
         ModuleKind::GreaterThan,
         ModuleKind::LessThan,
-        ModuleKind::Switch,
-        ModuleKind::Random,
-        ModuleKind::Sample,
-        ModuleKind::Output,
+        ModuleKind::Comb,
+        ModuleKind::Allpass,
+        ModuleKind::DelayTap,
         ModuleKind::TurnRightDown,
         ModuleKind::TurnDownRight,
         ModuleKind::LeftSplit,
