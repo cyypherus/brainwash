@@ -1,0 +1,11 @@
+[package]
+name = "brainwash-gui"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+brainwash = { path = ".." }
+cpal = "0.15"
+haven = { package = "haven-ui", path = "../../haven", default-features = false, features = ["renderer-skia"] }
+rfd = "0.15"

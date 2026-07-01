@@ -298,9 +298,19 @@ impl Track {
     }
 
     pub fn play(&mut self, to: f32) -> Vec<NoteEvent> {
+        let mut events = [None; 64];
+        let count = self.play_into(to, &mut events);
+        events
+            .into_iter()
+            .take(count)
+            .filter_map(|event| event)
+            .collect()
+    }
+
+    pub fn play_into(&mut self, to: f32, events: &mut [Option<NoteEvent>]) -> usize {
         let to = to.fract(); // Wrap to 0.0..1.0 range
         if to == self.playhead {
-            return Vec::new();
+            return 0;
         }
 
         // Infer direction based on distance
@@ -318,7 +328,7 @@ impl Track {
         };
 
         let is_forward = forward_distance <= backward_distance;
-        self.advance_with_direction(to, is_forward)
+        self.advance_with_direction_into(to, is_forward, events)
     }
 
     // fn crossed(pos: f32, from: f32, to: f32, inclusive: bool) -> bool {
@@ -342,12 +352,26 @@ impl Track {
     // }
 
     #[allow(clippy::collapsible_else_if)]
+    #[cfg(test)]
     pub(crate) fn advance_with_direction(&mut self, to: f32, forward: bool) -> Vec<NoteEvent> {
-        // Normalize to [0, 1]
-        let from = self.playhead;
-        let to = to.rem_euclid(1.0);
+        let mut events = [None; 64];
+        let count = self.advance_with_direction_into(to, forward, &mut events);
+        events
+            .into_iter()
+            .take(count)
+            .filter_map(|event| event)
+            .collect()
+    }
 
-        let mut events = Vec::new();
+    pub(crate) fn advance_with_direction_into(
+        &mut self,
+        to: f32,
+        forward: bool,
+        events: &mut [Option<NoteEvent>],
+    ) -> usize {
+        let from = self.playhead;
+
+        let mut count = 0;
         for note in &self.note_timeline {
             let note_start = note.start;
             let note_end = note.end;
@@ -361,55 +385,71 @@ impl Track {
                     // 0---------------------1
                     // ###e==t---------f==s###
                     if note_start >= from || note_start < to {
-                        events.push(NoteEvent::Press {
-                            pitch: note.pitch,
-                            degree: note.degree,
-                        });
+                        push_event(
+                            events,
+                            &mut count,
+                            NoteEvent::Press {
+                                pitch: note.pitch,
+                                degree: note.degree,
+                            },
+                        );
                     }
                     // ======t------s##f##e===
                     if note_end >= from || note_end < to {
-                        events.push(NoteEvent::Release { pitch: note.pitch });
+                        push_event(events, &mut count, NoteEvent::Release { pitch: note.pitch });
                     }
                 } else {
                     // ------f=s#######t##e----
                     if note_start >= from && note_start < to {
-                        events.push(NoteEvent::Press {
-                            pitch: note.pitch,
-                            degree: note.degree,
-                        });
+                        push_event(
+                            events,
+                            &mut count,
+                            NoteEvent::Press {
+                                pitch: note.pitch,
+                                degree: note.degree,
+                            },
+                        );
                     }
                     // ----s##f#####e==t------
                     if note_end >= from && note_end < to {
-                        events.push(NoteEvent::Release { pitch: note.pitch });
+                        push_event(events, &mut count, NoteEvent::Release { pitch: note.pitch });
                     }
                 }
             } else {
                 if to > from {
                     // looped around
                     if note_start <= from || note_start > to {
-                        events.push(NoteEvent::Press {
-                            pitch: note.pitch,
-                            degree: note.degree,
-                        });
+                        push_event(
+                            events,
+                            &mut count,
+                            NoteEvent::Press {
+                                pitch: note.pitch,
+                                degree: note.degree,
+                            },
+                        );
                     }
                     if note_end <= from || note_end > to {
-                        events.push(NoteEvent::Release { pitch: note.pitch });
+                        push_event(events, &mut count, NoteEvent::Release { pitch: note.pitch });
                     }
                 } else {
-                    if note_start <= from && note_start > to {
-                        events.push(NoteEvent::Press {
-                            pitch: note.pitch,
-                            degree: note.degree,
-                        });
+                    if note_start <= from && note_start >= to {
+                        push_event(
+                            events,
+                            &mut count,
+                            NoteEvent::Press {
+                                pitch: note.pitch,
+                                degree: note.degree,
+                            },
+                        );
                     }
-                    if note_end <= from && note_end > to {
-                        events.push(NoteEvent::Release { pitch: note.pitch });
+                    if note_end < from && note_end > to {
+                        push_event(events, &mut count, NoteEvent::Release { pitch: note.pitch });
                     }
                 }
             }
         }
         self.playhead = to;
-        events
+        count
         // let to = if to == 0.0 && forward { 1.0 } else { to };
 
         // if (to - self.playhead).abs() < 1e-9 {
@@ -435,6 +475,13 @@ impl Track {
 
         // self.playhead = to;
         // events
+    }
+}
+
+fn push_event(events: &mut [Option<NoteEvent>], count: &mut usize, event: NoteEvent) {
+    if *count < events.len() {
+        events[*count] = Some(event);
+        *count += 1;
     }
 }
 

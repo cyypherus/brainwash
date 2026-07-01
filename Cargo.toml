@@ -8,8 +8,8 @@ name = "brainwash"
 path = "src/lib.rs"
 
 [features]
-default = ["live", "tui"]
-live = ["cpal"]
+default = []
+live = ["dep:cpal"]
 wav = ["hound"]
 tui = ["wav", "ratatui", "dep:flume", "dep:tui-input", "dep:lilt", "dep:toml"]
 tui-audio = ["tui", "live"]
@@ -57,7 +57,6 @@ path = "src/bin/generate_wavetables.rs"
 [[bin]]
 name = "bwsh"
 path = "src/bin/bwsh.rs"
-required-features = ["tui"]
 
 # [[bench]]
 # name = "sequence_bench"

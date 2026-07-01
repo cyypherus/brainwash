@@ -1,23 +1,22 @@
-use brainwash::*;
+use brainwash::delay::Delay;
+use brainwash::sample::{Sample, Unit};
+use brainwash::time::{Duration, SampleRate, Samples};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
-fn bench_ramp_basic_usage(c: &mut Criterion) {
-    c.bench_function("ramp_basic_usage", |b| {
-        let mut signal = Signal::new(44100);
-        let mut target = 0.0;
+fn bench_delay(c: &mut Criterion) {
+    c.bench_function("delay", |b| {
+        let rate = SampleRate::new(44_100).unwrap();
+        let mut delay = Delay::new(
+            rate,
+            Duration::Samples(Samples::new(128)),
+            Unit::new(0.25).unwrap(),
+        )
+        .unwrap();
         b.iter(|| {
-            target += 0.1;
-            if target > 10.0 {
-                target = 0.0;
-            }
-            let mut ramp = Ramp::default();
-            let ramper = ramp.time(black_box(0.5)).value(black_box(target));
-            let output = ramper.output(&mut signal);
-            signal.advance();
-            black_box(output);
+            black_box(delay.process(Sample::new(0.5).unwrap()));
         });
     });
 }
 
-criterion_group!(benches, bench_ramp_basic_usage);
+criterion_group!(benches, bench_delay);
 criterion_main!(benches);

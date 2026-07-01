@@ -1,22 +1,20 @@
-use brainwash::*;
+use brainwash::env::Gate;
+use brainwash::sample::Unit;
+use brainwash::voice::{Note, NoteEvent, Track};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
-fn bench_sequence_basic_usage(c: &mut Criterion) {
-    c.bench_function("sequence_basic_usage", |b| {
-        let mut seq = Sequence::default();
-        seq.elements([tri([60, 64, 67]), note(62), tri([60, 64, 67]), rest()]);
-        let mut position = 0.0;
-
+fn bench_track(c: &mut Criterion) {
+    c.bench_function("track", |b| {
+        let track = Track::new(vec![NoteEvent::new(
+            Note::new(60).unwrap(),
+            Gate::High,
+            Unit::ONE,
+        )]);
         b.iter(|| {
-            position += 0.1;
-            if position > 1.0 {
-                position = 0.0;
-            }
-            let keys = seq.output(black_box(position));
-            black_box(keys);
+            black_box(track.events());
         });
     });
 }
 
-criterion_group!(benches, bench_sequence_basic_usage);
+criterion_group!(benches, bench_track);
 criterion_main!(benches);

@@ -1,25 +1,24 @@
-use brainwash::*;
+use brainwash::env::{Adsr, AdsrShape, Gate};
+use brainwash::sample::Unit;
+use brainwash::time::{Duration, SampleRate, Seconds};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
-fn bench_adsr_basic_usage(c: &mut Criterion) {
-    c.bench_function("adsr_basic_usage", |b| {
-        let mut signal = Signal::new(44100);
-        let mut trigger = false;
+fn bench_adsr(c: &mut Criterion) {
+    c.bench_function("adsr", |b| {
+        let rate = SampleRate::new(44_100).unwrap();
+        let shape = AdsrShape::new(
+            Duration::Seconds(Seconds::new(0.01).unwrap()),
+            Duration::Seconds(Seconds::new(0.05).unwrap()),
+            Unit::new(0.7).unwrap(),
+            Duration::Seconds(Seconds::new(0.1).unwrap()),
+        );
+        let mut adsr = Adsr::new(shape, rate);
         b.iter(|| {
-            trigger = !trigger;
-            let mut adsr = ADSR::default();
-            let envelope = adsr
-                .att(black_box(0.1))
-                .dec(black_box(0.2))
-                .sus(black_box(0.7))
-                .rel(black_box(0.3))
-                .trigger(black_box(trigger));
-            let output = envelope.output(&mut signal);
-            signal.advance();
-            black_box(output);
+            adsr.set_gate(Gate::High);
+            black_box(adsr.next());
         });
     });
 }
 
-criterion_group!(benches, bench_adsr_basic_usage);
+criterion_group!(benches, bench_adsr);
 criterion_main!(benches);

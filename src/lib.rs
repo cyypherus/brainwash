@@ -1,54 +1,20 @@
-#![allow(clippy::type_complexity)]
-#![allow(clippy::too_many_arguments)]
-#![allow(clippy::enum_variant_names)]
-#![allow(clippy::large_enum_variant)]
-
 #[global_allocator]
 static A: rlsf::GlobalTlsf = rlsf::GlobalTlsf::new();
 
-mod allpass;
-mod clock;
-mod comb;
-mod compressor;
-mod delay;
-mod distortion;
-mod envelopes;
-mod filters;
-mod flanger;
-mod gate_ramp;
-mod keyboard;
-#[cfg(feature = "live")]
-mod live;
-mod oscillators;
-mod ramp;
-mod reverb;
-mod scale;
-mod signal;
-mod track;
+pub mod compile;
+pub mod delay;
+pub mod effect;
+pub mod env;
+pub mod filter;
+pub mod live;
+pub mod osc;
+pub mod patch;
+pub mod persist;
+pub mod project;
+pub mod sample;
+pub mod scale;
+pub mod time;
+pub mod track;
+pub mod voice;
 
-mod utils;
-#[cfg(feature = "wav")]
-mod wav;
-
-pub use clock::*;
-pub use compressor::*;
-pub use delay::*;
-pub use distortion::*;
-pub use envelopes::*;
-pub use filters::*;
-pub use flanger::*;
-pub use gate_ramp::*;
-pub use keyboard::*;
-#[cfg(feature = "live")]
-pub use live::*;
-pub use oscillators::*;
-pub use ramp::*;
-pub use reverb::*;
-pub use scale::*;
-pub use signal::*;
-pub use track::*;
-#[cfg(feature = "tui")]
-pub mod tui;
-pub use utils::*;
-#[cfg(feature = "wav")]
-pub use wav::*;
+pub use scale::Scale;
