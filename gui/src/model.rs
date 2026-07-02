@@ -1,18 +1,18 @@
 use crate::audio::{AudioHandle, MeterRoute, ProbeRoute, VoiceMode};
 use brainwash::compile::{CompileError, CompiledPatch};
 use brainwash::patch::{
-    BinaryOp, ConnectError, Distortion as AudioDistortion, Drive, EnvPoint as AudioEnvPoint,
-    Module as AudioModule, ModuleId as AudioModuleId, Patch, Wave,
+    BinaryOp, CompressorRatio, ConnectError, Distortion as AudioDistortion, Drive,
+    EnvPoint as AudioEnvPoint, Gain, Module as AudioModule, ModuleId as AudioModuleId, Patch, Wave,
 };
 use brainwash::project::{
-    self, DistType as ProjectDistType, ModuleDef as ProjectModuleDef,
+    self, DistType as ProjectDistType, ModuleDef as ProjectModuleDef, ModuleId as ProjectModuleId,
     ModuleKind as ProjectModuleKind, ModuleParams as ProjectModuleParams,
     Orientation as ProjectOrientation, Project, RoutingModule as ProjectRoutingModule,
     StandardModule as ProjectStandardModule, SubpatchDef as ProjectSubpatchDef,
-    SubpatchModule as ProjectSubpatchModule, TimeUnit as ProjectTimeUnit,
-    TimeValue as ProjectTimeValue, WaveType as ProjectWaveType,
+    SubpatchId as ProjectSubpatchId, SubpatchModule as ProjectSubpatchModule,
+    TimeUnit as ProjectTimeUnit, TimeValue as ProjectTimeValue, WaveType as ProjectWaveType,
 };
-use brainwash::sample::Unit;
+use brainwash::sample::{Sample as AudioSample, Unit};
 use brainwash::scale::{
     amaj, amin, asharpmaj, asharpmin, bmaj, bmin, chromatic, cmaj, cmin, csharpmaj, csharpmin,
     dmaj, dmin, dsharpmaj, dsharpmin, emaj, emin, fmaj, fmin, fsharpmaj, fsharpmin, gmaj, gmin,
@@ -22,6 +22,7 @@ use brainwash::time::{Duration, Hertz, SampleRate, Samples, Seconds};
 use brainwash::{Scale, track::Track};
 use haven::{ButtonState, TextState};
 use std::collections::HashMap;
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -64,9 +65,8 @@ pub struct ModuleId(u32);
 pub struct Connection {
     from: ModuleId,
     to: ModuleId,
-    from_cell: GridPos,
-    to_cell: GridPos,
-    orientation: Orientation,
+    output: usize,
+    input: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -278,12 +278,185 @@ pub enum ModuleCategory {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Module {
     id: ModuleId,
-    kind: ModuleKind,
     position: GridPos,
     orientation: Orientation,
-    parameters: Vec<ModuleParameter>,
-    env_points: Vec<EnvPoint>,
+    body: ModuleBody,
     disabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ModuleBody {
+    Freq,
+    Gate,
+    Degree,
+    DegreeGate {
+        degree: IntParam,
+    },
+    Osc {
+        wave: EnumParam,
+        frequency: TimeParam,
+        shift: FloatParam,
+        gain: FloatParam,
+        unipolar: bool,
+    },
+    Rise {
+        gate: InputParam,
+        time: TimeParam,
+    },
+    Fall {
+        gate: InputParam,
+        time: TimeParam,
+    },
+    Ramp {
+        value: FloatParam,
+        time: TimeParam,
+    },
+    Adsr {
+        rise: InputParam,
+        fall: InputParam,
+        attack: FloatParam,
+        sustain: FloatParam,
+    },
+    Envelope {
+        phase: FloatParam,
+        points: Vec<EnvPoint>,
+    },
+    Lowpass {
+        input: FloatParam,
+        frequency: FloatParam,
+        q: FloatParam,
+    },
+    Highpass {
+        input: FloatParam,
+        frequency: FloatParam,
+        q: FloatParam,
+    },
+    Comb {
+        input: FloatParam,
+        time: TimeParam,
+        feedback: FloatParam,
+        damp: FloatParam,
+    },
+    Allpass {
+        input: FloatParam,
+        time: TimeParam,
+        feedback: FloatParam,
+    },
+    Delay {
+        input: FloatParam,
+        time: TimeParam,
+    },
+    DelayTap {
+        source: EnumParam,
+        gain: FloatParam,
+    },
+    Reverb {
+        input: FloatParam,
+        room: FloatParam,
+        damp: FloatParam,
+        mod_depth: FloatParam,
+        diffusion: FloatParam,
+    },
+    Distortion {
+        input: FloatParam,
+        kind: EnumParam,
+        drive: FloatParam,
+        asymmetry: FloatParam,
+    },
+    Compressor {
+        input: FloatParam,
+        threshold: FloatParam,
+        ratio: FloatParam,
+        attack: FloatParam,
+        release: FloatParam,
+        makeup: FloatParam,
+    },
+    Flanger {
+        input: FloatParam,
+        rate: FloatParam,
+        depth: FloatParam,
+        feedback: FloatParam,
+    },
+    Multiply {
+        a: FloatParam,
+        b: FloatParam,
+    },
+    Add {
+        a: FloatParam,
+        b: FloatParam,
+    },
+    GreaterThan {
+        a: FloatParam,
+        b: FloatParam,
+    },
+    LessThan {
+        a: FloatParam,
+        b: FloatParam,
+    },
+    Switch {
+        select: InputParam,
+        a: FloatParam,
+        b: FloatParam,
+    },
+    Random {
+        gate: InputParam,
+    },
+    Sample {
+        file: EnumParam,
+        position: InputParam,
+    },
+    Probe {
+        input: FloatParam,
+    },
+    Output {
+        input: InputParam,
+        gain: FloatParam,
+    },
+    SubpatchOutput {
+        input: InputParam,
+    },
+    TurnRightDown,
+    TurnDownRight,
+    LeftSplit,
+    TopSplit,
+    RightJoin,
+    DownJoin,
+    SubpatchInput,
+    Subpatch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FloatParam {
+    value: i32,
+    min: i32,
+    max: i32,
+    step: i32,
+    connected: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct IntParam {
+    value: i32,
+    min: i32,
+    max: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TimeParam {
+    value: i32,
+    unit: TimeUnit,
+    connected: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct InputParam {
+    connected: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EnumParam {
+    index: usize,
+    options: &'static [&'static str],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -322,6 +495,25 @@ pub enum ParameterValue {
         options: &'static [&'static str],
     },
     Toggle(bool),
+}
+
+pub(crate) struct GridRenderModule<'a> {
+    pub module: &'a Module,
+    pub width: u16,
+    pub height: u16,
+    pub input_count: u16,
+    pub output_count: u16,
+    pub input_connected: Vec<bool>,
+    pub has_input_top: bool,
+    pub has_input_left: bool,
+    pub has_output_bottom: bool,
+    pub has_output_right: bool,
+    pub left_input_offsets: Vec<Option<u16>>,
+    pub top_input_offsets: Vec<Option<u16>>,
+    pub right_output_offsets: Vec<Option<u16>>,
+    pub bottom_output_offsets: Vec<Option<u16>>,
+    pub probe_value: Option<f32>,
+    pub meter_values: Vec<f32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -369,57 +561,57 @@ const SCALE_NAMES: &[&str] = &[
 
 const NUM_VOICES: usize = 6;
 
-fn float_parameter(
-    name: &'static str,
-    min: i32,
-    max: i32,
-    step: i32,
-    value: i32,
-) -> ModuleParameter {
+fn float_parameter(name: &'static str, param: FloatParam) -> ModuleParameter {
     ModuleParameter {
         name,
         value: ParameterValue::Float {
-            value,
-            min,
-            max,
-            step,
+            value: param.value,
+            min: param.min,
+            max: param.max,
+            step: param.step,
         },
-        connected: true,
+        connected: param.connected,
     }
 }
 
-fn int_parameter(name: &'static str, min: i32, max: i32, value: i32) -> ModuleParameter {
+fn int_parameter(name: &'static str, param: IntParam) -> ModuleParameter {
     ModuleParameter {
         name,
-        value: ParameterValue::Int { value, min, max },
+        value: ParameterValue::Int {
+            value: param.value,
+            min: param.min,
+            max: param.max,
+        },
         connected: false,
     }
 }
 
-fn time_parameter(name: &'static str, value: i32, unit: TimeUnit) -> ModuleParameter {
+fn time_parameter(name: &'static str, param: TimeParam) -> ModuleParameter {
     ModuleParameter {
         name,
-        value: ParameterValue::Time { value, unit },
-        connected: true,
+        value: ParameterValue::Time {
+            value: param.value,
+            unit: param.unit,
+        },
+        connected: param.connected,
     }
 }
 
-fn input_parameter(name: &'static str) -> ModuleParameter {
+fn input_parameter(name: &'static str, param: InputParam) -> ModuleParameter {
     ModuleParameter {
         name,
         value: ParameterValue::Input,
-        connected: true,
+        connected: param.connected,
     }
 }
 
-fn enum_parameter(
-    name: &'static str,
-    options: &'static [&'static str],
-    index: usize,
-) -> ModuleParameter {
+fn enum_parameter(name: &'static str, param: EnumParam) -> ModuleParameter {
     ModuleParameter {
         name,
-        value: ParameterValue::Enum { index, options },
+        value: ParameterValue::Enum {
+            index: param.index,
+            options: param.options,
+        },
         connected: false,
     }
 }
@@ -430,6 +622,36 @@ fn toggle_parameter(name: &'static str, value: bool) -> ModuleParameter {
         value: ParameterValue::Toggle(value),
         connected: false,
     }
+}
+
+fn float_param(min: i32, max: i32, step: i32, value: i32) -> FloatParam {
+    FloatParam {
+        value,
+        min,
+        max,
+        step,
+        connected: true,
+    }
+}
+
+fn int_param(min: i32, max: i32, value: i32) -> IntParam {
+    IntParam { value, min, max }
+}
+
+fn time_param(value: i32, unit: TimeUnit) -> TimeParam {
+    TimeParam {
+        value,
+        unit,
+        connected: true,
+    }
+}
+
+fn input_param() -> InputParam {
+    InputParam { connected: true }
+}
+
+fn enum_param(options: &'static [&'static str], index: usize) -> EnumParam {
+    EnumParam { index, options }
 }
 
 #[derive(Debug)]
@@ -580,16 +802,12 @@ impl Connection {
         self.to
     }
 
-    pub(crate) fn from_cell(self) -> GridPos {
-        self.from_cell
+    pub(crate) fn output(self) -> usize {
+        self.output
     }
 
-    pub(crate) fn to_cell(self) -> GridPos {
-        self.to_cell
-    }
-
-    pub(crate) fn orientation(self) -> Orientation {
-        self.orientation
+    pub(crate) fn input(self) -> usize {
+        self.input
     }
 }
 
@@ -683,140 +901,156 @@ impl ModuleKind {
         self.special_editor().is_some()
     }
 
-    fn default_parameters(self) -> Vec<ModuleParameter> {
+    fn default_body(self) -> ModuleBody {
         match self {
-            ModuleKind::Freq | ModuleKind::Gate | ModuleKind::Degree => Vec::new(),
-            ModuleKind::DegreeGate => vec![int_parameter("Deg", 0, 12, 0)],
-            ModuleKind::Osc => vec![
-                enum_parameter("Wave", &["sin", "square", "tri", "saw", "rsaw", "noise"], 0),
-                time_parameter("Freq", 440, TimeUnit::Hertz),
-                float_parameter("Shift", -2400, 2400, 100, 0),
-                float_parameter("Gain", 0, 100, 5, 100),
-                toggle_parameter("Uni", false),
-            ],
-            ModuleKind::Rise | ModuleKind::Fall => {
-                vec![
-                    input_parameter("Gate"),
-                    time_parameter("Time", 10, TimeUnit::Seconds),
-                ]
-            }
-            ModuleKind::Ramp => vec![
-                float_parameter("Val", -100_000, 100_000, 10, 0),
-                time_parameter("Time", 10, TimeUnit::Seconds),
-            ],
-            ModuleKind::Adsr => vec![
-                input_parameter("Rise"),
-                input_parameter("Fall"),
-                float_parameter("Atk", 0, 100, 5, 25),
-                float_parameter("Sus", 0, 100, 5, 70),
-            ],
-            ModuleKind::Envelope => vec![float_parameter("Phase", 0, 100, 1, 0)],
-            ModuleKind::Lowpass => vec![
-                float_parameter("In", -100, 100, 1, 0),
-                float_parameter("Freq", 0, 99, 1, 25),
-                float_parameter("Q", 10, 1000, 10, 70),
-            ],
-            ModuleKind::Highpass => vec![
-                float_parameter("In", -100, 100, 1, 0),
-                float_parameter("Freq", 0, 100, 1, 25),
-                float_parameter("Q", 10, 1000, 10, 70),
-            ],
-            ModuleKind::Comb => vec![
-                float_parameter("In", -100, 100, 1, 0),
-                time_parameter("Time", 441, TimeUnit::Samples),
-                float_parameter("Fdbk", 0, 99, 1, 30),
-                float_parameter("Damp", 0, 100, 1, 20),
-            ],
-            ModuleKind::Allpass => vec![
-                float_parameter("In", -100, 100, 1, 0),
-                time_parameter("Time", 441, TimeUnit::Samples),
-                float_parameter("Fdbk", 0, 99, 1, 50),
-            ],
-            ModuleKind::Delay => vec![
-                float_parameter("In", -100, 100, 1, 0),
-                time_parameter("Time", 4410, TimeUnit::Samples),
-            ],
-            ModuleKind::DelayTap => vec![
-                enum_parameter("Src", &["delay 1"], 0),
-                float_parameter("Gain", 0, 70, 5, 50),
-            ],
-            ModuleKind::Reverb => vec![
-                float_parameter("In", -100, 100, 1, 0),
-                float_parameter("Room", 0, 100, 5, 50),
-                float_parameter("Damp", 0, 100, 5, 30),
-                float_parameter("Mod", 0, 100, 5, 20),
-                float_parameter("Diff", 0, 100, 5, 50),
-            ],
-            ModuleKind::Distortion => vec![
-                float_parameter("In", -100, 100, 1, 0),
-                enum_parameter("Type", &["tube", "tape", "fuzz", "fold", "clip"], 0),
-                float_parameter("Drive", 10, 2000, 10, 200),
-                float_parameter("Asym", -100, 100, 5, 0),
-            ],
-            ModuleKind::Compressor => vec![
-                float_parameter("In", -100, 100, 1, 0),
-                float_parameter("Thresh", 1, 100, 1, 50),
-                float_parameter("Ratio", 100, 2000, 50, 400),
-                float_parameter("Atk", 0, 50, 1, 1),
-                float_parameter("Rel", 1, 200, 1, 30),
-                float_parameter("Gain", 0, 400, 10, 100),
-            ],
-            ModuleKind::Flanger => vec![
-                float_parameter("In", -100, 100, 1, 0),
-                float_parameter("Rate", 10, 1000, 10, 50),
-                float_parameter("Depth", 0, 100, 5, 50),
-                float_parameter("Fdbk", 0, 95, 5, 35),
-            ],
-            ModuleKind::Multiply => vec![
-                float_parameter("A", 0, 10_000, 5, 100),
-                float_parameter("B", 0, 10_000, 5, 100),
-            ],
-            ModuleKind::Add | ModuleKind::GreaterThan | ModuleKind::LessThan => vec![
-                float_parameter("A", -100_000, 100_000, 5, 0),
-                float_parameter("B", -100_000, 100_000, 5, 0),
-            ],
-            ModuleKind::Switch => vec![
-                input_parameter("Sel"),
-                float_parameter("A", -100_000, 100_000, 10, 0),
-                float_parameter("B", -100_000, 100_000, 10, 100),
-            ],
-            ModuleKind::Random => vec![input_parameter("Gate")],
-            ModuleKind::Sample => {
-                vec![enum_parameter("File", &["none"], 0), input_parameter("Pos")]
-            }
-            ModuleKind::Probe => vec![float_parameter("In", -100, 100, 1, 0)],
-            ModuleKind::Output => vec![
-                input_parameter("In"),
-                float_parameter("Gain", 0, 100, 1, 100),
-            ],
-            ModuleKind::SubpatchOutput => vec![input_parameter("In")],
-            ModuleKind::TurnRightDown
-            | ModuleKind::TurnDownRight
-            | ModuleKind::LeftSplit
-            | ModuleKind::TopSplit
-            | ModuleKind::RightJoin
-            | ModuleKind::DownJoin
-            | ModuleKind::SubpatchInput
-            | ModuleKind::Subpatch => Vec::new(),
-        }
-    }
-
-    fn default_env_points(self) -> Vec<EnvPoint> {
-        if self == ModuleKind::Envelope {
-            vec![
-                EnvPoint {
-                    time: 0,
-                    value: 0,
-                    curve: false,
-                },
-                EnvPoint {
-                    time: 100,
-                    value: 100,
-                    curve: false,
-                },
-            ]
-        } else {
-            Vec::new()
+            ModuleKind::Freq => ModuleBody::Freq,
+            ModuleKind::Gate => ModuleBody::Gate,
+            ModuleKind::Degree => ModuleBody::Degree,
+            ModuleKind::DegreeGate => ModuleBody::DegreeGate {
+                degree: int_param(0, 12, 0),
+            },
+            ModuleKind::Osc => ModuleBody::Osc {
+                wave: enum_param(&["sin", "square", "tri", "saw", "rsaw", "noise"], 0),
+                frequency: time_param(440, TimeUnit::Hertz),
+                shift: float_param(-2400, 2400, 100, 0),
+                gain: float_param(0, 100, 5, 100),
+                unipolar: false,
+            },
+            ModuleKind::Rise => ModuleBody::Rise {
+                gate: input_param(),
+                time: time_param(10, TimeUnit::Seconds),
+            },
+            ModuleKind::Fall => ModuleBody::Fall {
+                gate: input_param(),
+                time: time_param(10, TimeUnit::Seconds),
+            },
+            ModuleKind::Ramp => ModuleBody::Ramp {
+                value: float_param(-100_000, 100_000, 10, 0),
+                time: time_param(10, TimeUnit::Seconds),
+            },
+            ModuleKind::Adsr => ModuleBody::Adsr {
+                rise: input_param(),
+                fall: input_param(),
+                attack: float_param(0, 100, 5, 25),
+                sustain: float_param(0, 100, 5, 70),
+            },
+            ModuleKind::Envelope => ModuleBody::Envelope {
+                phase: float_param(0, 100, 1, 0),
+                points: vec![
+                    EnvPoint {
+                        time: 0,
+                        value: 0,
+                        curve: false,
+                    },
+                    EnvPoint {
+                        time: 100,
+                        value: 100,
+                        curve: false,
+                    },
+                ],
+            },
+            ModuleKind::Lowpass => ModuleBody::Lowpass {
+                input: float_param(-100, 100, 1, 0),
+                frequency: float_param(0, 99, 1, 25),
+                q: float_param(10, 1000, 10, 70),
+            },
+            ModuleKind::Highpass => ModuleBody::Highpass {
+                input: float_param(-100, 100, 1, 0),
+                frequency: float_param(0, 100, 1, 25),
+                q: float_param(10, 1000, 10, 70),
+            },
+            ModuleKind::Comb => ModuleBody::Comb {
+                input: float_param(-100, 100, 1, 0),
+                time: time_param(441, TimeUnit::Samples),
+                feedback: float_param(0, 99, 1, 30),
+                damp: float_param(0, 100, 1, 20),
+            },
+            ModuleKind::Allpass => ModuleBody::Allpass {
+                input: float_param(-100, 100, 1, 0),
+                time: time_param(441, TimeUnit::Samples),
+                feedback: float_param(0, 99, 1, 50),
+            },
+            ModuleKind::Delay => ModuleBody::Delay {
+                input: float_param(-100, 100, 1, 0),
+                time: time_param(4410, TimeUnit::Samples),
+            },
+            ModuleKind::DelayTap => ModuleBody::DelayTap {
+                source: enum_param(&["delay 1"], 0),
+                gain: float_param(0, 70, 5, 50),
+            },
+            ModuleKind::Reverb => ModuleBody::Reverb {
+                input: float_param(-100, 100, 1, 0),
+                room: float_param(0, 100, 5, 50),
+                damp: float_param(0, 100, 5, 30),
+                mod_depth: float_param(0, 100, 5, 20),
+                diffusion: float_param(0, 100, 5, 50),
+            },
+            ModuleKind::Distortion => ModuleBody::Distortion {
+                input: float_param(-100, 100, 1, 0),
+                kind: enum_param(&["tube", "tape", "fuzz", "fold", "clip"], 0),
+                drive: float_param(10, 2000, 10, 200),
+                asymmetry: float_param(-100, 100, 5, 0),
+            },
+            ModuleKind::Compressor => ModuleBody::Compressor {
+                input: float_param(-100, 100, 1, 0),
+                threshold: float_param(1, 100, 1, 50),
+                ratio: float_param(100, 2000, 50, 400),
+                attack: float_param(0, 50, 1, 1),
+                release: float_param(1, 200, 1, 30),
+                makeup: float_param(0, 400, 10, 100),
+            },
+            ModuleKind::Flanger => ModuleBody::Flanger {
+                input: float_param(-100, 100, 1, 0),
+                rate: float_param(10, 1000, 10, 50),
+                depth: float_param(0, 100, 5, 50),
+                feedback: float_param(0, 95, 5, 35),
+            },
+            ModuleKind::Multiply => ModuleBody::Multiply {
+                a: float_param(0, 10_000, 5, 100),
+                b: float_param(0, 10_000, 5, 100),
+            },
+            ModuleKind::Add => ModuleBody::Add {
+                a: float_param(-100_000, 100_000, 5, 0),
+                b: float_param(-100_000, 100_000, 5, 0),
+            },
+            ModuleKind::GreaterThan => ModuleBody::GreaterThan {
+                a: float_param(-100_000, 100_000, 5, 0),
+                b: float_param(-100_000, 100_000, 5, 0),
+            },
+            ModuleKind::LessThan => ModuleBody::LessThan {
+                a: float_param(-100_000, 100_000, 5, 0),
+                b: float_param(-100_000, 100_000, 5, 0),
+            },
+            ModuleKind::Switch => ModuleBody::Switch {
+                select: input_param(),
+                a: float_param(-100_000, 100_000, 10, 0),
+                b: float_param(-100_000, 100_000, 10, 100),
+            },
+            ModuleKind::Random => ModuleBody::Random {
+                gate: input_param(),
+            },
+            ModuleKind::Sample => ModuleBody::Sample {
+                file: enum_param(&["none"], 0),
+                position: input_param(),
+            },
+            ModuleKind::Probe => ModuleBody::Probe {
+                input: float_param(-100, 100, 1, 0),
+            },
+            ModuleKind::Output => ModuleBody::Output {
+                input: input_param(),
+                gain: float_param(0, 100, 1, 100),
+            },
+            ModuleKind::SubpatchOutput => ModuleBody::SubpatchOutput {
+                input: input_param(),
+            },
+            ModuleKind::TurnRightDown => ModuleBody::TurnRightDown,
+            ModuleKind::TurnDownRight => ModuleBody::TurnDownRight,
+            ModuleKind::LeftSplit => ModuleBody::LeftSplit,
+            ModuleKind::TopSplit => ModuleBody::TopSplit,
+            ModuleKind::RightJoin => ModuleBody::RightJoin,
+            ModuleKind::DownJoin => ModuleBody::DownJoin,
+            ModuleKind::SubpatchInput => ModuleBody::SubpatchInput,
+            ModuleKind::Subpatch => ModuleBody::Subpatch,
         }
     }
 
@@ -872,6 +1106,540 @@ enum SpecialEditor {
     Sample,
 }
 
+impl ModuleBody {
+    fn kind(&self) -> ModuleKind {
+        match self {
+            ModuleBody::Freq => ModuleKind::Freq,
+            ModuleBody::Gate => ModuleKind::Gate,
+            ModuleBody::Degree => ModuleKind::Degree,
+            ModuleBody::DegreeGate { .. } => ModuleKind::DegreeGate,
+            ModuleBody::Osc { .. } => ModuleKind::Osc,
+            ModuleBody::Rise { .. } => ModuleKind::Rise,
+            ModuleBody::Fall { .. } => ModuleKind::Fall,
+            ModuleBody::Ramp { .. } => ModuleKind::Ramp,
+            ModuleBody::Adsr { .. } => ModuleKind::Adsr,
+            ModuleBody::Envelope { .. } => ModuleKind::Envelope,
+            ModuleBody::Lowpass { .. } => ModuleKind::Lowpass,
+            ModuleBody::Highpass { .. } => ModuleKind::Highpass,
+            ModuleBody::Comb { .. } => ModuleKind::Comb,
+            ModuleBody::Allpass { .. } => ModuleKind::Allpass,
+            ModuleBody::Delay { .. } => ModuleKind::Delay,
+            ModuleBody::DelayTap { .. } => ModuleKind::DelayTap,
+            ModuleBody::Reverb { .. } => ModuleKind::Reverb,
+            ModuleBody::Distortion { .. } => ModuleKind::Distortion,
+            ModuleBody::Compressor { .. } => ModuleKind::Compressor,
+            ModuleBody::Flanger { .. } => ModuleKind::Flanger,
+            ModuleBody::Multiply { .. } => ModuleKind::Multiply,
+            ModuleBody::Add { .. } => ModuleKind::Add,
+            ModuleBody::GreaterThan { .. } => ModuleKind::GreaterThan,
+            ModuleBody::LessThan { .. } => ModuleKind::LessThan,
+            ModuleBody::Switch { .. } => ModuleKind::Switch,
+            ModuleBody::Random { .. } => ModuleKind::Random,
+            ModuleBody::Sample { .. } => ModuleKind::Sample,
+            ModuleBody::Probe { .. } => ModuleKind::Probe,
+            ModuleBody::Output { .. } => ModuleKind::Output,
+            ModuleBody::SubpatchOutput { .. } => ModuleKind::SubpatchOutput,
+            ModuleBody::TurnRightDown => ModuleKind::TurnRightDown,
+            ModuleBody::TurnDownRight => ModuleKind::TurnDownRight,
+            ModuleBody::LeftSplit => ModuleKind::LeftSplit,
+            ModuleBody::TopSplit => ModuleKind::TopSplit,
+            ModuleBody::RightJoin => ModuleKind::RightJoin,
+            ModuleBody::DownJoin => ModuleKind::DownJoin,
+            ModuleBody::SubpatchInput => ModuleKind::SubpatchInput,
+            ModuleBody::Subpatch => ModuleKind::Subpatch,
+        }
+    }
+
+    fn parameters(&self) -> Vec<ModuleParameter> {
+        match self {
+            ModuleBody::Freq | ModuleBody::Gate | ModuleBody::Degree => Vec::new(),
+            ModuleBody::DegreeGate { degree } => vec![int_parameter("Deg", *degree)],
+            ModuleBody::Osc {
+                wave,
+                frequency,
+                shift,
+                gain,
+                unipolar,
+            } => vec![
+                enum_parameter("Wave", *wave),
+                time_parameter("Freq", *frequency),
+                float_parameter("Shift", *shift),
+                float_parameter("Gain", *gain),
+                toggle_parameter("Uni", *unipolar),
+            ],
+            ModuleBody::Rise { gate, time } | ModuleBody::Fall { gate, time } => {
+                vec![
+                    input_parameter("Gate", *gate),
+                    time_parameter("Time", *time),
+                ]
+            }
+            ModuleBody::Ramp { value, time } => {
+                vec![
+                    float_parameter("Val", *value),
+                    time_parameter("Time", *time),
+                ]
+            }
+            ModuleBody::Adsr {
+                rise,
+                fall,
+                attack,
+                sustain,
+            } => vec![
+                input_parameter("Rise", *rise),
+                input_parameter("Fall", *fall),
+                float_parameter("Atk", *attack),
+                float_parameter("Sus", *sustain),
+            ],
+            ModuleBody::Envelope { phase, .. } => vec![float_parameter("Phase", *phase)],
+            ModuleBody::Lowpass {
+                input,
+                frequency,
+                q,
+            }
+            | ModuleBody::Highpass {
+                input,
+                frequency,
+                q,
+            } => vec![
+                float_parameter("In", *input),
+                float_parameter("Freq", *frequency),
+                float_parameter("Q", *q),
+            ],
+            ModuleBody::Comb {
+                input,
+                time,
+                feedback,
+                damp,
+            } => vec![
+                float_parameter("In", *input),
+                time_parameter("Time", *time),
+                float_parameter("Fdbk", *feedback),
+                float_parameter("Damp", *damp),
+            ],
+            ModuleBody::Allpass {
+                input,
+                time,
+                feedback,
+            } => vec![
+                float_parameter("In", *input),
+                time_parameter("Time", *time),
+                float_parameter("Fdbk", *feedback),
+            ],
+            ModuleBody::Delay { input, time } => {
+                vec![float_parameter("In", *input), time_parameter("Time", *time)]
+            }
+            ModuleBody::DelayTap { source, gain } => {
+                vec![
+                    enum_parameter("Src", *source),
+                    float_parameter("Gain", *gain),
+                ]
+            }
+            ModuleBody::Reverb {
+                input,
+                room,
+                damp,
+                mod_depth,
+                diffusion,
+            } => vec![
+                float_parameter("In", *input),
+                float_parameter("Room", *room),
+                float_parameter("Damp", *damp),
+                float_parameter("Mod", *mod_depth),
+                float_parameter("Diff", *diffusion),
+            ],
+            ModuleBody::Distortion {
+                input,
+                kind,
+                drive,
+                asymmetry,
+            } => vec![
+                float_parameter("In", *input),
+                enum_parameter("Type", *kind),
+                float_parameter("Drive", *drive),
+                float_parameter("Asym", *asymmetry),
+            ],
+            ModuleBody::Compressor {
+                input,
+                threshold,
+                ratio,
+                attack,
+                release,
+                makeup,
+            } => vec![
+                float_parameter("In", *input),
+                float_parameter("Thresh", *threshold),
+                float_parameter("Ratio", *ratio),
+                float_parameter("Atk", *attack),
+                float_parameter("Rel", *release),
+                float_parameter("Gain", *makeup),
+            ],
+            ModuleBody::Flanger {
+                input,
+                rate,
+                depth,
+                feedback,
+            } => vec![
+                float_parameter("In", *input),
+                float_parameter("Rate", *rate),
+                float_parameter("Depth", *depth),
+                float_parameter("Fdbk", *feedback),
+            ],
+            ModuleBody::Multiply { a, b } => {
+                vec![float_parameter("A", *a), float_parameter("B", *b)]
+            }
+            ModuleBody::Add { a, b }
+            | ModuleBody::GreaterThan { a, b }
+            | ModuleBody::LessThan { a, b } => {
+                vec![float_parameter("A", *a), float_parameter("B", *b)]
+            }
+            ModuleBody::Switch { select, a, b } => vec![
+                input_parameter("Sel", *select),
+                float_parameter("A", *a),
+                float_parameter("B", *b),
+            ],
+            ModuleBody::Random { gate } => vec![input_parameter("Gate", *gate)],
+            ModuleBody::Sample { file, position } => {
+                vec![
+                    enum_parameter("File", *file),
+                    input_parameter("Pos", *position),
+                ]
+            }
+            ModuleBody::Probe { input } => vec![float_parameter("In", *input)],
+            ModuleBody::Output { input, gain } => {
+                vec![
+                    input_parameter("In", *input),
+                    float_parameter("Gain", *gain),
+                ]
+            }
+            ModuleBody::SubpatchOutput { input } => vec![input_parameter("In", *input)],
+            ModuleBody::TurnRightDown
+            | ModuleBody::TurnDownRight
+            | ModuleBody::LeftSplit
+            | ModuleBody::TopSplit
+            | ModuleBody::RightJoin
+            | ModuleBody::DownJoin
+            | ModuleBody::SubpatchInput
+            | ModuleBody::Subpatch => Vec::new(),
+        }
+    }
+
+    fn parameter(&self, index: usize) -> Option<ModuleParameter> {
+        self.parameters().get(index).cloned()
+    }
+
+    fn parameter_count(&self) -> usize {
+        self.parameters().len()
+    }
+
+    fn input_count(&self) -> u16 {
+        self.parameters()
+            .into_iter()
+            .filter(|parameter| parameter.value.is_port())
+            .count() as u16
+    }
+
+    fn input_connected(&self, port: u16) -> bool {
+        self.parameters()
+            .into_iter()
+            .filter(|parameter| parameter.value.is_port())
+            .nth(port as usize)
+            .map(|parameter| parameter.connected)
+            .unwrap_or(true)
+    }
+
+    fn env_points(&self) -> &[EnvPoint] {
+        match self {
+            ModuleBody::Envelope { points, .. } => points,
+            _ => &[],
+        }
+    }
+
+    fn env_points_mut(&mut self) -> Option<&mut Vec<EnvPoint>> {
+        match self {
+            ModuleBody::Envelope { points, .. } => Some(points),
+            _ => None,
+        }
+    }
+
+    fn set_parameter(&mut self, index: usize, parameter: ModuleParameter) -> bool {
+        match self {
+            ModuleBody::DegreeGate { degree } => set_int_param(degree, index, 0, &parameter),
+            ModuleBody::Osc {
+                wave,
+                frequency,
+                shift,
+                gain,
+                unipolar,
+            } => {
+                set_enum_param(wave, index, 0, &parameter)
+                    || set_time_param(frequency, index, 1, &parameter)
+                    || set_float_param(shift, index, 2, &parameter)
+                    || set_float_param(gain, index, 3, &parameter)
+                    || set_toggle_param(unipolar, index, 4, &parameter)
+            }
+            ModuleBody::Rise { gate, time } | ModuleBody::Fall { gate, time } => {
+                set_input_param(gate, index, 0, &parameter)
+                    || set_time_param(time, index, 1, &parameter)
+            }
+            ModuleBody::Ramp { value, time } => {
+                set_float_param(value, index, 0, &parameter)
+                    || set_time_param(time, index, 1, &parameter)
+            }
+            ModuleBody::Adsr {
+                rise,
+                fall,
+                attack,
+                sustain,
+            } => {
+                set_input_param(rise, index, 0, &parameter)
+                    || set_input_param(fall, index, 1, &parameter)
+                    || set_float_param(attack, index, 2, &parameter)
+                    || set_float_param(sustain, index, 3, &parameter)
+            }
+            ModuleBody::Envelope { phase, .. } => set_float_param(phase, index, 0, &parameter),
+            ModuleBody::Lowpass {
+                input,
+                frequency,
+                q,
+            }
+            | ModuleBody::Highpass {
+                input,
+                frequency,
+                q,
+            } => {
+                set_float_param(input, index, 0, &parameter)
+                    || set_float_param(frequency, index, 1, &parameter)
+                    || set_float_param(q, index, 2, &parameter)
+            }
+            ModuleBody::Comb {
+                input,
+                time,
+                feedback,
+                damp,
+            } => {
+                set_float_param(input, index, 0, &parameter)
+                    || set_time_param(time, index, 1, &parameter)
+                    || set_float_param(feedback, index, 2, &parameter)
+                    || set_float_param(damp, index, 3, &parameter)
+            }
+            ModuleBody::Allpass {
+                input,
+                time,
+                feedback,
+            } => {
+                set_float_param(input, index, 0, &parameter)
+                    || set_time_param(time, index, 1, &parameter)
+                    || set_float_param(feedback, index, 2, &parameter)
+            }
+            ModuleBody::Delay { input, time } => {
+                set_float_param(input, index, 0, &parameter)
+                    || set_time_param(time, index, 1, &parameter)
+            }
+            ModuleBody::DelayTap { source, gain } => {
+                set_enum_param(source, index, 0, &parameter)
+                    || set_float_param(gain, index, 1, &parameter)
+            }
+            ModuleBody::Reverb {
+                input,
+                room,
+                damp,
+                mod_depth,
+                diffusion,
+            } => {
+                set_float_param(input, index, 0, &parameter)
+                    || set_float_param(room, index, 1, &parameter)
+                    || set_float_param(damp, index, 2, &parameter)
+                    || set_float_param(mod_depth, index, 3, &parameter)
+                    || set_float_param(diffusion, index, 4, &parameter)
+            }
+            ModuleBody::Distortion {
+                input,
+                kind,
+                drive,
+                asymmetry,
+            } => {
+                set_float_param(input, index, 0, &parameter)
+                    || set_enum_param(kind, index, 1, &parameter)
+                    || set_float_param(drive, index, 2, &parameter)
+                    || set_float_param(asymmetry, index, 3, &parameter)
+            }
+            ModuleBody::Compressor {
+                input,
+                threshold,
+                ratio,
+                attack,
+                release,
+                makeup,
+            } => {
+                set_float_param(input, index, 0, &parameter)
+                    || set_float_param(threshold, index, 1, &parameter)
+                    || set_float_param(ratio, index, 2, &parameter)
+                    || set_float_param(attack, index, 3, &parameter)
+                    || set_float_param(release, index, 4, &parameter)
+                    || set_float_param(makeup, index, 5, &parameter)
+            }
+            ModuleBody::Flanger {
+                input,
+                rate,
+                depth,
+                feedback,
+            } => {
+                set_float_param(input, index, 0, &parameter)
+                    || set_float_param(rate, index, 1, &parameter)
+                    || set_float_param(depth, index, 2, &parameter)
+                    || set_float_param(feedback, index, 3, &parameter)
+            }
+            ModuleBody::Multiply { a, b }
+            | ModuleBody::Add { a, b }
+            | ModuleBody::GreaterThan { a, b }
+            | ModuleBody::LessThan { a, b } => {
+                set_float_param(a, index, 0, &parameter) || set_float_param(b, index, 1, &parameter)
+            }
+            ModuleBody::Switch { select, a, b } => {
+                set_input_param(select, index, 0, &parameter)
+                    || set_float_param(a, index, 1, &parameter)
+                    || set_float_param(b, index, 2, &parameter)
+            }
+            ModuleBody::Random { gate } => set_input_param(gate, index, 0, &parameter),
+            ModuleBody::Sample { file, position } => {
+                set_enum_param(file, index, 0, &parameter)
+                    || set_input_param(position, index, 1, &parameter)
+            }
+            ModuleBody::Probe { input } => set_float_param(input, index, 0, &parameter),
+            ModuleBody::Output { input, gain } => {
+                set_input_param(input, index, 0, &parameter)
+                    || set_float_param(gain, index, 1, &parameter)
+            }
+            ModuleBody::SubpatchOutput { input } => set_input_param(input, index, 0, &parameter),
+            ModuleBody::Freq
+            | ModuleBody::Gate
+            | ModuleBody::Degree
+            | ModuleBody::TurnRightDown
+            | ModuleBody::TurnDownRight
+            | ModuleBody::LeftSplit
+            | ModuleBody::TopSplit
+            | ModuleBody::RightJoin
+            | ModuleBody::DownJoin
+            | ModuleBody::SubpatchInput
+            | ModuleBody::Subpatch => false,
+        }
+    }
+}
+
+fn set_float_param(
+    target: &mut FloatParam,
+    index: usize,
+    expected: usize,
+    parameter: &ModuleParameter,
+) -> bool {
+    if index != expected {
+        return false;
+    }
+    let ParameterValue::Float {
+        value,
+        min,
+        max,
+        step,
+    } = &parameter.value
+    else {
+        return false;
+    };
+    if *min != target.min || *max != target.max || *step != target.step {
+        return false;
+    }
+    *target = FloatParam {
+        value: (*value).clamp(target.min, target.max),
+        min: target.min,
+        max: target.max,
+        step: target.step,
+        connected: parameter.connected,
+    };
+    true
+}
+
+fn set_int_param(
+    target: &mut IntParam,
+    index: usize,
+    expected: usize,
+    parameter: &ModuleParameter,
+) -> bool {
+    if index != expected {
+        return false;
+    }
+    let ParameterValue::Int { value, .. } = &parameter.value else {
+        return false;
+    };
+    target.value = (*value).clamp(target.min, target.max);
+    true
+}
+
+fn set_time_param(
+    target: &mut TimeParam,
+    index: usize,
+    expected: usize,
+    parameter: &ModuleParameter,
+) -> bool {
+    if index != expected {
+        return false;
+    }
+    let ParameterValue::Time { value, unit } = &parameter.value else {
+        return false;
+    };
+    target.value = *value;
+    target.unit = *unit;
+    target.connected = parameter.connected;
+    true
+}
+
+fn set_input_param(
+    target: &mut InputParam,
+    index: usize,
+    expected: usize,
+    parameter: &ModuleParameter,
+) -> bool {
+    if index != expected || !matches!(parameter.value, ParameterValue::Input) {
+        return false;
+    }
+    target.connected = parameter.connected;
+    true
+}
+
+fn set_enum_param(
+    target: &mut EnumParam,
+    index: usize,
+    expected: usize,
+    parameter: &ModuleParameter,
+) -> bool {
+    if index != expected {
+        return false;
+    }
+    let ParameterValue::Enum { index, .. } = &parameter.value else {
+        return false;
+    };
+    if *index < target.options.len() {
+        target.index = *index;
+        true
+    } else {
+        false
+    }
+}
+
+fn set_toggle_param(
+    target: &mut bool,
+    index: usize,
+    expected: usize,
+    parameter: &ModuleParameter,
+) -> bool {
+    if index != expected {
+        return false;
+    }
+    let ParameterValue::Toggle(value) = &parameter.value else {
+        return false;
+    };
+    *target = *value;
+    true
+}
+
 impl ModuleCategory {
     pub const ALL: [Self; 8] = [
         Self::Source,
@@ -904,7 +1672,7 @@ impl Module {
     }
 
     pub fn kind(&self) -> ModuleKind {
-        self.kind
+        self.body.kind()
     }
 
     pub fn position(&self) -> GridPos {
@@ -915,46 +1683,54 @@ impl Module {
         self.orientation
     }
 
-    pub fn parameters(&self) -> &[ModuleParameter] {
-        &self.parameters
+    pub fn parameters(&self) -> Vec<ModuleParameter> {
+        self.body.parameters()
     }
 
     pub fn env_points(&self) -> &[EnvPoint] {
-        &self.env_points
+        self.body.env_points()
     }
 
     pub fn disabled(&self) -> bool {
         self.disabled
     }
 
+    fn parameter_count(&self) -> usize {
+        self.body.parameter_count()
+    }
+
+    fn parameter(&self, index: usize) -> Option<ModuleParameter> {
+        self.body.parameter(index)
+    }
+
+    fn set_parameter(&mut self, index: usize, parameter: ModuleParameter) -> bool {
+        self.body.set_parameter(index, parameter)
+    }
+
+    fn env_points_mut(&mut self) -> Option<&mut Vec<EnvPoint>> {
+        self.body.env_points_mut()
+    }
+
     pub(crate) fn input_count(&self) -> u16 {
-        if self.kind.is_routing() {
-            return self.kind.input_count();
+        if self.kind().is_routing() {
+            return self.kind().input_count();
         }
-        self.parameters
-            .iter()
-            .filter(|parameter| parameter.value.is_port())
-            .count() as u16
+        self.body.input_count()
     }
 
     pub(crate) fn input_connected(&self, port: u16) -> bool {
-        self.parameters
-            .iter()
-            .filter(|parameter| parameter.value.is_port())
-            .nth(port as usize)
-            .map(|parameter| parameter.connected)
-            .unwrap_or(true)
+        self.body.input_connected(port)
     }
 
     pub(crate) fn output_count(&self) -> u16 {
-        self.kind.output_count()
+        self.kind().output_count()
     }
 
     pub(crate) fn has_input_top(&self) -> bool {
         if self.input_count() == 0 {
             return false;
         }
-        match self.kind {
+        match self.kind() {
             ModuleKind::TopSplit
             | ModuleKind::TurnDownRight
             | ModuleKind::RightJoin
@@ -968,7 +1744,7 @@ impl Module {
         if self.input_count() == 0 {
             return false;
         }
-        match self.kind {
+        match self.kind() {
             ModuleKind::LeftSplit
             | ModuleKind::TurnRightDown
             | ModuleKind::RightJoin
@@ -982,7 +1758,7 @@ impl Module {
         if self.output_count() == 0 {
             return false;
         }
-        match self.kind {
+        match self.kind() {
             ModuleKind::LeftSplit
             | ModuleKind::TopSplit
             | ModuleKind::TurnRightDown
@@ -996,7 +1772,7 @@ impl Module {
         if self.output_count() == 0 {
             return false;
         }
-        match self.kind {
+        match self.kind() {
             ModuleKind::LeftSplit
             | ModuleKind::TopSplit
             | ModuleKind::TurnDownRight
@@ -1249,7 +2025,7 @@ fn update_surface_disabled_states(surface: &mut PatchSurface, footprints: &[(Mod
 }
 
 fn module_footprint(module: &Module, subpatch_ports: Option<(u16, u16)>) -> (u16, u16) {
-    if module.kind.is_routing() {
+    if module.kind().is_routing() {
         return (1, 1);
     }
     let (inputs, outputs) =
@@ -1318,7 +2094,9 @@ impl GuiState {
     }
 
     pub fn set_audio(&mut self, mut audio: AudioHandle) {
-        audio.set_playing(self.playing);
+        if audio.set_playing(self.playing).is_err() {
+            self.audio_status = "Audio busy: play command rejected".to_string();
+        }
         self.audio = Some(audio);
         self.sync_audio_patch();
         self.sync_audio_track();
@@ -1411,16 +2189,14 @@ impl GuiState {
     pub(crate) fn probe_history(&self, module: ModuleId) -> Vec<f32> {
         self.audio
             .as_ref()
-            .map(|audio| {
-                audio.probe_history(module.value(), self.probe_voice, self.probe_len as usize)
-            })
+            .map(|audio| audio.probe_history(module, self.probe_voice, self.probe_len as usize))
             .unwrap_or_default()
     }
 
     pub(crate) fn meter_values(&self, module: ModuleId) -> Vec<f32> {
         self.audio
             .as_ref()
-            .map(|audio| audio.meter_values(module.value(), self.probe_voice))
+            .map(|audio| audio.meter_values(module, self.probe_voice))
             .unwrap_or_default()
     }
 
@@ -1472,7 +2248,7 @@ impl GuiState {
 
     pub fn load_project(&mut self, path: &Path) -> std::io::Result<()> {
         let project = project::load(path)?;
-        self.set_project(project, path.to_string_lossy().into_owned());
+        self.set_project(project, path.to_string_lossy().into_owned())?;
         Ok(())
     }
 
@@ -1540,8 +2316,55 @@ impl GuiState {
             })
     }
 
-    pub(crate) fn module_width(&self, module: &Module) -> u16 {
-        if module.kind.is_routing() {
+    pub(crate) fn grid_render_modules(&self) -> Vec<GridRenderModule<'_>> {
+        self.modules()
+            .iter()
+            .map(|module| self.grid_render_module(module))
+            .collect()
+    }
+
+    pub(crate) fn grid_render_module<'a>(&self, module: &'a Module) -> GridRenderModule<'a> {
+        let input_count = self.module_input_count(module);
+        let output_count = self.module_output_count(module);
+        let input_connected = (0..input_count)
+            .map(|port| self.module_input_connected(module, port))
+            .collect::<Vec<_>>();
+        GridRenderModule {
+            module,
+            width: self.module_width(module),
+            height: self.module_height(module),
+            input_count,
+            output_count,
+            input_connected,
+            has_input_top: self.module_has_input_top(module),
+            has_input_left: self.module_has_input_left(module),
+            has_output_bottom: self.module_has_output_bottom(module),
+            has_output_right: self.module_has_output_right(module),
+            left_input_offsets: (0..input_count as usize)
+                .map(|input| self.left_input_offset(module, input))
+                .collect(),
+            top_input_offsets: (0..input_count as usize)
+                .map(|input| self.top_input_offset(module, input))
+                .collect(),
+            right_output_offsets: (0..output_count as usize)
+                .map(|output| self.right_output_offset(module, output))
+                .collect(),
+            bottom_output_offsets: (0..output_count as usize)
+                .map(|output| self.bottom_output_offset(module, output))
+                .collect(),
+            probe_value: (module.kind() == ModuleKind::Probe)
+                .then(|| self.probe_history(module.id()).last().copied())
+                .flatten(),
+            meter_values: if self.show_meters {
+                self.meter_values(module.id())
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    fn module_width(&self, module: &Module) -> u16 {
+        if module.kind().is_routing() {
             return 1;
         }
         match module.orientation {
@@ -1550,8 +2373,8 @@ impl GuiState {
         }
     }
 
-    pub(crate) fn module_height(&self, module: &Module) -> u16 {
-        if module.kind.is_routing() {
+    fn module_height(&self, module: &Module) -> u16 {
+        if module.kind().is_routing() {
             return 1;
         }
         match module.orientation {
@@ -1560,65 +2383,109 @@ impl GuiState {
         }
     }
 
-    pub(crate) fn module_input_count(&self, module: &Module) -> u16 {
-        if module.kind == ModuleKind::Subpatch {
+    fn module_input_count(&self, module: &Module) -> u16 {
+        if module.kind() == ModuleKind::Subpatch {
             return self.subpatch_port_counts(module.id).0;
         }
         module.input_count()
     }
 
-    pub(crate) fn module_output_count(&self, module: &Module) -> u16 {
-        if module.kind == ModuleKind::Subpatch {
+    fn module_output_count(&self, module: &Module) -> u16 {
+        if module.kind() == ModuleKind::Subpatch {
             return self.subpatch_port_counts(module.id).1;
         }
         module.output_count()
     }
 
-    pub(crate) fn module_input_connected(&self, module: &Module, port: u16) -> bool {
-        if module.kind == ModuleKind::Subpatch {
+    fn module_input_connected(&self, module: &Module, port: u16) -> bool {
+        if module.kind() == ModuleKind::Subpatch {
             return true;
         }
         module.input_connected(port)
     }
 
-    pub(crate) fn module_has_input_top(&self, module: &Module) -> bool {
+    fn module_has_input_top(&self, module: &Module) -> bool {
         if self.module_input_count(module) == 0 {
             return false;
         }
-        if module.kind == ModuleKind::Subpatch {
+        if module.kind() == ModuleKind::Subpatch {
             return module.orientation == Orientation::Down;
         }
         module.has_input_top()
     }
 
-    pub(crate) fn module_has_input_left(&self, module: &Module) -> bool {
+    fn module_has_input_left(&self, module: &Module) -> bool {
         if self.module_input_count(module) == 0 {
             return false;
         }
-        if module.kind == ModuleKind::Subpatch {
+        if module.kind() == ModuleKind::Subpatch {
             return module.orientation == Orientation::Right;
         }
         module.has_input_left()
     }
 
-    pub(crate) fn module_has_output_bottom(&self, module: &Module) -> bool {
+    fn module_has_output_bottom(&self, module: &Module) -> bool {
         if self.module_output_count(module) == 0 {
             return false;
         }
-        if module.kind == ModuleKind::Subpatch {
+        if module.kind() == ModuleKind::Subpatch {
             return module.orientation == Orientation::Down;
         }
         module.has_output_bottom()
     }
 
-    pub(crate) fn module_has_output_right(&self, module: &Module) -> bool {
+    fn module_has_output_right(&self, module: &Module) -> bool {
         if self.module_output_count(module) == 0 {
             return false;
         }
-        if module.kind == ModuleKind::Subpatch {
+        if module.kind() == ModuleKind::Subpatch {
             return module.orientation == Orientation::Right;
         }
         module.has_output_right()
+    }
+
+    fn left_input_offset(&self, module: &Module, input: usize) -> Option<u16> {
+        if !self.module_has_input_left(module) {
+            return None;
+        }
+        match module.kind() {
+            ModuleKind::RightJoin | ModuleKind::DownJoin => (input == 0).then_some(0),
+            ModuleKind::LeftSplit | ModuleKind::TurnRightDown => (input == 0).then_some(0),
+            _ => (input < self.module_input_count(module) as usize).then_some(input as u16),
+        }
+    }
+
+    fn top_input_offset(&self, module: &Module, input: usize) -> Option<u16> {
+        if !self.module_has_input_top(module) {
+            return None;
+        }
+        match module.kind() {
+            ModuleKind::RightJoin | ModuleKind::DownJoin => (input == 1).then_some(0),
+            ModuleKind::TopSplit | ModuleKind::TurnDownRight => (input == 0).then_some(0),
+            _ => (input < self.module_input_count(module) as usize).then_some(input as u16),
+        }
+    }
+
+    fn right_output_offset(&self, module: &Module, output: usize) -> Option<u16> {
+        if !self.module_has_output_right(module) {
+            return None;
+        }
+        match module.kind() {
+            ModuleKind::LeftSplit | ModuleKind::TopSplit => (output == 1).then_some(0),
+            ModuleKind::TurnDownRight | ModuleKind::RightJoin => (output == 0).then_some(0),
+            _ => (output < self.module_output_count(module) as usize).then_some(output as u16),
+        }
+    }
+
+    fn bottom_output_offset(&self, module: &Module, output: usize) -> Option<u16> {
+        if !self.module_has_output_bottom(module) {
+            return None;
+        }
+        match module.kind() {
+            ModuleKind::LeftSplit | ModuleKind::TopSplit => (output == 0).then_some(0),
+            ModuleKind::TurnRightDown | ModuleKind::DownJoin => (output == 0).then_some(0),
+            _ => (output < self.module_output_count(module) as usize).then_some(output as u16),
+        }
     }
 
     fn subpatch_port_counts(&self, owner: ModuleId) -> (u16, u16) {
@@ -1631,13 +2498,13 @@ impl GuiState {
                     .surface
                     .modules
                     .iter()
-                    .filter(|module| module.kind == ModuleKind::SubpatchInput)
+                    .filter(|module| module.kind() == ModuleKind::SubpatchInput)
                     .count() as u16;
                 let outputs = subpatch
                     .surface
                     .modules
                     .iter()
-                    .filter(|module| module.kind == ModuleKind::SubpatchOutput)
+                    .filter(|module| module.kind() == ModuleKind::SubpatchOutput)
                     .count() as u16;
                 (inputs, outputs)
             })
@@ -1734,54 +2601,74 @@ impl GuiState {
                 continue;
             }
             if self.module_has_output_right(source) {
-                let y = source.position.y;
-                let from_cell = GridPos::new(source.position.x + self.module_width(source) - 1, y);
-                for x in source.position.x + self.module_width(source)..self.width {
-                    let Some(target) = modules.iter().find(|module| {
-                        !module.disabled && self.module_contains(module, GridPos::new(x, y))
-                    }) else {
+                for output in 0..self.module_output_count(source) as usize {
+                    let Some(source_y) = self.right_output_offset(source, output) else {
                         continue;
                     };
-                    if target.id == source.id {
-                        continue;
+                    let y = source.position.y + source_y;
+                    for x in source.position.x + self.module_width(source)..self.width {
+                        let Some(target) = modules.iter().find(|module| {
+                            !module.disabled && self.module_contains(module, GridPos::new(x, y))
+                        }) else {
+                            continue;
+                        };
+                        if target.id == source.id {
+                            continue;
+                        }
+                        if x == target.position.x && self.module_has_input_left(target) {
+                            for input in 0..self.module_input_count(target) as usize {
+                                if self
+                                    .left_input_offset(target, input)
+                                    .is_some_and(|target_y| target.position.y + target_y == y)
+                                {
+                                    connections.push(Connection {
+                                        from: source.id,
+                                        to: target.id,
+                                        output,
+                                        input,
+                                    });
+                                    break;
+                                }
+                            }
+                        }
+                        break;
                     }
-                    let local_y = y - target.position.y;
-                    if x == target.position.x && self.module_has_input_left(target) {
-                        connections.push(Connection {
-                            from: source.id,
-                            to: target.id,
-                            from_cell,
-                            to_cell: GridPos::new(target.position.x, target.position.y + local_y),
-                            orientation: Orientation::Right,
-                        });
-                    }
-                    break;
                 }
             }
 
             if self.module_has_output_bottom(source) {
-                let x = source.position.x;
-                let from_cell = GridPos::new(x, source.position.y + self.module_height(source) - 1);
-                for y in source.position.y + self.module_height(source)..self.height {
-                    let Some(target) = modules.iter().find(|module| {
-                        !module.disabled && self.module_contains(module, GridPos::new(x, y))
-                    }) else {
+                for output in 0..self.module_output_count(source) as usize {
+                    let Some(source_x) = self.bottom_output_offset(source, output) else {
                         continue;
                     };
-                    if target.id == source.id {
-                        continue;
+                    let x = source.position.x + source_x;
+                    for y in source.position.y + self.module_height(source)..self.height {
+                        let Some(target) = modules.iter().find(|module| {
+                            !module.disabled && self.module_contains(module, GridPos::new(x, y))
+                        }) else {
+                            continue;
+                        };
+                        if target.id == source.id {
+                            continue;
+                        }
+                        if y == target.position.y && self.module_has_input_top(target) {
+                            for input in 0..self.module_input_count(target) as usize {
+                                if self
+                                    .top_input_offset(target, input)
+                                    .is_some_and(|target_x| target.position.x + target_x == x)
+                                {
+                                    connections.push(Connection {
+                                        from: source.id,
+                                        to: target.id,
+                                        output,
+                                        input,
+                                    });
+                                    break;
+                                }
+                            }
+                        }
+                        break;
                     }
-                    let local_x = x - target.position.x;
-                    if y == target.position.y && self.module_has_input_top(target) {
-                        connections.push(Connection {
-                            from: source.id,
-                            to: target.id,
-                            from_cell,
-                            to_cell: GridPos::new(target.position.x + local_x, target.position.y),
-                            orientation: Orientation::Down,
-                        });
-                    }
-                    break;
                 }
             }
         }
@@ -1826,7 +2713,7 @@ impl GuiState {
             .root
             .modules
             .iter()
-            .find(|module| !module.disabled && module.kind == ModuleKind::Output)
+            .find(|module| !module.disabled && module.kind() == ModuleKind::Output)
             .ok_or(AudioPatchError::MissingOutput)?;
         let connections = self.surface_connections(root_modules);
         let mut needed = Vec::new();
@@ -1835,10 +2722,10 @@ impl GuiState {
             .iter()
             .filter(|connection| connection.to == output.id)
         {
-            let Some(input) = connection_input(connection, output, self.module_input_count(output))
-            else {
+            let input = connection.input;
+            if input >= self.module_input_count(output) as usize {
                 continue;
-            };
+            }
             if !self.module_input_connected(output, input as u16) {
                 continue;
             }
@@ -1852,7 +2739,7 @@ impl GuiState {
         }
         for module in root_modules
             .iter()
-            .filter(|module| !module.disabled && module.kind == ModuleKind::Probe)
+            .filter(|module| !module.disabled && module.kind() == ModuleKind::Probe)
         {
             collect_audio_inputs(module.id, &connections, &mut needed);
         }
@@ -1861,7 +2748,7 @@ impl GuiState {
                 .surface
                 .modules
                 .iter()
-                .any(|module| !module.disabled && module.kind == ModuleKind::Probe)
+                .any(|module| !module.disabled && module.kind() == ModuleKind::Probe)
                 && let Some(owner) = root_modules
                     .iter()
                     .find(|module| !module.disabled && module.id == subpatch.owner)
@@ -1871,7 +2758,7 @@ impl GuiState {
         }
         let voice_mode = if root_modules
             .iter()
-            .any(|module| needed.contains(&module.id) && module_uses_voice_controls(module.kind))
+            .any(|module| needed.contains(&module.id) && module_uses_voice_controls(module.kind()))
             || needed
                 .iter()
                 .filter_map(|id| {
@@ -1885,7 +2772,7 @@ impl GuiState {
                         .surface
                         .modules
                         .iter()
-                        .any(|module| !module.disabled && module_uses_voice_controls(module.kind))
+                        .any(|module| !module.disabled && module_uses_voice_controls(module.kind()))
                 }) {
             VoiceMode::Polyphonic
         } else {
@@ -1901,22 +2788,20 @@ impl GuiState {
                 .iter()
                 .find(|module| !module.disabled && module.id == id)
                 .ok_or(AudioPatchError::Compile(CompileError::MissingModule))?;
-            if module.kind == ModuleKind::Subpatch {
+            if module.kind() == ModuleKind::Subpatch {
                 continue;
             }
             let audio = audio_module(module, rate, self.bpm)?;
             let audio_id = patch.insert(audio);
-            if module.kind == ModuleKind::Probe {
+            if module.kind() == ModuleKind::Probe {
                 probes.push(ProbeRoute {
                     source: audio_id,
-                    target: module.id.value(),
+                    target: module.id,
                 });
             }
             let input_count = self.module_input_count(module);
             if self.show_meters && input_count > 0 {
-                if let Some(route) =
-                    MeterRoute::new(audio_id, module.id.value(), input_count as usize)
-                {
+                if let Some(route) = MeterRoute::new(audio_id, module.id, input_count as usize) {
                     meters.push(route);
                 }
             }
@@ -1928,7 +2813,7 @@ impl GuiState {
             .filter_map(|id| {
                 root_modules
                     .iter()
-                    .find(|module| module.id == *id && module.kind == ModuleKind::Subpatch)
+                    .find(|module| module.id == *id && module.kind() == ModuleKind::Subpatch)
             })
             .filter_map(|module| {
                 instrument
@@ -1947,16 +2832,15 @@ impl GuiState {
             {
                 let audio = audio_module(module, rate, self.bpm)?;
                 let audio_id = patch.insert(audio);
-                if module.kind == ModuleKind::Probe {
+                if module.kind() == ModuleKind::Probe {
                     probes.push(ProbeRoute {
                         source: audio_id,
-                        target: module.id.value(),
+                        target: module.id,
                     });
                 }
                 let input_count = self.module_input_count(module);
                 if self.show_meters && input_count > 0 {
-                    if let Some(route) =
-                        MeterRoute::new(audio_id, module.id.value(), input_count as usize)
+                    if let Some(route) = MeterRoute::new(audio_id, module.id, input_count as usize)
                     {
                         meters.push(route);
                     }
@@ -1974,18 +2858,17 @@ impl GuiState {
         let output_gain = audio_float(output, 1)?;
         let output_id = patch.insert(AudioModule::Binary {
             op: BinaryOp::Multiply,
-            a: 0.0,
-            b: output_gain,
+            a: AudioSample::ZERO,
+            b: AudioSample::new(output_gain).ok_or(AudioPatchError::InvalidParameter)?,
         });
 
         for connection in &connections {
             let from = root_connection_source(root_modules, instrument, &ids, connection);
             if connection.to == output.id {
-                let Some(input) =
-                    connection_input(connection, output, self.module_input_count(output))
-                else {
+                let input = connection.input;
+                if input >= self.module_input_count(output) as usize {
                     continue;
-                };
+                }
                 if !self.module_input_connected(output, input as u16) {
                     continue;
                 }
@@ -1995,8 +2878,11 @@ impl GuiState {
                     }
                     continue;
                 };
+                let port = patch
+                    .input_port(output_id, input)
+                    .map_err(AudioPatchError::Connect)?;
                 patch
-                    .connect_input(from, output_id, input)
+                    .connect_input(from, port)
                     .map_err(AudioPatchError::Connect)?;
                 continue;
             }
@@ -2006,14 +2892,14 @@ impl GuiState {
             else {
                 continue;
             };
-            let Some(input) = connection_input(connection, target, self.module_input_count(target))
-            else {
+            let input = connection.input;
+            if input >= self.module_input_count(target) as usize {
                 continue;
-            };
+            }
             if !self.module_input_connected(target, input as u16) {
                 continue;
             }
-            if target.kind == ModuleKind::Subpatch {
+            if target.kind() == ModuleKind::Subpatch {
                 let Some(from) = from else {
                     continue;
                 };
@@ -2037,8 +2923,9 @@ impl GuiState {
                 ) else {
                     continue;
                 };
+                let port = patch.input_port(to, 0).map_err(AudioPatchError::Connect)?;
                 patch
-                    .connect_input(from, to, 0)
+                    .connect_input(from, port)
                     .map_err(AudioPatchError::Connect)?;
             } else {
                 let Some(from) = from else {
@@ -2047,8 +2934,11 @@ impl GuiState {
                 let Some(to) = audio_id(&ids, AudioKey::Root(connection.to)) else {
                     continue;
                 };
+                let port = patch
+                    .input_port(to, input)
+                    .map_err(AudioPatchError::Connect)?;
                 patch
-                    .connect_input(from, to, input)
+                    .connect_input(from, port)
                     .map_err(AudioPatchError::Connect)?;
             }
         }
@@ -2087,16 +2977,18 @@ impl GuiState {
                 ) else {
                     continue;
                 };
-                let Some(input) =
-                    connection_input(&connection, target, self.module_input_count(target))
-                else {
+                let input = connection.input;
+                if input >= self.module_input_count(target) as usize {
                     continue;
-                };
+                }
                 if !self.module_input_connected(target, input as u16) {
                     continue;
                 }
+                let port = patch
+                    .input_port(to, input)
+                    .map_err(AudioPatchError::Connect)?;
                 patch
-                    .connect_input(from, to, input)
+                    .connect_input(from, port)
                     .map_err(AudioPatchError::Connect)?;
             }
         }
@@ -2144,7 +3036,7 @@ impl GuiState {
                 .modules
                 .iter()
                 .map(|module| {
-                    let subpatch_ports = if module.kind == ModuleKind::Subpatch {
+                    let subpatch_ports = if module.kind() == ModuleKind::Subpatch {
                         Some(
                             instrument
                                 .subpatches
@@ -2155,14 +3047,16 @@ impl GuiState {
                                         .surface
                                         .modules
                                         .iter()
-                                        .filter(|module| module.kind == ModuleKind::SubpatchInput)
+                                        .filter(|module| module.kind() == ModuleKind::SubpatchInput)
                                         .count()
                                         as u16;
                                     let outputs = subpatch
                                         .surface
                                         .modules
                                         .iter()
-                                        .filter(|module| module.kind == ModuleKind::SubpatchOutput)
+                                        .filter(|module| {
+                                            module.kind() == ModuleKind::SubpatchOutput
+                                        })
                                         .count()
                                         as u16;
                                     (inputs, outputs)
@@ -2215,13 +3109,17 @@ impl GuiState {
                     self.audio_status = "Audio disabled".to_string();
                     return;
                 };
-                audio.submit_with_telemetry(
+                let submitted = audio.submit_with_telemetry(
                     patch.patch,
                     &patch.probes,
                     &patch.meters,
                     patch.voice_mode,
                 );
-                self.audio_status = "Audio ready".to_string();
+                self.audio_status = if submitted.is_ok() {
+                    "Audio ready".to_string()
+                } else {
+                    "Audio busy: patch rejected".to_string()
+                };
             }
             Err(error) => {
                 if let Some(audio) = self.audio.as_mut() {
@@ -2241,8 +3139,11 @@ impl GuiState {
                 let Some(audio) = self.audio.as_mut() else {
                     return;
                 };
-                audio.submit_track(track, self.bpm);
-                self.audio_status = "Audio ready".to_string();
+                self.audio_status = if audio.submit_track(track, self.bpm).is_ok() {
+                    "Audio ready".to_string()
+                } else {
+                    "Audio busy: track rejected".to_string()
+                };
             }
             Err(_) => {
                 self.audio_status = "Silent: invalid track".to_string();
@@ -2252,7 +3153,9 @@ impl GuiState {
 
     fn sync_audio_playing(&mut self) {
         if let Some(audio) = &mut self.audio {
-            audio.set_playing(self.playing);
+            if audio.set_playing(self.playing).is_err() {
+                self.audio_status = "Audio busy: play command rejected".to_string();
+            }
         }
     }
 
@@ -2271,21 +3174,49 @@ impl GuiState {
         self.dirty = false;
     }
 
-    fn set_project(&mut self, project: Project, path: String) {
-        let subpatches = project
-            .subpatches
-            .iter()
-            .map(|subpatch| (subpatch.id, subpatch))
-            .collect::<HashMap<_, _>>();
-        let (root, subpatch_owners) = surface_from_project_modules(&project.modules);
-        let mut instrument = Instrument {
+    fn save_project(&mut self, path: &str) -> bool {
+        let result = self
+            .project()
+            .and_then(|project| project::save(Path::new(path), &project));
+        match result {
+            Ok(()) => {
+                self.commit_save_path(path.to_string());
+                true
+            }
+            Err(error) => {
+                self.audio_status = format!("Save failed: {error}");
+                false
+            }
+        }
+    }
+
+    fn project(&self) -> io::Result<Project> {
+        for (index, instrument) in self.instruments.iter().enumerate() {
+            if index != self.active_instrument
+                && (!instrument.root.modules.is_empty()
+                    || !instrument.subpatches.is_empty()
+                    || instrument.track_text != "(0/2/4/7)")
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "project files support one instrument",
+                ));
+            }
+        }
+        project_from_instrument(self.instrument(), self.bpm, self.scale_index)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    fn set_project(&mut self, project: Project, path: String) -> io::Result<()> {
+        let (root, subpatches) = instrument_surfaces_from_project(&project)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let instrument = Instrument {
             root,
             track_text: project.track.unwrap_or_else(|| "(0/2/4/7)".to_string()),
-            subpatches: Vec::new(),
+            subpatches,
             editing_subpatch: None,
             subpatch_stack: Vec::new(),
         };
-        add_project_subpatches(&mut instrument, subpatch_owners, &subpatches);
         let mut instruments = vec![instrument];
         instruments.resize_with(INSTRUMENT_COUNT, Instrument::new);
         self.instruments = instruments;
@@ -2323,6 +3254,7 @@ impl GuiState {
         self.update_disabled_states();
         self.sync_audio_patch();
         self.sync_audio_track();
+        Ok(())
     }
 
     pub fn apply(&mut self, action: GuiAction) {
@@ -2475,7 +3407,7 @@ impl GuiState {
             self.mode = Mode::Normal;
             return;
         };
-        let point_count = self.modules()[module_index].env_points.len();
+        let point_count = self.modules()[module_index].env_points().len();
         if point_count == 0 {
             self.mode = Mode::Normal;
             return;
@@ -2492,7 +3424,7 @@ impl GuiState {
                 },
             ) if active == module => point.min(point_count - 1),
             _ => self.modules()[module_index]
-                .env_points
+                .env_points()
                 .iter()
                 .enumerate()
                 .min_by_key(|(_, point)| {
@@ -2505,7 +3437,12 @@ impl GuiState {
         };
         let before = self.snapshot();
         let (point, changed) = {
-            let points = &mut self.instrument_mut().surface_mut().modules[module_index].env_points;
+            let Some(points) =
+                self.instrument_mut().surface_mut().modules[module_index].env_points_mut()
+            else {
+                self.mode = Mode::Normal;
+                return;
+            };
             let changed = points[point].time != target_time || points[point].value != target_value;
             points[point].time = target_time;
             points[point].value = target_value;
@@ -2754,7 +3691,7 @@ impl GuiState {
         self.modules()
             .iter()
             .find(|candidate| candidate.id == module)
-            .and_then(|module| module.parameters.get(parameter))
+            .and_then(|module| module.parameter(parameter))
             .map(|parameter| match parameter.value {
                 ParameterValue::Time { .. } => TextInputKind::Time,
                 _ => TextInputKind::Number,
@@ -2789,8 +3726,8 @@ impl GuiState {
                 }
             }
             GuiAction::Save => {
-                if self.saved_path.is_some() {
-                    self.dirty = false;
+                if let Some(path) = self.saved_path.clone() {
+                    self.save_project(&path);
                 } else {
                     self.open_prompt(Mode::SavePrompt, "patch.bw");
                 }
@@ -2873,7 +3810,7 @@ impl GuiState {
             }
             GuiAction::Edit => {
                 if let Some(module) = self.module_at(self.cursor())
-                    && !module.parameters.is_empty()
+                    && module.parameter_count() != 0
                 {
                     self.mode = Mode::Edit {
                         module: module.id,
@@ -2907,8 +3844,8 @@ impl GuiState {
                         Orientation::Down => Orientation::Right,
                     };
                     if self.area_fits(
-                        module.kind.width(orientation),
-                        module.kind.height(orientation),
+                        module.kind().width(orientation),
+                        module.kind().height(orientation),
                         module.position,
                         &[module.id],
                     ) {
@@ -2964,7 +3901,7 @@ impl GuiState {
     fn toggle_subpatch(&mut self) {
         let target = self
             .module_at(self.cursor())
-            .filter(|module| module.kind == ModuleKind::Subpatch)
+            .filter(|module| module.kind() == ModuleKind::Subpatch)
             .map(|module| module.id);
         if let Some(target) = target {
             self.enter_subpatch_surface(target);
@@ -3120,7 +4057,7 @@ impl GuiState {
                     held.module.position = self
                         .bounded_module_position(&held.module, cursor.x as i16, cursor.y as i16)
                         .unwrap_or(cursor);
-                    let kind = held.module.kind;
+                    let kind = held.module.kind();
                     self.instrument_mut()
                         .surface_mut()
                         .modules
@@ -3219,7 +4156,7 @@ impl GuiState {
     fn move_across_subpatch(&mut self, module: ModuleId, origin: GridPos) {
         let target = self
             .module_at(self.cursor())
-            .filter(|candidate| candidate.kind == ModuleKind::Subpatch && candidate.id != module)
+            .filter(|candidate| candidate.kind() == ModuleKind::Subpatch && candidate.id != module)
             .map(|candidate| candidate.id);
         let can_exit = self.instrument().editing_subpatch.is_some();
         if target.is_none() && !can_exit {
@@ -3275,21 +4212,18 @@ impl GuiState {
                     return;
                 };
                 let before = self.snapshot();
-                let kind = module.kind;
+                let kind = module.kind();
                 let orientation = module.orientation;
-                let parameters = module.parameters.clone();
-                let env_points = module.env_points.clone();
+                let body = module.body.clone();
                 let position = self
                     .bounded_module_position(module, cursor.x as i16, cursor.y as i16)
                     .unwrap_or(cursor);
                 let id = ModuleId(self.next_module_id);
                 self.instrument_mut().surface_mut().modules.push(Module {
                     id,
-                    kind,
                     position,
                     orientation,
-                    parameters,
-                    env_points,
+                    body,
                     disabled: false,
                 });
                 if kind == ModuleKind::Subpatch {
@@ -3353,8 +4287,8 @@ impl GuiState {
             self.mode = Mode::Normal;
             return;
         };
-        let module_kind = self.modules()[module_index].kind;
-        let parameter_count = self.modules()[module_index].parameters.len();
+        let module_kind = self.modules()[module_index].kind();
+        let parameter_count = self.modules()[module_index].parameter_count();
         let special = module_kind.special_editor();
         let total = parameter_count + usize::from(special.is_some());
         if total == 0 {
@@ -3421,16 +4355,21 @@ impl GuiState {
                 let fast = matches!(action, GuiAction::ValueDownFast | GuiAction::ValueUpFast);
                 let step_scale = self.step_scale();
                 let changed = {
-                    let parameter = &mut self.instrument_mut().surface_mut().modules[module_index]
-                        .parameters[parameter];
-                    let changed = parameter.value.adjust(up, fast, step_scale);
+                    let module = &mut self.instrument_mut().surface_mut().modules[module_index];
+                    let Some(mut row) = module.parameter(parameter) else {
+                        return;
+                    };
+                    let changed = row.value.adjust(up, fast, step_scale);
                     if changed
                         && matches!(
-                            parameter.value,
+                            row.value,
                             ParameterValue::Float { .. } | ParameterValue::Time { .. }
                         )
                     {
-                        parameter.connected = false;
+                        row.connected = false;
+                    }
+                    if changed {
+                        module.set_parameter(parameter, row);
                     }
                     changed
                 };
@@ -3444,13 +4383,16 @@ impl GuiState {
                 }
                 let before = self.snapshot();
                 let changed = {
-                    let parameter = &mut self.instrument_mut().surface_mut().modules[module_index]
-                        .parameters[parameter];
+                    let module = &mut self.instrument_mut().surface_mut().modules[module_index];
+                    let Some(mut row) = module.parameter(parameter) else {
+                        return;
+                    };
                     if matches!(
-                        parameter.value,
+                        row.value,
                         ParameterValue::Float { .. } | ParameterValue::Time { .. }
                     ) {
-                        parameter.connected = !parameter.connected;
+                        row.connected = !row.connected;
+                        module.set_parameter(parameter, row);
                         true
                     } else {
                         false
@@ -3465,10 +4407,17 @@ impl GuiState {
                     return;
                 }
                 let before = self.snapshot();
-                let changed = self.instrument_mut().surface_mut().modules[module_index].parameters
-                    [parameter]
-                    .value
-                    .cycle_unit();
+                let changed = {
+                    let module = &mut self.instrument_mut().surface_mut().modules[module_index];
+                    let Some(mut row) = module.parameter(parameter) else {
+                        return;
+                    };
+                    let changed = row.value.cycle_unit();
+                    if changed {
+                        module.set_parameter(parameter, row);
+                    }
+                    changed
+                };
                 if changed {
                     self.commit(before);
                 }
@@ -3476,13 +4425,15 @@ impl GuiState {
             GuiAction::CycleStep => self.step_size = (self.step_size + 1) % 5,
             GuiAction::TypeValue => {
                 if parameter < parameter_count
-                    && self.modules()[module_index].parameters[parameter]
-                        .value
-                        .accepts_typed_value()
+                    && self.modules()[module_index]
+                        .parameter(parameter)
+                        .map(|parameter| parameter.value.accepts_typed_value())
+                        .unwrap_or(false)
                 {
-                    self.prompt_text = self.modules()[module_index].parameters[parameter]
-                        .value
-                        .input_text();
+                    self.prompt_text = self.modules()[module_index]
+                        .parameter(parameter)
+                        .map(|parameter| parameter.value.input_text())
+                        .unwrap_or_default();
                     self.prompt_cursor = self.prompt_text.len();
                     self.mode = Mode::ValueInput { module, parameter };
                 }
@@ -3568,8 +4519,10 @@ impl GuiState {
                 if !is_current && self.path_exists(path) {
                     self.mode = Mode::SaveConfirm;
                 } else {
-                    self.commit_save_path(path.to_string());
-                    self.mode = Mode::Normal;
+                    let path = path.to_string();
+                    if self.save_project(&path) {
+                        self.mode = Mode::Normal;
+                    }
                 }
             }
             GuiAction::Left
@@ -3588,7 +4541,10 @@ impl GuiState {
             GuiAction::Confirm | GuiAction::Copy => {
                 let path = self.prompt_text.trim();
                 if !path.is_empty() {
-                    self.commit_save_path(path.to_string());
+                    let path = path.to_string();
+                    if !self.save_project(&path) {
+                        return;
+                    }
                 }
                 self.mode = Mode::Normal;
             }
@@ -3772,24 +4728,19 @@ impl GuiState {
         else {
             return false;
         };
-        let Some(parameter_value) = self.instrument().surface().modules[module_index]
-            .parameters
-            .get(parameter)
-            .map(|parameter| parameter.value.clone())
+        let Some(mut row) = self.instrument().surface().modules[module_index].parameter(parameter)
         else {
             return false;
         };
-        let Some(value) = typed_parameter_value(&parameter_value, self.prompt_text.trim()) else {
+        let Some(value) = typed_parameter_value(&row.value, self.prompt_text.trim()) else {
             return false;
         };
-        let parameter =
-            &mut self.instrument_mut().surface_mut().modules[module_index].parameters[parameter];
-        if parameter.value == value && !parameter.connected {
+        if row.value == value && !row.connected {
             return false;
         }
-        parameter.value = value;
-        parameter.connected = false;
-        true
+        row.value = value;
+        row.connected = false;
+        self.instrument_mut().surface_mut().modules[module_index].set_parameter(parameter, row)
     }
 
     fn apply_adsr_edit(&mut self, action: GuiAction, module: ModuleId, parameter: usize) {
@@ -3822,33 +4773,40 @@ impl GuiState {
             | GuiAction::ValueDownFast => {
                 let before = self.snapshot();
                 let param_index = parameter + 2;
-                let value = &mut self.instrument_mut().surface_mut().modules[module_index]
-                    .parameters[param_index]
-                    .value;
-                let changed = match (value, action) {
-                    (ParameterValue::Float { value, max, .. }, GuiAction::ValueUp) => {
-                        let next = (*value + 5).min(*max);
-                        let changed = next != *value;
-                        *value = next;
-                        changed
+                let changed = {
+                    let module = &mut self.instrument_mut().surface_mut().modules[module_index];
+                    let Some(mut row) = module.parameter(param_index) else {
+                        return;
+                    };
+                    let changed = match (&mut row.value, action) {
+                        (ParameterValue::Float { value, max, .. }, GuiAction::ValueUp) => {
+                            let next = (*value + 5).min(*max);
+                            let changed = next != *value;
+                            *value = next;
+                            changed
+                        }
+                        (ParameterValue::Float { value, min, .. }, GuiAction::ValueDown) => {
+                            let next = (*value - 5).max(*min);
+                            let changed = next != *value;
+                            *value = next;
+                            changed
+                        }
+                        (ParameterValue::Float { value, max, .. }, GuiAction::ValueUpFast) => {
+                            let changed = *value != *max;
+                            *value = *max;
+                            changed
+                        }
+                        (ParameterValue::Float { value, min, .. }, GuiAction::ValueDownFast) => {
+                            let changed = *value != *min;
+                            *value = *min;
+                            changed
+                        }
+                        _ => false,
+                    };
+                    if changed {
+                        module.set_parameter(param_index, row);
                     }
-                    (ParameterValue::Float { value, min, .. }, GuiAction::ValueDown) => {
-                        let next = (*value - 5).max(*min);
-                        let changed = next != *value;
-                        *value = next;
-                        changed
-                    }
-                    (ParameterValue::Float { value, max, .. }, GuiAction::ValueUpFast) => {
-                        let changed = *value != *max;
-                        *value = *max;
-                        changed
-                    }
-                    (ParameterValue::Float { value, min, .. }, GuiAction::ValueDownFast) => {
-                        let changed = *value != *min;
-                        *value = *min;
-                        changed
-                    }
-                    _ => false,
+                    changed
                 };
                 if changed {
                     self.commit(before);
@@ -3911,7 +4869,7 @@ impl GuiState {
             self.mode = Mode::Normal;
             return;
         };
-        let point_count = self.modules()[module_index].env_points.len();
+        let point_count = self.modules()[module_index].env_points().len();
         if point_count == 0 {
             self.mode = Mode::Normal;
             return;
@@ -3938,8 +4896,13 @@ impl GuiState {
                     let before = self.snapshot();
                     let delta = self.step_scale();
                     let moved_point = {
-                        let points = &mut self.instrument_mut().surface_mut().modules[module_index]
-                            .env_points;
+                        let Some(points) = self.instrument_mut().surface_mut().modules
+                            [module_index]
+                            .env_points_mut()
+                        else {
+                            self.mode = Mode::Normal;
+                            return;
+                        };
                         match action {
                             GuiAction::Left => points[point].time -= delta,
                             GuiAction::Right => points[point].time += delta,
@@ -4003,17 +4966,25 @@ impl GuiState {
             }
             GuiAction::ToggleCurve => {
                 let before = self.snapshot();
-                let curve = &mut self.instrument_mut().surface_mut().modules[module_index]
-                    .env_points[point]
-                    .curve;
+                let Some(points) =
+                    self.instrument_mut().surface_mut().modules[module_index].env_points_mut()
+                else {
+                    self.mode = Mode::Normal;
+                    return;
+                };
+                let curve = &mut points[point].curve;
                 *curve = !*curve;
                 self.commit(before);
             }
             GuiAction::AddPoint => {
                 let before = self.snapshot();
                 let new_index = {
-                    let points =
-                        &mut self.instrument_mut().surface_mut().modules[module_index].env_points;
+                    let Some(points) =
+                        self.instrument_mut().surface_mut().modules[module_index].env_points_mut()
+                    else {
+                        self.mode = Mode::Normal;
+                        return;
+                    };
                     let current = points[point];
                     let next_time = points.get(point + 1).map(|next| next.time).unwrap_or(100);
                     let time = ((current.time + next_time) / 2).clamp(0, 100);
@@ -4038,9 +5009,13 @@ impl GuiState {
             GuiAction::DeletePoint => {
                 if point_count > 2 {
                     let before = self.snapshot();
-                    self.instrument_mut().surface_mut().modules[module_index]
-                        .env_points
-                        .remove(point);
+                    let Some(points) =
+                        self.instrument_mut().surface_mut().modules[module_index].env_points_mut()
+                    else {
+                        self.mode = Mode::Normal;
+                        return;
+                    };
+                    points.remove(point);
                     self.commit(before);
                     self.mode = Mode::EnvEdit {
                         module,
@@ -4380,7 +5355,7 @@ impl GuiState {
         let target = self
             .module_at(self.cursor())
             .filter(|candidate| {
-                candidate.kind == ModuleKind::Subpatch && !selected.contains(&candidate.id)
+                candidate.kind() == ModuleKind::Subpatch && !selected.contains(&candidate.id)
             })
             .map(|candidate| candidate.id);
         let can_exit = self.instrument().editing_subpatch.is_some();
@@ -4448,13 +5423,7 @@ impl GuiState {
                 let cursor = self.cursor();
                 let dx = cursor.x as i16 - origin.x as i16;
                 let dy = cursor.y as i16 - origin.y as i16;
-                let copies: Vec<(
-                    ModuleKind,
-                    Orientation,
-                    GridPos,
-                    Vec<ModuleParameter>,
-                    Vec<EnvPoint>,
-                )> = self
+                let copies: Vec<(ModuleKind, Orientation, GridPos, ModuleBody)> = self
                     .modules()
                     .iter()
                     .filter(|module| ids.contains(&module.id))
@@ -4464,24 +5433,21 @@ impl GuiState {
                         let y = (module.position.y as i16 + dy)
                             .clamp(0, self.height.saturating_sub(1) as i16);
                         (
-                            module.kind,
+                            module.kind(),
                             module.orientation,
                             GridPos::new(x as u16, y as u16),
-                            module.parameters.clone(),
-                            module.env_points.clone(),
+                            module.body.clone(),
                         )
                     })
                     .collect();
                 let before = self.snapshot();
-                for (kind, orientation, position, parameters, env_points) in copies {
+                for (kind, orientation, position, body) in copies {
                     let id = ModuleId(self.next_module_id);
                     self.instrument_mut().surface_mut().modules.push(Module {
                         id,
-                        kind,
                         position,
                         orientation,
-                        parameters,
-                        env_points,
+                        body,
                         disabled: false,
                     });
                     if kind == ModuleKind::Subpatch {
@@ -4677,11 +5643,9 @@ impl GuiState {
         let id = ModuleId(self.next_module_id);
         let module = Module {
             id,
-            kind,
             position: cursor,
             orientation: Orientation::Right,
-            parameters: kind.default_parameters(),
-            env_points: kind.default_env_points(),
+            body: kind.default_body(),
             disabled: false,
         };
         self.next_module_id += 1;
@@ -4703,63 +5667,573 @@ impl GuiState {
     }
 }
 
+fn project_from_instrument(
+    instrument: &Instrument,
+    bpm: u16,
+    scale_index: usize,
+) -> Result<Project, String> {
+    let subpatch_ids = instrument
+        .subpatches
+        .iter()
+        .map(|subpatch| (subpatch.owner, subpatch.owner.value()))
+        .collect::<HashMap<_, _>>();
+    let subpatch_ports = instrument
+        .subpatches
+        .iter()
+        .map(|subpatch| (subpatch.owner, subpatch_port_counts(&subpatch.surface)))
+        .collect::<HashMap<_, _>>();
+    Ok(Project {
+        bpm: bpm as f32,
+        bars: 1.0,
+        scale_idx: scale_index,
+        modules: project_modules_from_surface(&instrument.root, &subpatch_ids, &subpatch_ports)?,
+        track: Some(instrument.track_text.clone()),
+        subpatches: instrument
+            .subpatches
+            .iter()
+            .map(|subpatch| {
+                Ok(ProjectSubpatchDef {
+                    id: subpatch.owner.value(),
+                    name: format!("Subpatch {}", subpatch.owner.value()),
+                    color: (0, 0, 0),
+                    modules: project_modules_from_surface(
+                        &subpatch.surface,
+                        &subpatch_ids,
+                        &subpatch_ports,
+                    )?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+    })
+}
+
+fn subpatch_port_counts(surface: &PatchSurface) -> (u8, u8) {
+    let inputs = surface
+        .modules
+        .iter()
+        .filter(|module| module.kind() == ModuleKind::SubpatchInput)
+        .count()
+        .min(u8::MAX as usize) as u8;
+    let outputs = surface
+        .modules
+        .iter()
+        .filter(|module| module.kind() == ModuleKind::SubpatchOutput)
+        .count()
+        .min(u8::MAX as usize) as u8;
+    (inputs, outputs)
+}
+
+fn project_modules_from_surface(
+    surface: &PatchSurface,
+    subpatch_ids: &HashMap<ModuleId, u32>,
+    subpatch_ports: &HashMap<ModuleId, (u8, u8)>,
+) -> Result<Vec<ProjectModuleDef>, String> {
+    surface
+        .modules
+        .iter()
+        .map(|module| {
+            Ok(ProjectModuleDef {
+                id: module.id.value(),
+                kind: project_kind(module, &surface.modules, subpatch_ids)?,
+                x: module.position.x,
+                y: module.position.y,
+                orientation: project_orientation(module.orientation),
+                params: project_params(module, subpatch_ports)?,
+            })
+        })
+        .collect()
+}
+
+fn project_kind(
+    module: &Module,
+    modules: &[Module],
+    subpatch_ids: &HashMap<ModuleId, u32>,
+) -> Result<ProjectModuleKind, String> {
+    Ok(match module.kind() {
+        ModuleKind::TurnRightDown => ProjectModuleKind::Routing(ProjectRoutingModule::TurnRD),
+        ModuleKind::TurnDownRight => ProjectModuleKind::Routing(ProjectRoutingModule::TurnDR),
+        ModuleKind::LeftSplit => ProjectModuleKind::Routing(ProjectRoutingModule::LSplit),
+        ModuleKind::TopSplit => ProjectModuleKind::Routing(ProjectRoutingModule::TSplit),
+        ModuleKind::RightJoin => ProjectModuleKind::Routing(ProjectRoutingModule::RJoin),
+        ModuleKind::DownJoin => ProjectModuleKind::Routing(ProjectRoutingModule::DJoin),
+        ModuleKind::SubpatchInput => ProjectModuleKind::Subpatch(ProjectSubpatchModule::SubIn),
+        ModuleKind::SubpatchOutput => ProjectModuleKind::Subpatch(ProjectSubpatchModule::SubOut),
+        ModuleKind::Subpatch => {
+            let id = subpatch_ids
+                .get(&module.id)
+                .ok_or_else(|| format!("missing subpatch surface {}", module.id.value()))?;
+            ProjectModuleKind::Subpatch(ProjectSubpatchModule::SubPatch(ProjectSubpatchId(*id)))
+        }
+        ModuleKind::DelayTap => ProjectModuleKind::Standard(ProjectStandardModule::DelayTap(
+            delay_source(module, modules)?,
+        )),
+        ModuleKind::Freq => ProjectModuleKind::Standard(ProjectStandardModule::Freq),
+        ModuleKind::Gate => ProjectModuleKind::Standard(ProjectStandardModule::Gate),
+        ModuleKind::Degree => ProjectModuleKind::Standard(ProjectStandardModule::Degree),
+        ModuleKind::DegreeGate => ProjectModuleKind::Standard(ProjectStandardModule::DegreeGate),
+        ModuleKind::Osc => ProjectModuleKind::Standard(ProjectStandardModule::Osc),
+        ModuleKind::Rise => ProjectModuleKind::Standard(ProjectStandardModule::Rise),
+        ModuleKind::Fall => ProjectModuleKind::Standard(ProjectStandardModule::Fall),
+        ModuleKind::Ramp => ProjectModuleKind::Standard(ProjectStandardModule::Ramp),
+        ModuleKind::Adsr => ProjectModuleKind::Standard(ProjectStandardModule::Adsr),
+        ModuleKind::Envelope => ProjectModuleKind::Standard(ProjectStandardModule::Envelope),
+        ModuleKind::Lowpass => ProjectModuleKind::Standard(ProjectStandardModule::Lpf),
+        ModuleKind::Highpass => ProjectModuleKind::Standard(ProjectStandardModule::Hpf),
+        ModuleKind::Comb => ProjectModuleKind::Standard(ProjectStandardModule::Comb),
+        ModuleKind::Allpass => ProjectModuleKind::Standard(ProjectStandardModule::Allpass),
+        ModuleKind::Delay => ProjectModuleKind::Standard(ProjectStandardModule::Delay),
+        ModuleKind::Reverb => ProjectModuleKind::Standard(ProjectStandardModule::Reverb),
+        ModuleKind::Distortion => ProjectModuleKind::Standard(ProjectStandardModule::Distortion),
+        ModuleKind::Compressor => ProjectModuleKind::Standard(ProjectStandardModule::Compressor),
+        ModuleKind::Flanger => ProjectModuleKind::Standard(ProjectStandardModule::Flanger),
+        ModuleKind::Multiply => ProjectModuleKind::Standard(ProjectStandardModule::Mul),
+        ModuleKind::Add => ProjectModuleKind::Standard(ProjectStandardModule::Add),
+        ModuleKind::GreaterThan => ProjectModuleKind::Standard(ProjectStandardModule::Gt),
+        ModuleKind::LessThan => ProjectModuleKind::Standard(ProjectStandardModule::Lt),
+        ModuleKind::Switch => ProjectModuleKind::Standard(ProjectStandardModule::Switch),
+        ModuleKind::Random => ProjectModuleKind::Standard(ProjectStandardModule::Rng),
+        ModuleKind::Sample => ProjectModuleKind::Standard(ProjectStandardModule::Sample),
+        ModuleKind::Probe => ProjectModuleKind::Standard(ProjectStandardModule::Probe),
+        ModuleKind::Output => ProjectModuleKind::Standard(ProjectStandardModule::Output),
+    })
+}
+
+fn delay_source(module: &Module, modules: &[Module]) -> Result<ProjectModuleId, String> {
+    let ModuleBody::DelayTap { source, .. } = &module.body else {
+        return Err(format!("module {} is not a delay tap", module.id.value()));
+    };
+    modules
+        .iter()
+        .filter(|module| module.kind() == ModuleKind::Delay)
+        .nth(source.index)
+        .map(|module| ProjectModuleId(module.id.value()))
+        .ok_or_else(|| format!("missing delay source {}", module.id.value()))
+}
+
+fn project_orientation(orientation: Orientation) -> ProjectOrientation {
+    match orientation {
+        Orientation::Right => ProjectOrientation::Horizontal,
+        Orientation::Down => ProjectOrientation::Vertical,
+    }
+}
+
+fn project_params(
+    module: &Module,
+    subpatch_ports: &HashMap<ModuleId, (u8, u8)>,
+) -> Result<ProjectModuleParams, String> {
+    Ok(match &module.body {
+        ModuleBody::Freq
+        | ModuleBody::Gate
+        | ModuleBody::Degree
+        | ModuleBody::TurnRightDown
+        | ModuleBody::TurnDownRight
+        | ModuleBody::LeftSplit
+        | ModuleBody::TopSplit
+        | ModuleBody::RightJoin
+        | ModuleBody::DownJoin
+        | ModuleBody::SubpatchInput => ProjectModuleParams::None,
+        ModuleBody::DegreeGate { degree } => ProjectModuleParams::DegreeGate {
+            degree: degree.value,
+        },
+        ModuleBody::Osc {
+            wave,
+            frequency,
+            shift,
+            gain,
+            unipolar,
+        } => ProjectModuleParams::Osc {
+            wave: project_wave(wave.index)?,
+            freq: project_time(*frequency)?,
+            shift: project_float(*shift),
+            gain: project_float(*gain),
+            uni: *unipolar,
+            connected: connected_mask(&[
+                (1, frequency.connected),
+                (2, shift.connected),
+                (3, gain.connected),
+            ]),
+        },
+        ModuleBody::Rise { gate, time } => ProjectModuleParams::Rise {
+            time: project_time(*time)?,
+            connected: connected_mask(&[(0, gate.connected), (1, time.connected)]),
+        },
+        ModuleBody::Fall { gate, time } => ProjectModuleParams::Fall {
+            time: project_time(*time)?,
+            connected: connected_mask(&[(0, gate.connected), (1, time.connected)]),
+        },
+        ModuleBody::Ramp { value, time } => ProjectModuleParams::Ramp {
+            value: project_float(*value),
+            time: project_time(*time)?,
+            connected: connected_mask(&[(0, value.connected), (1, time.connected)]),
+        },
+        ModuleBody::Adsr {
+            rise,
+            fall,
+            attack,
+            sustain,
+        } => ProjectModuleParams::Adsr {
+            attack_ratio: project_float(*attack),
+            sustain: project_float(*sustain),
+            connected: connected_mask(&[
+                (0, rise.connected),
+                (1, fall.connected),
+                (2, attack.connected),
+                (3, sustain.connected),
+            ]),
+        },
+        ModuleBody::Envelope { phase, points } => ProjectModuleParams::Envelope {
+            points: points.iter().map(project_env_point).collect(),
+            connected: connected_mask(&[(0, phase.connected)]),
+        },
+        ModuleBody::Lowpass {
+            input,
+            frequency,
+            q,
+        }
+        | ModuleBody::Highpass {
+            input,
+            frequency,
+            q,
+        } => ProjectModuleParams::Filter {
+            freq: project_float(*frequency),
+            q: project_float(*q),
+            connected: connected_mask(&[
+                (0, input.connected),
+                (1, frequency.connected),
+                (2, q.connected),
+            ]),
+        },
+        ModuleBody::Comb {
+            input,
+            time,
+            feedback,
+            damp,
+        } => ProjectModuleParams::Comb {
+            time: project_time(*time)?,
+            feedback: project_float(*feedback),
+            damp: project_float(*damp),
+            connected: connected_mask(&[
+                (0, input.connected),
+                (1, time.connected),
+                (2, feedback.connected),
+                (3, damp.connected),
+            ]),
+        },
+        ModuleBody::Allpass {
+            input,
+            time,
+            feedback,
+        } => ProjectModuleParams::Allpass {
+            time: project_time(*time)?,
+            feedback: project_float(*feedback),
+            connected: connected_mask(&[
+                (0, input.connected),
+                (1, time.connected),
+                (2, feedback.connected),
+            ]),
+        },
+        ModuleBody::Delay { input, time } => ProjectModuleParams::Delay {
+            time: project_time(*time)?,
+            connected: connected_mask(&[(0, input.connected), (1, time.connected)]),
+        },
+        ModuleBody::DelayTap { gain, .. } => ProjectModuleParams::DelayTap {
+            gain: project_float(*gain),
+        },
+        ModuleBody::Reverb {
+            input,
+            room,
+            damp,
+            mod_depth,
+            diffusion,
+        } => ProjectModuleParams::Reverb {
+            room: project_float(*room),
+            damp: project_float(*damp),
+            mod_depth: project_float(*mod_depth),
+            diffusion: project_float(*diffusion),
+            connected: connected_mask(&[
+                (0, input.connected),
+                (1, room.connected),
+                (2, damp.connected),
+                (3, mod_depth.connected),
+                (4, diffusion.connected),
+            ]),
+        },
+        ModuleBody::Distortion {
+            input,
+            kind,
+            drive,
+            asymmetry,
+        } => ProjectModuleParams::Distortion {
+            dist_type: project_distortion(kind.index)?,
+            drive: project_float(*drive),
+            asymmetry: project_float(*asymmetry),
+            connected: connected_mask(&[
+                (0, input.connected),
+                (2, drive.connected),
+                (3, asymmetry.connected),
+            ]),
+        },
+        ModuleBody::Compressor {
+            input,
+            threshold,
+            ratio,
+            attack,
+            release,
+            makeup,
+        } => ProjectModuleParams::Compressor {
+            threshold: project_float(*threshold),
+            ratio: project_float(*ratio),
+            attack: project_float(*attack),
+            release: project_float(*release),
+            makeup: project_float(*makeup),
+            connected: connected_mask(&[
+                (0, input.connected),
+                (1, threshold.connected),
+                (2, ratio.connected),
+                (3, attack.connected),
+                (4, release.connected),
+                (5, makeup.connected),
+            ]),
+        },
+        ModuleBody::Flanger {
+            input,
+            rate,
+            depth,
+            feedback,
+        } => ProjectModuleParams::Flanger {
+            rate: project_float(*rate),
+            depth: project_float(*depth),
+            feedback: project_float(*feedback),
+            connected: connected_mask(&[
+                (0, input.connected),
+                (1, rate.connected),
+                (2, depth.connected),
+                (3, feedback.connected),
+            ]),
+        },
+        ModuleBody::Multiply { a, b } => ProjectModuleParams::Mul {
+            a: project_float(*a),
+            b: project_float(*b),
+            connected: connected_mask(&[(0, a.connected), (1, b.connected)]),
+        },
+        ModuleBody::Add { a, b } => ProjectModuleParams::Add {
+            a: project_float(*a),
+            b: project_float(*b),
+            connected: connected_mask(&[(0, a.connected), (1, b.connected)]),
+        },
+        ModuleBody::GreaterThan { a, b } => ProjectModuleParams::Gt {
+            a: project_float(*a),
+            b: project_float(*b),
+            connected: connected_mask(&[(0, a.connected), (1, b.connected)]),
+        },
+        ModuleBody::LessThan { a, b } => ProjectModuleParams::Lt {
+            a: project_float(*a),
+            b: project_float(*b),
+            connected: connected_mask(&[(0, a.connected), (1, b.connected)]),
+        },
+        ModuleBody::Switch { select, a, b } => ProjectModuleParams::Switch {
+            a: project_float(*a),
+            b: project_float(*b),
+            connected: connected_mask(&[(0, select.connected), (1, a.connected), (2, b.connected)]),
+        },
+        ModuleBody::Random { gate } => {
+            if !gate.connected {
+                return Err(format!(
+                    "random module {} has disconnected gate",
+                    module.id.value()
+                ));
+            }
+            ProjectModuleParams::None
+        }
+        ModuleBody::Sample { file, position } => ProjectModuleParams::Sample {
+            file_idx: file.index,
+            file_name: file
+                .options
+                .get(file.index)
+                .ok_or_else(|| format!("missing sample file {}", module.id.value()))?
+                .to_string(),
+            samples: Arc::new(Vec::new()),
+            connected: connected_mask(&[(1, position.connected)]),
+        },
+        ModuleBody::Probe { input } => ProjectModuleParams::Probe {
+            connected: connected_mask(&[(0, input.connected)]),
+        },
+        ModuleBody::Output { input, gain } => ProjectModuleParams::Output {
+            gain: project_float(*gain),
+            connected: connected_mask(&[(0, input.connected), (1, gain.connected)]),
+        },
+        ModuleBody::SubpatchOutput { input } => {
+            if !input.connected {
+                return Err(format!(
+                    "subpatch output {} has disconnected input",
+                    module.id.value()
+                ));
+            }
+            ProjectModuleParams::None
+        }
+        ModuleBody::Subpatch => {
+            let (inputs, outputs) = subpatch_ports
+                .get(&module.id)
+                .copied()
+                .ok_or_else(|| format!("missing subpatch ports {}", module.id.value()))?;
+            ProjectModuleParams::SubPatch {
+                inputs,
+                outputs,
+                color: (0, 0, 0),
+            }
+        }
+    })
+}
+
+fn project_float(param: FloatParam) -> f32 {
+    param.value as f32 / 100.0
+}
+
+fn project_time(param: TimeParam) -> Result<ProjectTimeValue, String> {
+    let mut value = ProjectTimeValue {
+        unit: ProjectTimeUnit::Seconds,
+        seconds: 1.0,
+        samples: 1.0,
+        bar_num: 1,
+        bar_denom: 16,
+        hz: 1.0,
+    };
+    match param.unit {
+        TimeUnit::Seconds => {
+            value.unit = ProjectTimeUnit::Seconds;
+            value.seconds = param.value as f32 / 100.0;
+        }
+        TimeUnit::Samples => {
+            value.unit = ProjectTimeUnit::Samples;
+            value.samples = param.value as f32;
+        }
+        TimeUnit::Bars => {
+            let bar_num = u8::try_from(param.value)
+                .map_err(|_| format!("bar time out of range {}", param.value))?;
+            value.unit = ProjectTimeUnit::Bars;
+            value.bar_num = bar_num;
+        }
+        TimeUnit::Hertz => {
+            value.unit = ProjectTimeUnit::Hz;
+            value.hz = param.value as f32;
+        }
+    }
+    Ok(value)
+}
+
+fn project_env_point(point: &EnvPoint) -> brainwash::project::EnvPoint {
+    brainwash::project::EnvPoint {
+        time: point.time as f32 / 100.0,
+        value: point.value as f32 / 100.0,
+        curve: point.curve,
+    }
+}
+
+fn connected_mask(rows: &[(usize, bool)]) -> u8 {
+    rows.iter().fold(0, |mask, (index, connected)| {
+        if *connected {
+            mask | (1 << index)
+        } else {
+            mask
+        }
+    })
+}
+
+fn project_wave(index: usize) -> Result<ProjectWaveType, String> {
+    match index {
+        0 => Ok(ProjectWaveType::Sin),
+        1 => Ok(ProjectWaveType::Squ),
+        2 => Ok(ProjectWaveType::Tri),
+        3 => Ok(ProjectWaveType::Saw),
+        4 => Ok(ProjectWaveType::RSaw),
+        5 => Ok(ProjectWaveType::Noise),
+        _ => Err(format!("invalid wave index {index}")),
+    }
+}
+
+fn project_distortion(index: usize) -> Result<ProjectDistType, String> {
+    match index {
+        0 => Ok(ProjectDistType::Tube),
+        1 => Ok(ProjectDistType::Tape),
+        2 => Ok(ProjectDistType::Fuzz),
+        3 => Ok(ProjectDistType::Fold),
+        4 => Ok(ProjectDistType::Clip),
+        _ => Err(format!("invalid distortion index {index}")),
+    }
+}
+
+fn instrument_surfaces_from_project(
+    project: &Project,
+) -> Result<(PatchSurface, Vec<SubpatchSurface>), String> {
+    let subpatches = project
+        .subpatches
+        .iter()
+        .map(|subpatch| (subpatch.id, subpatch))
+        .collect::<HashMap<_, _>>();
+    let (root, subpatch_owners) = surface_from_project_modules(&project.modules)?;
+    let mut surfaces = Vec::new();
+    add_project_subpatches(&mut surfaces, subpatch_owners, &subpatches)?;
+    Ok((root, surfaces))
+}
+
 fn surface_from_project_modules(
     modules: &[ProjectModuleDef],
-) -> (PatchSurface, Vec<(ModuleId, u32)>) {
+) -> Result<(PatchSurface, Vec<(ModuleId, u32)>), String> {
     let mut subpatch_owners = Vec::new();
     let modules = modules
         .iter()
-        .filter_map(|definition| {
+        .map(|definition| {
             let (module, subpatch_id) = module_from_project(definition)?;
             if let Some(subpatch_id) = subpatch_id {
                 subpatch_owners.push((module.id, subpatch_id));
             }
-            Some(module)
+            Ok(module)
         })
-        .collect();
-    (
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok((
         PatchSurface {
             cursor: GridPos::new(0, 0),
             modules,
         },
         subpatch_owners,
-    )
+    ))
 }
 
 fn add_project_subpatches(
-    instrument: &mut Instrument,
+    surfaces: &mut Vec<SubpatchSurface>,
     owners: Vec<(ModuleId, u32)>,
     subpatches: &HashMap<u32, &ProjectSubpatchDef>,
-) {
+) -> Result<(), String> {
     for (owner, project_id) in owners {
-        let Some(definition) = subpatches.get(&project_id) else {
-            continue;
-        };
-        let (surface, nested_owners) = surface_from_project_modules(&definition.modules);
-        instrument
-            .subpatches
-            .push(SubpatchSurface { owner, surface });
-        add_project_subpatches(instrument, nested_owners, subpatches);
+        let definition = subpatches
+            .get(&project_id)
+            .ok_or_else(|| format!("missing subpatch {}", project_id))?;
+        let (surface, nested_owners) = surface_from_project_modules(&definition.modules)?;
+        surfaces.push(SubpatchSurface { owner, surface });
+        add_project_subpatches(surfaces, nested_owners, subpatches)?;
     }
+    Ok(())
 }
 
-fn module_from_project(definition: &ProjectModuleDef) -> Option<(Module, Option<u32>)> {
-    let (kind, subpatch_id) = kind_from_project(definition.kind)?;
+fn module_from_project(definition: &ProjectModuleDef) -> Result<(Module, Option<u32>), String> {
+    if !project_params_match(definition.kind, &definition.params) {
+        return Err(format!("module {} has mismatched params", definition.id));
+    }
+    validate_project_params(&definition.params)?;
+    let (kind, subpatch_id) = kind_from_project(definition.kind);
     let mut module = Module {
         id: ModuleId(definition.id),
-        kind,
         position: GridPos::new(definition.x, definition.y),
         orientation: orientation_from_project(definition.orientation),
-        parameters: kind.default_parameters(),
-        env_points: kind.default_env_points(),
+        body: kind.default_body(),
         disabled: false,
     };
     apply_project_params(&mut module, &definition.params);
-    Some((module, subpatch_id))
+    Ok((module, subpatch_id))
 }
 
-fn kind_from_project(kind: ProjectModuleKind) -> Option<(ModuleKind, Option<u32>)> {
-    Some(match kind {
+fn kind_from_project(kind: ProjectModuleKind) -> (ModuleKind, Option<u32>) {
+    match kind {
         ProjectModuleKind::Routing(routing) => (
             match routing {
                 ProjectRoutingModule::LSplit => ModuleKind::LeftSplit,
@@ -4810,7 +6284,271 @@ fn kind_from_project(kind: ProjectModuleKind) -> Option<(ModuleKind, Option<u32>
             },
             None,
         ),
-    })
+    }
+}
+
+fn project_params_match(kind: ProjectModuleKind, params: &ProjectModuleParams) -> bool {
+    matches!(
+        (kind, params),
+        (ProjectModuleKind::Routing(_), ProjectModuleParams::None)
+            | (
+                ProjectModuleKind::Subpatch(ProjectSubpatchModule::SubIn),
+                ProjectModuleParams::None
+            )
+            | (
+                ProjectModuleKind::Subpatch(ProjectSubpatchModule::SubOut),
+                ProjectModuleParams::None
+            )
+            | (
+                ProjectModuleKind::Subpatch(ProjectSubpatchModule::SubPatch(_)),
+                ProjectModuleParams::SubPatch { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Freq),
+                ProjectModuleParams::None
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Gate),
+                ProjectModuleParams::None
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Degree),
+                ProjectModuleParams::None
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::DegreeGate),
+                ProjectModuleParams::DegreeGate { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Osc),
+                ProjectModuleParams::Osc { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Rise),
+                ProjectModuleParams::Rise { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Fall),
+                ProjectModuleParams::Fall { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Ramp),
+                ProjectModuleParams::Ramp { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Adsr),
+                ProjectModuleParams::Adsr { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Envelope),
+                ProjectModuleParams::Envelope { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Lpf),
+                ProjectModuleParams::Filter { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Hpf),
+                ProjectModuleParams::Filter { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Comb),
+                ProjectModuleParams::Comb { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Allpass),
+                ProjectModuleParams::Allpass { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Delay),
+                ProjectModuleParams::Delay { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::DelayTap(_)),
+                ProjectModuleParams::DelayTap { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Reverb),
+                ProjectModuleParams::Reverb { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Distortion),
+                ProjectModuleParams::Distortion { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Compressor),
+                ProjectModuleParams::Compressor { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Flanger),
+                ProjectModuleParams::Flanger { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Mul),
+                ProjectModuleParams::Mul { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Add),
+                ProjectModuleParams::Add { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Gt),
+                ProjectModuleParams::Gt { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Lt),
+                ProjectModuleParams::Lt { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Switch),
+                ProjectModuleParams::Switch { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Rng),
+                ProjectModuleParams::None
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Sample),
+                ProjectModuleParams::Sample { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Probe),
+                ProjectModuleParams::Probe { .. }
+            )
+            | (
+                ProjectModuleKind::Standard(ProjectStandardModule::Output),
+                ProjectModuleParams::Output { .. }
+            )
+    )
+}
+
+fn validate_project_params(params: &ProjectModuleParams) -> Result<(), String> {
+    match params {
+        ProjectModuleParams::Osc {
+            freq, shift, gain, ..
+        } => {
+            validate_project_time(*freq)?;
+            validate_finite(*shift)?;
+            validate_finite(*gain)
+        }
+        ProjectModuleParams::Rise { time, .. }
+        | ProjectModuleParams::Fall { time, .. }
+        | ProjectModuleParams::Delay { time, .. } => validate_project_time(*time),
+        ProjectModuleParams::Ramp { value, time, .. } => {
+            validate_finite(*value)?;
+            validate_project_time(*time)
+        }
+        ProjectModuleParams::Adsr {
+            attack_ratio,
+            sustain,
+            ..
+        } => {
+            validate_finite(*attack_ratio)?;
+            validate_finite(*sustain)
+        }
+        ProjectModuleParams::Envelope { points, .. } => {
+            for point in points {
+                validate_finite(point.time)?;
+                validate_finite(point.value)?;
+            }
+            Ok(())
+        }
+        ProjectModuleParams::Filter { freq, q, .. } => {
+            validate_finite(*freq)?;
+            validate_finite(*q)
+        }
+        ProjectModuleParams::Comb {
+            time,
+            feedback,
+            damp,
+            ..
+        } => {
+            validate_project_time(*time)?;
+            validate_finite(*feedback)?;
+            validate_finite(*damp)
+        }
+        ProjectModuleParams::Allpass { time, feedback, .. } => {
+            validate_project_time(*time)?;
+            validate_finite(*feedback)
+        }
+        ProjectModuleParams::Reverb {
+            room,
+            damp,
+            mod_depth,
+            diffusion,
+            ..
+        } => {
+            validate_finite(*room)?;
+            validate_finite(*damp)?;
+            validate_finite(*mod_depth)?;
+            validate_finite(*diffusion)
+        }
+        ProjectModuleParams::Distortion {
+            drive, asymmetry, ..
+        } => {
+            validate_finite(*drive)?;
+            validate_finite(*asymmetry)
+        }
+        ProjectModuleParams::Flanger {
+            rate,
+            depth,
+            feedback,
+            ..
+        } => {
+            validate_finite(*rate)?;
+            validate_finite(*depth)?;
+            validate_finite(*feedback)
+        }
+        ProjectModuleParams::Compressor {
+            threshold,
+            ratio,
+            attack,
+            release,
+            makeup,
+            ..
+        } => {
+            validate_finite(*threshold)?;
+            validate_finite(*ratio)?;
+            validate_finite(*attack)?;
+            validate_finite(*release)?;
+            validate_finite(*makeup)
+        }
+        ProjectModuleParams::Mul { a, b, .. }
+        | ProjectModuleParams::Add { a, b, .. }
+        | ProjectModuleParams::Gt { a, b, .. }
+        | ProjectModuleParams::Lt { a, b, .. }
+        | ProjectModuleParams::Switch { a, b, .. } => {
+            validate_finite(*a)?;
+            validate_finite(*b)
+        }
+        ProjectModuleParams::Output { gain, .. } | ProjectModuleParams::DelayTap { gain } => {
+            validate_finite(*gain)
+        }
+        ProjectModuleParams::None
+        | ProjectModuleParams::DegreeGate { .. }
+        | ProjectModuleParams::Sample { .. }
+        | ProjectModuleParams::Probe { .. }
+        | ProjectModuleParams::SubPatch { .. } => Ok(()),
+    }
+}
+
+fn validate_project_time(value: ProjectTimeValue) -> Result<(), String> {
+    validate_finite(value.seconds)?;
+    validate_finite(value.samples)?;
+    validate_finite(value.hz)?;
+    if value.bar_denom == 0 {
+        Err("invalid bar denominator".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_finite(value: f32) -> Result<(), String> {
+    if value.is_finite() {
+        Ok(())
+    } else {
+        Err("non-finite project value".to_string())
+    }
 }
 
 fn orientation_from_project(orientation: ProjectOrientation) -> Orientation {
@@ -4821,9 +6559,10 @@ fn orientation_from_project(orientation: ProjectOrientation) -> Orientation {
 }
 
 fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
+    let mut parameters = module.body.parameters();
     match params {
         ProjectModuleParams::None | ProjectModuleParams::SubPatch { .. } => {}
-        ProjectModuleParams::DegreeGate { degree } => set_int(&mut module.parameters, 0, *degree),
+        ProjectModuleParams::DegreeGate { degree } => set_int(&mut parameters, 0, *degree),
         ProjectModuleParams::Osc {
             wave,
             freq,
@@ -4832,44 +6571,46 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             uni,
             connected,
         } => {
-            set_enum(&mut module.parameters, 0, wave_index(*wave));
-            set_time(&mut module.parameters, 1, *freq);
-            set_float(&mut module.parameters, 2, *shift);
-            set_float(&mut module.parameters, 3, *gain);
-            set_toggle(&mut module.parameters, 4, *uni);
-            apply_connected(&mut module.parameters, *connected);
+            set_enum(&mut parameters, 0, wave_index(*wave));
+            set_time(&mut parameters, 1, *freq);
+            set_float(&mut parameters, 2, *shift);
+            set_float(&mut parameters, 3, *gain);
+            set_toggle(&mut parameters, 4, *uni);
+            apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Rise { time, connected }
         | ProjectModuleParams::Fall { time, connected } => {
-            set_time(&mut module.parameters, 1, *time);
-            apply_connected(&mut module.parameters, *connected);
+            set_time(&mut parameters, 1, *time);
+            apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Ramp {
             value,
             time,
             connected,
         } => {
-            set_float(&mut module.parameters, 0, *value);
-            set_time(&mut module.parameters, 1, *time);
-            apply_connected(&mut module.parameters, *connected);
+            set_float(&mut parameters, 0, *value);
+            set_time(&mut parameters, 1, *time);
+            apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Adsr {
             attack_ratio,
             sustain,
             connected,
         } => {
-            set_float(&mut module.parameters, 2, *attack_ratio);
-            set_float(&mut module.parameters, 3, *sustain);
-            apply_connected(&mut module.parameters, *connected);
+            set_float(&mut parameters, 2, *attack_ratio);
+            set_float(&mut parameters, 3, *sustain);
+            apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Envelope { points, connected } => {
-            module.env_points = points.iter().map(env_point_from_project).collect();
-            apply_connected(&mut module.parameters, *connected);
+            if let Some(target) = module.body.env_points_mut() {
+                *target = points.iter().map(env_point_from_project).collect();
+            }
+            apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Filter { freq, q, connected } => {
-            set_float(&mut module.parameters, 1, *freq);
-            set_float(&mut module.parameters, 2, *q);
-            apply_connected(&mut module.parameters, *connected);
+            set_float(&mut parameters, 1, *freq);
+            set_float(&mut parameters, 2, *q);
+            apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Comb {
             time,
@@ -4877,23 +6618,23 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             damp,
             connected,
         } => {
-            set_time(&mut module.parameters, 1, *time);
-            set_float(&mut module.parameters, 2, *feedback);
-            set_float(&mut module.parameters, 3, *damp);
-            apply_connected(&mut module.parameters, *connected);
+            set_time(&mut parameters, 1, *time);
+            set_float(&mut parameters, 2, *feedback);
+            set_float(&mut parameters, 3, *damp);
+            apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Allpass {
             time,
             feedback,
             connected,
         } => {
-            set_time(&mut module.parameters, 1, *time);
-            set_float(&mut module.parameters, 2, *feedback);
-            apply_connected(&mut module.parameters, *connected);
+            set_time(&mut parameters, 1, *time);
+            set_float(&mut parameters, 2, *feedback);
+            apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Delay { time, connected } => {
-            set_time(&mut module.parameters, 1, *time);
-            apply_connected(&mut module.parameters, *connected);
+            set_time(&mut parameters, 1, *time);
+            apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Reverb {
             room,
@@ -4902,11 +6643,11 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             diffusion,
             connected,
         } => {
-            set_float(&mut module.parameters, 1, *room);
-            set_float(&mut module.parameters, 2, *damp);
-            set_float(&mut module.parameters, 3, *mod_depth);
-            set_float(&mut module.parameters, 4, *diffusion);
-            apply_connected(&mut module.parameters, *connected);
+            set_float(&mut parameters, 1, *room);
+            set_float(&mut parameters, 2, *damp);
+            set_float(&mut parameters, 3, *mod_depth);
+            set_float(&mut parameters, 4, *diffusion);
+            apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Distortion {
             dist_type,
@@ -4914,10 +6655,10 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             asymmetry,
             connected,
         } => {
-            set_enum(&mut module.parameters, 1, distortion_index(*dist_type));
-            set_float(&mut module.parameters, 2, *drive);
-            set_float(&mut module.parameters, 3, *asymmetry);
-            apply_connected(&mut module.parameters, *connected);
+            set_enum(&mut parameters, 1, distortion_index(*dist_type));
+            set_float(&mut parameters, 2, *drive);
+            set_float(&mut parameters, 3, *asymmetry);
+            apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Flanger {
             rate,
@@ -4925,10 +6666,10 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             feedback,
             connected,
         } => {
-            set_float(&mut module.parameters, 1, *rate);
-            set_float(&mut module.parameters, 2, *depth);
-            set_float(&mut module.parameters, 3, *feedback);
-            apply_connected(&mut module.parameters, *connected);
+            set_float(&mut parameters, 1, *rate);
+            set_float(&mut parameters, 2, *depth);
+            set_float(&mut parameters, 3, *feedback);
+            apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Compressor {
             threshold,
@@ -4938,35 +6679,40 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             makeup,
             connected,
         } => {
-            set_float(&mut module.parameters, 1, *threshold);
-            set_float(&mut module.parameters, 2, *ratio);
-            set_float(&mut module.parameters, 3, *attack);
-            set_float(&mut module.parameters, 4, *release);
-            set_float(&mut module.parameters, 5, *makeup);
-            apply_connected(&mut module.parameters, *connected);
+            set_float(&mut parameters, 1, *threshold);
+            set_float(&mut parameters, 2, *ratio);
+            set_float(&mut parameters, 3, *attack);
+            set_float(&mut parameters, 4, *release);
+            set_float(&mut parameters, 5, *makeup);
+            apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Mul { a, b, connected }
         | ProjectModuleParams::Add { a, b, connected }
         | ProjectModuleParams::Gt { a, b, connected }
         | ProjectModuleParams::Lt { a, b, connected } => {
-            set_float(&mut module.parameters, 0, *a);
-            set_float(&mut module.parameters, 1, *b);
-            apply_connected(&mut module.parameters, *connected);
+            set_float(&mut parameters, 0, *a);
+            set_float(&mut parameters, 1, *b);
+            apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Switch { a, b, connected } => {
-            set_float(&mut module.parameters, 1, *a);
-            set_float(&mut module.parameters, 2, *b);
-            apply_connected(&mut module.parameters, *connected);
+            set_float(&mut parameters, 1, *a);
+            set_float(&mut parameters, 2, *b);
+            apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Sample { connected, .. }
         | ProjectModuleParams::Probe { connected }
         | ProjectModuleParams::Output { connected, .. } => {
             if let ProjectModuleParams::Output { gain, .. } = params {
-                set_float(&mut module.parameters, 1, *gain);
+                set_float(&mut parameters, 1, *gain);
             }
-            apply_connected(&mut module.parameters, *connected);
+            apply_connected(&mut parameters, *connected);
         }
-        ProjectModuleParams::DelayTap { gain } => set_float(&mut module.parameters, 1, *gain),
+        ProjectModuleParams::DelayTap { gain } => {
+            set_float(&mut parameters, 1, *gain);
+        }
+    }
+    for (index, parameter) in parameters.into_iter().enumerate() {
+        module.body.set_parameter(index, parameter);
     }
 }
 
@@ -5087,14 +6833,49 @@ mod tests {
         for kind in all_modules().iter().copied() {
             let module = Module {
                 id: ModuleId(0),
-                kind,
                 position: GridPos::new(0, 0),
                 orientation: Orientation::Right,
-                parameters: kind.default_parameters(),
-                env_points: kind.default_env_points(),
+                body: kind.default_body(),
                 disabled: false,
             };
             assert!(audio_module(&module, rate, 120).is_ok(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn default_module_body_matches_module_kind() {
+        for kind in all_modules().iter().copied() {
+            let body = kind.default_body();
+            assert_eq!(body.kind(), kind);
+            assert_eq!(body.env_points().is_empty(), kind != ModuleKind::Envelope);
+        }
+    }
+
+    #[test]
+    fn module_parameter_rows_apply_to_typed_body() {
+        let mut module = Module {
+            id: ModuleId(0),
+            position: GridPos::new(0, 0),
+            orientation: Orientation::Right,
+            body: ModuleKind::Osc.default_body(),
+            disabled: false,
+        };
+        let mut gain = module.parameter(3).unwrap();
+        gain.value = ParameterValue::Float {
+            value: 75,
+            min: 0,
+            max: 100,
+            step: 5,
+        };
+        gain.connected = false;
+
+        assert!(module.set_parameter(3, gain));
+        match module.body {
+            ModuleBody::Osc { gain, .. } => {
+                assert_eq!(gain.value, 75);
+                assert!(!gain.connected);
+            }
+            _ => panic!("wrong body"),
         }
     }
 }
@@ -5158,11 +6939,7 @@ impl ModuleKind {
             | ModuleKind::Switch
             | ModuleKind::Output
             | ModuleKind::SubpatchOutput
-            | ModuleKind::Subpatch => self
-                .default_parameters()
-                .iter()
-                .filter(|parameter| parameter.value.is_port())
-                .count() as u16,
+            | ModuleKind::Subpatch => self.default_body().input_count(),
         }
     }
 
@@ -5257,7 +7034,7 @@ fn audio_module(
     rate: SampleRate,
     bpm: u16,
 ) -> Result<AudioModule, AudioPatchError> {
-    match module.kind {
+    match module.kind() {
         ModuleKind::Freq => Ok(AudioModule::Freq),
         ModuleKind::Gate => Ok(AudioModule::Gate),
         ModuleKind::Degree => Ok(AudioModule::Degree),
@@ -5267,7 +7044,7 @@ fn audio_module(
         ModuleKind::Osc => Ok(AudioModule::Osc {
             wave: audio_wave(module)?,
             frequency: audio_frequency(module, 1, rate)?,
-            shift: audio_float(module, 2)?,
+            shift: audio_sample(module, 2)?,
             gain: audio_unit(module, 3)?,
             unipolar: audio_toggle(module, 4)?,
         }),
@@ -5278,7 +7055,7 @@ fn audio_module(
             time: audio_duration(module, 1, rate, bpm)?,
         }),
         ModuleKind::Ramp => Ok(AudioModule::Ramp {
-            value: audio_float(module, 0)?,
+            value: audio_sample(module, 0)?,
             time: audio_duration(module, 1, rate, bpm)?,
         }),
         ModuleKind::Adsr => Ok(AudioModule::Adsr {
@@ -5288,14 +7065,18 @@ fn audio_module(
         ModuleKind::Envelope => Ok(AudioModule::Envelope {
             points: Arc::new(
                 module
-                    .env_points
+                    .env_points()
                     .iter()
-                    .map(|point| AudioEnvPoint {
-                        time: point.time as f32 / 100.0,
-                        value: point.value as f32 / 100.0,
-                        curve: point.curve,
+                    .map(|point| {
+                        Ok(AudioEnvPoint {
+                            time: Unit::new(point.time as f32 / 100.0)
+                                .ok_or(AudioPatchError::InvalidParameter)?,
+                            value: Unit::new(point.value as f32 / 100.0)
+                                .ok_or(AudioPatchError::InvalidParameter)?,
+                            curve: point.curve,
+                        })
                     })
-                    .collect(),
+                    .collect::<Result<Vec<_>, AudioPatchError>>()?,
             ),
         }),
         ModuleKind::Lowpass => Ok(AudioModule::Lowpass {
@@ -5332,10 +7113,11 @@ fn audio_module(
         }),
         ModuleKind::Compressor => Ok(AudioModule::Compressor {
             threshold: audio_unit(module, 1)?,
-            ratio: audio_float(module, 2)?,
+            ratio: CompressorRatio::new(audio_float(module, 2)?)
+                .ok_or(AudioPatchError::InvalidParameter)?,
             attack: seconds(audio_float(module, 3)?)?,
             release: seconds(audio_float(module, 4)?)?,
-            makeup: audio_float(module, 5)?,
+            makeup: Gain::new(audio_float(module, 5)?).ok_or(AudioPatchError::InvalidParameter)?,
         }),
         ModuleKind::Flanger => Ok(AudioModule::Flanger {
             rate: Hertz::new(audio_float(module, 1)?).ok_or(AudioPatchError::InvalidParameter)?,
@@ -5344,27 +7126,27 @@ fn audio_module(
         }),
         ModuleKind::Multiply => Ok(AudioModule::Binary {
             op: BinaryOp::Multiply,
-            a: audio_float(module, 0)?,
-            b: audio_float(module, 1)?,
+            a: audio_sample(module, 0)?,
+            b: audio_sample(module, 1)?,
         }),
         ModuleKind::Add => Ok(AudioModule::Binary {
             op: BinaryOp::Add,
-            a: audio_float(module, 0)?,
-            b: audio_float(module, 1)?,
+            a: audio_sample(module, 0)?,
+            b: audio_sample(module, 1)?,
         }),
         ModuleKind::GreaterThan => Ok(AudioModule::Binary {
             op: BinaryOp::GreaterThan,
-            a: audio_float(module, 0)?,
-            b: audio_float(module, 1)?,
+            a: audio_sample(module, 0)?,
+            b: audio_sample(module, 1)?,
         }),
         ModuleKind::LessThan => Ok(AudioModule::Binary {
             op: BinaryOp::LessThan,
-            a: audio_float(module, 0)?,
-            b: audio_float(module, 1)?,
+            a: audio_sample(module, 0)?,
+            b: audio_sample(module, 1)?,
         }),
         ModuleKind::Switch => Ok(AudioModule::Switch {
-            a: audio_float(module, 1)?,
-            b: audio_float(module, 2)?,
+            a: audio_sample(module, 1)?,
+            b: audio_sample(module, 2)?,
         }),
         ModuleKind::Random => Ok(AudioModule::Random),
         ModuleKind::Sample => Ok(AudioModule::Sample {
@@ -5384,14 +7166,6 @@ fn audio_module(
     }
 }
 
-fn connection_input(connection: &Connection, target: &Module, input_count: u16) -> Option<usize> {
-    let input = match connection.orientation {
-        Orientation::Right => connection.to_cell.y.checked_sub(target.position.y)?,
-        Orientation::Down => connection.to_cell.x.checked_sub(target.position.x)?,
-    } as usize;
-    (input < input_count as usize).then_some(input)
-}
-
 fn audio_id(ids: &[(AudioKey, AudioModuleId)], key: AudioKey) -> Option<AudioModuleId> {
     ids.iter()
         .find_map(|(candidate, audio_id)| (*candidate == key).then_some(*audio_id))
@@ -5406,16 +7180,15 @@ fn root_connection_source(
     let source = root_modules
         .iter()
         .find(|module| module.id == connection.from)?;
-    if source.kind != ModuleKind::Subpatch {
+    if source.kind() != ModuleKind::Subpatch {
         return audio_id(ids, AudioKey::Root(source.id));
     }
-    let output = subpatch_output_index(connection, source)?;
     let subpatch = instrument
         .subpatches
         .iter()
         .find(|subpatch| subpatch.owner == source.id)?;
     let outputs = subpatch_outputs(&subpatch.surface);
-    let module = outputs.get(output).copied()?;
+    let module = outputs.get(connection.output).copied()?;
     audio_id(
         ids,
         AudioKey::Subpatch {
@@ -5437,7 +7210,7 @@ fn subpatch_inputs(surface: &PatchSurface) -> Vec<ModuleId> {
     let mut modules = surface
         .modules
         .iter()
-        .filter(|module| !module.disabled && module.kind == ModuleKind::SubpatchInput)
+        .filter(|module| !module.disabled && module.kind() == ModuleKind::SubpatchInput)
         .collect::<Vec<_>>();
     modules.sort_by_key(|module| subpatch_input_key(module));
     modules.into_iter().map(|module| module.id).collect()
@@ -5447,26 +7220,17 @@ fn subpatch_outputs(surface: &PatchSurface) -> Vec<ModuleId> {
     let mut modules = surface
         .modules
         .iter()
-        .filter(|module| !module.disabled && module.kind == ModuleKind::SubpatchOutput)
+        .filter(|module| !module.disabled && module.kind() == ModuleKind::SubpatchOutput)
         .collect::<Vec<_>>();
     modules.sort_by_key(|module| subpatch_output_key(module));
     modules.into_iter().map(|module| module.id).collect()
 }
 
-fn subpatch_output_index(connection: &Connection, source: &Module) -> Option<usize> {
-    let index = match connection.orientation {
-        Orientation::Right => connection.from_cell.y.checked_sub(source.position.y)?,
-        Orientation::Down => connection.from_cell.x.checked_sub(source.position.x)?,
-    };
-    Some(index as usize)
-}
-
 fn audio_wave(module: &Module) -> Result<Wave, AudioPatchError> {
-    let Some(ParameterValue::Enum { index, .. }) = module.parameters.first().map(|p| p.value())
-    else {
+    let Some(ParameterValue::Enum { index, .. }) = module.parameter(0).map(|p| p.value) else {
         return Err(AudioPatchError::InvalidParameter);
     };
-    match *index {
+    match index {
         0 => Ok(Wave::Sine),
         1 => Ok(Wave::Square),
         2 => Ok(Wave::Triangle),
@@ -5481,15 +7245,14 @@ fn audio_frequency(
     parameter: usize,
     rate: SampleRate,
 ) -> Result<Hertz, AudioPatchError> {
-    let Some(ParameterValue::Time { value, unit }) =
-        module.parameters.get(parameter).map(|p| p.value())
+    let Some(ParameterValue::Time { value, unit }) = module.parameter(parameter).map(|p| p.value)
     else {
         return Err(AudioPatchError::InvalidParameter);
     };
     let hz = match unit {
-        TimeUnit::Hertz => *value as f32,
-        TimeUnit::Seconds => 100.0 / (*value).max(1) as f32,
-        TimeUnit::Samples => rate.value() as f32 / (*value).max(1) as f32,
+        TimeUnit::Hertz => value as f32,
+        TimeUnit::Seconds => 100.0 / value.max(1) as f32,
+        TimeUnit::Samples => rate.value() as f32 / value.max(1) as f32,
         TimeUnit::Bars => 1.0,
     };
     Hertz::new(hz).ok_or(AudioPatchError::InvalidParameter)
@@ -5501,20 +7264,19 @@ fn audio_duration(
     rate: SampleRate,
     bpm: u16,
 ) -> Result<Duration, AudioPatchError> {
-    let Some(ParameterValue::Time { value, unit }) =
-        module.parameters.get(parameter).map(|p| p.value())
+    let Some(ParameterValue::Time { value, unit }) = module.parameter(parameter).map(|p| p.value)
     else {
         return Err(AudioPatchError::InvalidParameter);
     };
     match unit {
-        TimeUnit::Seconds => seconds(*value as f32 / 100.0),
-        TimeUnit::Samples => Ok(Duration::Samples(Samples::new((*value).max(1) as u64))),
+        TimeUnit::Seconds => seconds(value as f32 / 100.0),
+        TimeUnit::Samples => Ok(Duration::Samples(Samples::new(value.max(1) as u64))),
         TimeUnit::Bars => {
-            let beats = *value as f32 / 16.0 * 4.0;
+            let beats = value as f32 / 16.0 * 4.0;
             seconds(beats * 60.0 / bpm.max(1) as f32)
         }
         TimeUnit::Hertz => {
-            let hz = (*value).max(1) as f32;
+            let hz = value.max(1) as f32;
             seconds(1.0 / hz.min(rate.value() as f32))
         }
     }
@@ -5527,29 +7289,30 @@ fn seconds(value: f32) -> Result<Duration, AudioPatchError> {
 }
 
 fn audio_float(module: &Module, parameter: usize) -> Result<f32, AudioPatchError> {
-    let Some(ParameterValue::Float { value, .. }) =
-        module.parameters.get(parameter).map(|p| p.value())
+    let Some(ParameterValue::Float { value, .. }) = module.parameter(parameter).map(|p| p.value)
     else {
         return Err(AudioPatchError::InvalidParameter);
     };
-    Ok(*value as f32 / 100.0)
+    Ok(value as f32 / 100.0)
+}
+
+fn audio_sample(module: &Module, parameter: usize) -> Result<AudioSample, AudioPatchError> {
+    AudioSample::new(audio_float(module, parameter)?).ok_or(AudioPatchError::InvalidParameter)
 }
 
 fn audio_int(module: &Module, parameter: usize) -> Result<i32, AudioPatchError> {
-    let Some(ParameterValue::Int { value, .. }) =
-        module.parameters.get(parameter).map(|p| p.value())
+    let Some(ParameterValue::Int { value, .. }) = module.parameter(parameter).map(|p| p.value)
     else {
         return Err(AudioPatchError::InvalidParameter);
     };
-    Ok(*value)
+    Ok(value)
 }
 
 fn audio_toggle(module: &Module, parameter: usize) -> Result<bool, AudioPatchError> {
-    let Some(ParameterValue::Toggle(value)) = module.parameters.get(parameter).map(|p| p.value())
-    else {
+    let Some(ParameterValue::Toggle(value)) = module.parameter(parameter).map(|p| p.value) else {
         return Err(AudioPatchError::InvalidParameter);
     };
-    Ok(*value)
+    Ok(value)
 }
 
 fn audio_unit(module: &Module, parameter: usize) -> Result<Unit, AudioPatchError> {
@@ -5563,11 +7326,10 @@ fn filter_cutoff(value: f32) -> Result<Hertz, AudioPatchError> {
 }
 
 fn audio_distortion(module: &Module) -> Result<AudioDistortion, AudioPatchError> {
-    let Some(ParameterValue::Enum { index, .. }) = module.parameters.get(1).map(|p| p.value())
-    else {
+    let Some(ParameterValue::Enum { index, .. }) = module.parameter(1).map(|p| p.value) else {
         return Err(AudioPatchError::InvalidParameter);
     };
-    match *index {
+    match index {
         0 | 1 | 2 => Ok(AudioDistortion::Tanh),
         3 => Ok(AudioDistortion::Fold),
         4 => Ok(AudioDistortion::Clip),

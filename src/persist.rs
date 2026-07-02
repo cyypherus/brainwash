@@ -1,5 +1,5 @@
-use crate::patch::{self, BinaryOp, EnvPoint, Module, Patch};
-use crate::sample::Unit;
+use crate::patch::{self, BinaryOp, CompressorRatio, EnvPoint, Gain, Module, Patch};
+use crate::sample::{Sample, Unit};
 use crate::time::{Duration, Hertz, Samples, Seconds};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -216,7 +216,7 @@ impl FilePatch {
                 .iter()
                 .map(|connection| FileConnection {
                     from: connection.from.0,
-                    to: connection.to.0,
+                    to: connection.input.module.0,
                 })
                 .collect(),
             output: patch.output_id().ok_or(SaveError::Value)?.0,
@@ -234,7 +234,10 @@ impl FilePatch {
         for connection in self.connections {
             let from = *ids.get(&connection.from).ok_or(LoadError::Value)?;
             let to = *ids.get(&connection.to).ok_or(LoadError::Value)?;
-            patch.connect(from, to).map_err(|_| LoadError::Value)?;
+            let port = patch.input_port(to, 0).map_err(|_| LoadError::Value)?;
+            patch
+                .connect_input(from, port)
+                .map_err(|_| LoadError::Value)?;
         }
         let output = *ids.get(&self.output).ok_or(LoadError::Value)?;
         patch.output(output).map_err(|_| LoadError::Value)?;
@@ -249,7 +252,7 @@ impl FileModule {
             Module::Gate => FileModule::Gate,
             Module::Degree => FileModule::Degree,
             Module::DegreeGate { target } => FileModule::DegreeGate { target },
-            Module::Constant(value) => FileModule::Constant(value),
+            Module::Constant(value) => FileModule::Constant(value.value()),
             Module::Pass => FileModule::Pass,
             Module::Osc {
                 wave,
@@ -260,7 +263,7 @@ impl FileModule {
             } => FileModule::Osc {
                 wave: FileWave::from_wave(wave),
                 frequency: frequency.value(),
-                shift,
+                shift: shift.value(),
                 gain: gain.value(),
                 unipolar,
             },
@@ -271,7 +274,7 @@ impl FileModule {
                 time: FileDuration::from_duration(time),
             },
             Module::Ramp { value, time } => FileModule::Ramp {
-                value,
+                value: value.value(),
                 time: FileDuration::from_duration(time),
             },
             Module::Adsr {
@@ -287,8 +290,8 @@ impl FileModule {
                 points: points
                     .iter()
                     .map(|point| FileEnvPoint {
-                        time: point.time,
-                        value: point.value,
+                        time: point.time.value(),
+                        value: point.value.value(),
                         curve: point.curve,
                     })
                     .collect(),
@@ -340,10 +343,10 @@ impl FileModule {
                 makeup,
             } => FileModule::Compressor {
                 threshold: threshold.value(),
-                ratio,
+                ratio: ratio.value(),
                 attack: FileDuration::from_duration(attack),
                 release: FileDuration::from_duration(release),
-                makeup,
+                makeup: makeup.value(),
             },
             Module::Flanger {
                 rate,
@@ -356,13 +359,16 @@ impl FileModule {
             },
             Module::Binary { op, a, b } => FileModule::Binary {
                 op: FileBinaryOp::from_binary_op(op),
-                a,
-                b,
+                a: a.value(),
+                b: b.value(),
             },
-            Module::Switch { a, b } => FileModule::Switch { a, b },
+            Module::Switch { a, b } => FileModule::Switch {
+                a: a.value(),
+                b: b.value(),
+            },
             Module::Random => FileModule::Random,
             Module::Sample { samples } => FileModule::Sample {
-                samples: samples.as_ref().clone(),
+                samples: samples.iter().map(|sample| sample.value()).collect(),
             },
             Module::Probe => FileModule::Probe,
         }
@@ -374,7 +380,9 @@ impl FileModule {
             FileModule::Gate => Module::Gate,
             FileModule::Degree => Module::Degree,
             FileModule::DegreeGate { target } => Module::DegreeGate { target },
-            FileModule::Constant(value) => Module::Constant(value),
+            FileModule::Constant(value) => {
+                Module::Constant(Sample::new(value).ok_or(LoadError::Value)?)
+            }
             FileModule::Pass => Module::Pass,
             FileModule::Osc {
                 wave,
@@ -385,7 +393,7 @@ impl FileModule {
             } => Module::Osc {
                 wave: wave.into_wave(),
                 frequency: Hertz::new(frequency).ok_or(LoadError::Value)?,
-                shift,
+                shift: Sample::new(shift).ok_or(LoadError::Value)?,
                 gain: Unit::new(gain).ok_or(LoadError::Value)?,
                 unipolar,
             },
@@ -396,7 +404,7 @@ impl FileModule {
                 time: time.into_duration()?,
             },
             FileModule::Ramp { value, time } => Module::Ramp {
-                value,
+                value: Sample::new(value).ok_or(LoadError::Value)?,
                 time: time.into_duration()?,
             },
             FileModule::Adsr {
@@ -412,12 +420,14 @@ impl FileModule {
                 points: Arc::new(
                     points
                         .into_iter()
-                        .map(|point| EnvPoint {
-                            time: point.time,
-                            value: point.value,
-                            curve: point.curve,
+                        .map(|point| {
+                            Ok(EnvPoint {
+                                time: Unit::new(point.time).ok_or(LoadError::Value)?,
+                                value: Unit::new(point.value).ok_or(LoadError::Value)?,
+                                curve: point.curve,
+                            })
                         })
-                        .collect(),
+                        .collect::<Result<Vec<_>, LoadError>>()?,
                 ),
             },
             FileModule::Lowpass { cutoff } => Module::Lowpass {
@@ -469,10 +479,10 @@ impl FileModule {
                 makeup,
             } => Module::Compressor {
                 threshold: Unit::new(threshold).ok_or(LoadError::Value)?,
-                ratio,
+                ratio: CompressorRatio::new(ratio).ok_or(LoadError::Value)?,
                 attack: attack.into_duration()?,
                 release: release.into_duration()?,
-                makeup,
+                makeup: Gain::new(makeup).ok_or(LoadError::Value)?,
             },
             FileModule::Flanger {
                 rate,
@@ -485,13 +495,21 @@ impl FileModule {
             },
             FileModule::Binary { op, a, b } => Module::Binary {
                 op: op.into_binary_op(),
-                a,
-                b,
+                a: Sample::new(a).ok_or(LoadError::Value)?,
+                b: Sample::new(b).ok_or(LoadError::Value)?,
             },
-            FileModule::Switch { a, b } => Module::Switch { a, b },
+            FileModule::Switch { a, b } => Module::Switch {
+                a: Sample::new(a).ok_or(LoadError::Value)?,
+                b: Sample::new(b).ok_or(LoadError::Value)?,
+            },
             FileModule::Random => Module::Random,
             FileModule::Sample { samples } => Module::Sample {
-                samples: Arc::new(samples),
+                samples: Arc::new(
+                    samples
+                        .into_iter()
+                        .map(|sample| Sample::new(sample).ok_or(LoadError::Value))
+                        .collect::<Result<Vec<_>, _>>()?,
+                ),
             },
             FileModule::Probe => Module::Probe,
         })

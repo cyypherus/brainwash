@@ -306,3 +306,9 @@ pub fn load(path: &Path) -> io::Result<Project> {
     let input = fs::read_to_string(path)?;
     from_str(&input).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
+
+pub fn save(path: &Path, project: &Project) -> io::Result<()> {
+    let output = ron::to_string(project)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    fs::write(path, output)
+}

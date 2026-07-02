@@ -1,3 +1,4 @@
+use crate::model::ModuleId;
 use brainwash::compile::{CompiledPatch, PatchControls};
 use brainwash::compile::{PatchEngine, UpdateRejected};
 use brainwash::patch::ModuleId as AudioModuleId;
@@ -28,14 +29,16 @@ pub struct AudioHandle {
     rate: SampleRate,
 }
 
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct ProbeRoute {
     pub(crate) source: AudioModuleId,
-    pub(crate) target: u32,
+    pub(crate) target: ModuleId,
 }
 
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct MeterRoute {
     source: AudioModuleId,
-    target: u32,
+    target: ModuleId,
     input_count: NonZeroU8,
 }
 
@@ -46,7 +49,7 @@ pub(crate) enum VoiceMode {
 }
 
 impl MeterRoute {
-    pub(crate) fn new(source: AudioModuleId, target: u32, input_count: usize) -> Option<Self> {
+    pub(crate) fn new(source: AudioModuleId, target: ModuleId, input_count: usize) -> Option<Self> {
         if input_count > METER_INPUTS {
             return None;
         }
@@ -57,6 +60,9 @@ impl MeterRoute {
         })
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AudioCommandRejected;
 
 impl VoiceMode {
     fn count(self) -> usize {
@@ -156,7 +162,7 @@ impl AudioRuntime {
         })
     }
 
-    pub fn handle(&mut self) -> Option<AudioHandle> {
+    pub fn take_handle(&mut self) -> Option<AudioHandle> {
         self.handle.take()
     }
 }
@@ -166,13 +172,19 @@ impl AudioHandle {
         self.rate
     }
 
-    pub fn set_playing(&mut self, playing: bool) {
-        let _ = self.play_pending.push(playing);
+    pub fn set_playing(&mut self, playing: bool) -> Result<(), AudioCommandRejected> {
+        self.play_pending
+            .push(playing)
+            .map_err(|_| AudioCommandRejected)
     }
 
-    pub fn submit(&mut self, patch: CompiledPatch) {
-        drop(self.patch_pending.push(PatchBank::new(patch)));
+    pub fn submit(&mut self, patch: CompiledPatch) -> Result<(), AudioCommandRejected> {
+        let result = self
+            .patch_pending
+            .push(PatchBank::new(patch))
+            .map_err(|_| AudioCommandRejected);
         self.collect_retired();
+        result
     }
 
     pub(crate) fn submit_with_telemetry(
@@ -181,32 +193,37 @@ impl AudioHandle {
         probes: &[ProbeRoute],
         meters: &[MeterRoute],
         voice_mode: VoiceMode,
-    ) {
+    ) -> Result<(), AudioCommandRejected> {
         let probe_routes = ProbeRoutes::new(probes);
         let meter_routes = MeterRoutes::new(meters);
-        drop(self.patch_pending.push(PatchBank::new_with_telemetry(
-            patch,
-            probe_routes,
-            meter_routes,
-            voice_mode,
-        )));
+        let result = self
+            .patch_pending
+            .push(PatchBank::new_with_telemetry(
+                patch,
+                probe_routes,
+                meter_routes,
+                voice_mode,
+            ))
+            .map_err(|_| AudioCommandRejected);
         self.collect_retired();
+        result
     }
 
-    pub(crate) fn probe_history(&self, module: u32, voice: usize, len: usize) -> Vec<f32> {
+    pub(crate) fn probe_history(&self, module: ModuleId, voice: usize, len: usize) -> Vec<f32> {
         self.probe_bus.history(module, voice, len)
     }
 
-    pub(crate) fn meter_values(&self, module: u32, voice: usize) -> Vec<f32> {
+    pub(crate) fn meter_values(&self, module: ModuleId, voice: usize) -> Vec<f32> {
         self.meter_bus.values(module, voice)
     }
 
-    pub fn submit_track(&mut self, track: Track, bpm: u16) {
-        drop(
-            self.track_pending
-                .push(TrackRuntime::new(track, bpm, self.rate)),
-        );
+    pub fn submit_track(&mut self, track: Track, bpm: u16) -> Result<(), AudioCommandRejected> {
+        let result = self
+            .track_pending
+            .push(TrackRuntime::new(track, bpm, self.rate))
+            .map_err(|_| AudioCommandRejected);
         self.collect_retired();
+        result
     }
 
     pub fn collect_retired(&mut self) {
@@ -332,7 +349,7 @@ where
 struct ProbeSlotRoute {
     source: AudioModuleId,
     slot: usize,
-    target: u32,
+    target: ModuleId,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -368,7 +385,7 @@ impl ProbeRoutes {
 struct MeterSlotRoute {
     source: AudioModuleId,
     slot: usize,
-    target: u32,
+    target: ModuleId,
     inputs: usize,
 }
 
@@ -436,7 +453,7 @@ impl ProbeBus {
         for route in routes.iter() {
             let slot = route.slot;
             self.generations[slot].fetch_add(1, Ordering::AcqRel);
-            self.ids[slot].store(route.target.saturating_add(1), Ordering::Release);
+            self.ids[slot].store(route.target.value().saturating_add(1), Ordering::Release);
         }
     }
 
@@ -452,8 +469,8 @@ impl ProbeBus {
             .store((cursor + 1) % PROBE_HISTORY, Ordering::Release);
     }
 
-    fn history(&self, module: u32, voice: usize, len: usize) -> Vec<f32> {
-        let slot_id = module.saturating_add(1);
+    fn history(&self, module: ModuleId, voice: usize, len: usize) -> Vec<f32> {
+        let slot_id = module.value().saturating_add(1);
         let Some(slot) = self
             .ids
             .iter()
@@ -515,7 +532,7 @@ impl MeterBus {
         for route in routes.iter() {
             let slot = route.slot;
             self.clear_slot(slot);
-            self.ids[slot].store(route.target.saturating_add(1), Ordering::Release);
+            self.ids[slot].store(route.target.value().saturating_add(1), Ordering::Release);
             self.inputs[slot].store(route.inputs, Ordering::Release);
         }
     }
@@ -537,8 +554,8 @@ impl MeterBus {
             .store(value.to_bits(), Ordering::Release);
     }
 
-    fn values(&self, module: u32, voice: usize) -> Vec<f32> {
-        let slot_id = module.saturating_add(1);
+    fn values(&self, module: ModuleId, voice: usize) -> Vec<f32> {
+        let slot_id = module.value().saturating_add(1);
         let Some(slot) = self
             .ids
             .iter()
@@ -879,10 +896,85 @@ fn accept_track(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{GuiAction, GuiState};
     use assert_no_alloc::assert_no_alloc;
     use brainwash::patch::{Module, Patch, Wave};
-    use brainwash::sample::Unit;
+    use brainwash::sample::{Sample as AudioSample, Unit};
     use brainwash::scale::cmin;
+
+    #[test]
+    fn set_playing_reports_rejection_when_queue_is_full() {
+        let mut handle = test_handle();
+
+        assert_eq!(handle.set_playing(true), Ok(()));
+        assert_eq!(handle.set_playing(false), Ok(()));
+        assert_eq!(handle.set_playing(true), Err(AudioCommandRejected));
+    }
+
+    #[test]
+    fn submit_reports_rejection_when_queue_is_full() {
+        let rate = SampleRate::new(44_100).unwrap();
+        let mut handle = test_handle();
+
+        assert_eq!(handle.submit(compiled_saw_patch(110.0, rate)), Ok(()));
+        assert_eq!(handle.submit(compiled_saw_patch(220.0, rate)), Ok(()));
+        assert_eq!(
+            handle.submit(compiled_saw_patch(330.0, rate)),
+            Err(AudioCommandRejected)
+        );
+    }
+
+    #[test]
+    fn submit_with_telemetry_reports_rejection_when_queue_is_full() {
+        let rate = SampleRate::new(44_100).unwrap();
+        let mut handle = test_handle();
+
+        assert_eq!(
+            handle.submit_with_telemetry(
+                compiled_saw_patch(110.0, rate),
+                &[],
+                &[],
+                VoiceMode::Single
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            handle.submit_with_telemetry(
+                compiled_saw_patch(220.0, rate),
+                &[],
+                &[],
+                VoiceMode::Single
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            handle.submit_with_telemetry(
+                compiled_saw_patch(330.0, rate),
+                &[],
+                &[],
+                VoiceMode::Single
+            ),
+            Err(AudioCommandRejected)
+        );
+    }
+
+    #[test]
+    fn submit_track_reports_rejection_when_queue_is_full() {
+        let mut handle = test_handle();
+
+        assert_eq!(
+            handle.submit_track(Track::parse("{0}", &cmin()).unwrap(), 120),
+            Ok(())
+        );
+        assert_eq!(
+            handle.submit_track(Track::parse("{2}", &cmin()).unwrap(), 120),
+            Ok(())
+        );
+        assert_eq!(
+            handle.submit_track(Track::parse("{4}", &cmin()).unwrap(), 120),
+            Err(AudioCommandRejected)
+        );
+    }
 
     #[test]
     fn track_runtime_exposes_polyphonic_voice_controls() {
@@ -903,11 +995,12 @@ mod tests {
         let osc = patch.insert(Module::Osc {
             wave: Wave::Saw,
             frequency: Hertz::new(110.0).unwrap(),
-            shift: 0.0,
+            shift: AudioSample::ZERO,
             gain: Unit::ONE,
             unipolar: false,
         });
-        patch.connect(freq, osc).unwrap();
+        let port = patch.input_port(osc, 0).unwrap();
+        patch.connect_input(freq, port).unwrap();
         patch.output(osc).unwrap();
         let compiled = CompiledPatch::new(&patch, rate).unwrap();
         let (_pending_input, pending_output) = RingBuffer::new(2);
@@ -1047,7 +1140,7 @@ mod tests {
         });
 
         assert!(retired_output.pop().is_ok());
-        assert_eq!(meter_bus.values(77, 0).len(), 1);
+        assert_eq!(meter_bus.values(route.target, 0).len(), 1);
     }
 
     #[test]
@@ -1076,11 +1169,11 @@ mod tests {
             runtime.next_frame(controls, false);
         }
 
-        assert_eq!(meter_bus.values(77, 0), vec![0.0]);
+        assert_eq!(meter_bus.values(route.target, 0), vec![0.0]);
 
         runtime.next_frame(controls, true);
 
-        assert_ne!(meter_bus.values(77, 0), vec![0.0]);
+        assert_ne!(meter_bus.values(route.target, 0), vec![0.0]);
     }
 
     #[test]
@@ -1197,7 +1290,7 @@ mod tests {
 
         assert!(patch_retired_output.pop().is_ok());
         assert!(track_retired_output.pop().is_ok());
-        assert_eq!(meter_bus.values(77, 0).len(), 1);
+        assert_eq!(meter_bus.values(route.target, 0).len(), 1);
     }
 
     #[test]
@@ -1370,7 +1463,7 @@ mod tests {
 
     fn metered_patch(rate: SampleRate) -> (CompiledPatch, MeterRoute) {
         let mut patch = Patch::new();
-        let source = patch.insert(Module::Constant(0.5));
+        let source = patch.insert(Module::Constant(AudioSample::new(0.5).unwrap()));
         let lowpass = patch.insert(Module::Lowpass {
             cutoff: Hertz::new(1000.0).unwrap(),
         });
@@ -1378,8 +1471,33 @@ mod tests {
         patch.output(lowpass).unwrap();
         (
             CompiledPatch::new(&patch, rate).unwrap(),
-            MeterRoute::new(lowpass, 77, 1).unwrap(),
+            MeterRoute::new(lowpass, telemetry_module_id(), 1).unwrap(),
         )
+    }
+
+    fn test_handle() -> AudioHandle {
+        let (patch_pending, _patch_callback) = RingBuffer::new(2);
+        let (_patch_retired_callback, patch_retired) = RingBuffer::new(2);
+        let (track_pending, _track_callback) = RingBuffer::new(2);
+        let (_track_retired_callback, track_retired) = RingBuffer::new(2);
+        let (play_pending, _play_callback) = RingBuffer::new(2);
+        AudioHandle {
+            patch_pending,
+            patch_retired,
+            track_pending,
+            track_retired,
+            play_pending,
+            probe_bus: Arc::new(ProbeBus::new()),
+            meter_bus: Arc::new(MeterBus::new()),
+            rate: SampleRate::new(44_100).unwrap(),
+        }
+    }
+
+    fn telemetry_module_id() -> ModuleId {
+        let mut state = GuiState::new(4, 4);
+        state.apply(GuiAction::OpenPalette);
+        state.apply(GuiAction::Confirm);
+        state.modules()[0].id()
     }
 
     fn compiled_saw_patch(frequency: f32, rate: SampleRate) -> CompiledPatch {
@@ -1388,11 +1506,12 @@ mod tests {
         let osc = patch.insert(Module::Osc {
             wave: Wave::Saw,
             frequency: Hertz::new(frequency).unwrap(),
-            shift: 0.0,
+            shift: AudioSample::ZERO,
             gain: Unit::ONE,
             unipolar: false,
         });
-        patch.connect(freq, osc).unwrap();
+        let port = patch.input_port(osc, 0).unwrap();
+        patch.connect_input(freq, port).unwrap();
         patch.output(osc).unwrap();
         CompiledPatch::new(&patch, rate).unwrap()
     }
@@ -1402,7 +1521,7 @@ mod tests {
         let osc = patch.insert(Module::Osc {
             wave: Wave::Saw,
             frequency: Hertz::new(440.0).unwrap(),
-            shift: 0.0,
+            shift: AudioSample::ZERO,
             gain: Unit::ONE,
             unipolar: false,
         });
@@ -1416,11 +1535,12 @@ mod tests {
         let osc = patch.insert(Module::Osc {
             wave: Wave::Saw,
             frequency: Hertz::new(440.0).unwrap(),
-            shift: 0.0,
+            shift: AudioSample::ZERO,
             gain: Unit::ONE,
             unipolar: false,
         });
-        patch.connect_input(gate, osc, 2).unwrap();
+        let port = patch.input_port(osc, 2).unwrap();
+        patch.connect_input(gate, port).unwrap();
         patch.output(osc).unwrap();
         CompiledPatch::new(&patch, rate).unwrap()
     }

@@ -101,7 +101,7 @@ enum Node {
         seed: u32,
     },
     Sample {
-        samples: Arc<Vec<f32>>,
+        samples: Arc<Vec<Sample>>,
     },
     Probe,
 }
@@ -234,7 +234,7 @@ impl CompiledPatch {
 
         let mut inputs = Vec::with_capacity(order.len());
         for module_index in order.iter().copied() {
-            inputs.push(vec![None; input_count(&patch.modules()[module_index].1)]);
+            inputs.push(vec![None; patch.modules()[module_index].1.input_count()]);
         }
 
         for connection in patch.connections() {
@@ -244,11 +244,11 @@ impl CompiledPatch {
                 .ok_or(CompileError::MissingModule)?;
             let target = rank_by_module
                 .iter()
-                .find_map(|(id, rank)| (*id == connection.to).then_some(*rank))
+                .find_map(|(id, rank)| (*id == connection.input.module).then_some(*rank))
                 .ok_or(CompileError::MissingModule)?;
             let slot = inputs
                 .get_mut(target)
-                .and_then(|inputs| inputs.get_mut(connection.input))
+                .and_then(|inputs| inputs.get_mut(connection.input.index))
                 .ok_or(CompileError::InvalidInput)?;
             *slot = Some(source);
         }
@@ -268,7 +268,7 @@ impl CompiledPatch {
             .enumerate()
             .filter_map(|(rank, module_index)| {
                 let (id, module) = &patch.modules()[module_index];
-                (input_count(module) > 0).then_some((*id, rank))
+                (module.input_count() > 0).then_some((*id, rank))
             })
             .collect();
 
@@ -774,7 +774,7 @@ fn compile_order(patch: &Patch) -> Result<Vec<usize>, CompileError> {
     let mut outgoing = vec![Vec::new(); patch.modules().len()];
     for connection in patch.connections() {
         let source = module_index(patch, connection.from)?;
-        let target = module_index(patch, connection.to)?;
+        let target = module_index(patch, connection.input.module)?;
         outgoing[source].push(target);
         indegree[target] += 1;
     }
@@ -816,7 +816,7 @@ fn create_node(module: &Module, rate: SampleRate) -> Result<Node, CompileError> 
         Module::Gate => Node::Gate,
         Module::Degree => Node::Degree,
         Module::DegreeGate { target } => Node::DegreeGate { target: *target },
-        Module::Constant(value) => Node::Constant(Sample::new(*value).unwrap_or(Sample::ZERO)),
+        Module::Constant(value) => Node::Constant(*value),
         Module::Pass => Node::Pass,
         Module::Osc {
             wave,
@@ -827,13 +827,13 @@ fn create_node(module: &Module, rate: SampleRate) -> Result<Node, CompileError> 
         } => Node::Osc {
             osc: Oscillator::new(audio_wave(*wave), rate, *frequency),
             frequency: *frequency,
-            shift: *shift,
+            shift: shift.value(),
             gain: *gain,
             unipolar: *unipolar,
         },
         Module::Rise { time } => Node::Rise(GateRamp::new(GateRampMode::Rise, *time, rate)),
         Module::Fall { time } => Node::Fall(GateRamp::new(GateRampMode::Fall, *time, rate)),
-        Module::Ramp { value, time } => Node::Ramp(Ramp::new(*value, *time, rate)),
+        Module::Ramp { value, time } => Node::Ramp(Ramp::new(value.value(), *time, rate)),
         Module::Adsr {
             attack_ratio,
             sustain,
@@ -889,10 +889,10 @@ fn create_node(module: &Module, rate: SampleRate) -> Result<Node, CompileError> 
             makeup,
         } => Node::Compressor(Compressor {
             threshold: *threshold,
-            ratio: *ratio,
+            ratio: ratio.value(),
             attack: *attack,
             release: *release,
-            makeup: *makeup,
+            makeup: makeup.value(),
             envelope: 0.0,
         }),
         Module::Flanger {
@@ -902,10 +902,13 @@ fn create_node(module: &Module, rate: SampleRate) -> Result<Node, CompileError> 
         } => Node::Flanger(Flanger::new(rate, *frequency, *depth, *feedback)),
         Module::Binary { op, a, b } => Node::Binary {
             op: *op,
-            a: *a,
-            b: *b,
+            a: a.value(),
+            b: b.value(),
         },
-        Module::Switch { a, b } => Node::Switch { a: *a, b: *b },
+        Module::Switch { a, b } => Node::Switch {
+            a: a.value(),
+            b: b.value(),
+        },
         Module::Random => Node::Random {
             last_gate: 0.0,
             value: 0.0,
@@ -916,36 +919,6 @@ fn create_node(module: &Module, rate: SampleRate) -> Result<Node, CompileError> 
         },
         Module::Probe => Node::Probe,
     })
-}
-
-fn input_count(module: &Module) -> usize {
-    match module {
-        Module::Freq
-        | Module::Gate
-        | Module::Degree
-        | Module::DegreeGate { .. }
-        | Module::Constant(_)
-        | Module::Random => 0,
-        Module::Pass
-        | Module::Rise { .. }
-        | Module::Fall { .. }
-        | Module::Ramp { .. }
-        | Module::Envelope { .. }
-        | Module::Lowpass { .. }
-        | Module::Highpass { .. }
-        | Module::Comb { .. }
-        | Module::Allpass { .. }
-        | Module::Delay { .. }
-        | Module::DelayTap { .. }
-        | Module::Reverb { .. }
-        | Module::Distortion { .. }
-        | Module::Compressor { .. }
-        | Module::Flanger { .. }
-        | Module::Sample { .. }
-        | Module::Probe => 1,
-        Module::Binary { .. } | Module::Adsr { .. } => 2,
-        Module::Osc { .. } | Module::Switch { .. } => 3,
-    }
 }
 
 fn input_values(input_slots: &[Option<usize>], values: &[Sample]) -> [Option<Sample>; 3] {
@@ -982,21 +955,21 @@ fn envelope_value(points: &[EnvPoint], time: f32) -> f32 {
     if points.is_empty() {
         return 0.0;
     }
-    if points.len() == 1 || time <= points[0].time {
-        return points[0].value;
+    if points.len() == 1 || time <= points[0].time.value() {
+        return points[0].value.value();
     }
     let last = points.len() - 1;
-    if time >= points[last].time {
-        return points[last].value;
+    if time >= points[last].time.value() {
+        return points[last].value.value();
     }
     for window in points.windows(2) {
         let start = window[0];
         let end = window[1];
-        if time < start.time || time > end.time {
+        if time < start.time.value() || time > end.time.value() {
             continue;
         }
-        let span = (end.time - start.time).max(f32::EPSILON);
-        let mut amount = (time - start.time) / span;
+        let span = (end.time.value() - start.time.value()).max(f32::EPSILON);
+        let mut amount = (time - start.time.value()) / span;
         amount = match (start.curve, end.curve) {
             (false, false) => amount,
             (true, false) => 1.0 - (1.0 - amount) * (1.0 - amount),
@@ -1004,12 +977,12 @@ fn envelope_value(points: &[EnvPoint], time: f32) -> f32 {
             (true, true) if amount < 0.5 => 2.0 * amount * amount,
             (true, true) => 1.0 - 2.0 * (1.0 - amount) * (1.0 - amount),
         };
-        return start.value + (end.value - start.value) * amount;
+        return start.value.value() + (end.value.value() - start.value.value()) * amount;
     }
-    points[last].value
+    points[last].value.value()
 }
 
-fn sample_value(samples: &[f32], position: f32) -> f32 {
+fn sample_value(samples: &[Sample], position: f32) -> f32 {
     if samples.is_empty() {
         return 0.0;
     }
@@ -1017,8 +990,12 @@ fn sample_value(samples: &[f32], position: f32) -> f32 {
     let index = position * (samples.len() - 1) as f32;
     let base = index.floor() as usize;
     let amount = index - base as f32;
-    let a = samples[base];
-    let b = samples.get(base + 1).copied().unwrap_or(a);
+    let a = samples[base].value();
+    let b = samples
+        .get(base + 1)
+        .copied()
+        .unwrap_or(samples[base])
+        .value();
     a + (b - a) * amount
 }
 
@@ -1033,7 +1010,7 @@ mod tests {
         let osc = patch.insert(Module::Osc {
             wave: crate::patch::Wave::Sine,
             frequency: Hertz::new(rate).unwrap(),
-            shift: 0.0,
+            shift: Sample::ZERO,
             gain: Unit::ONE,
             unipolar: false,
         });
@@ -1047,7 +1024,7 @@ mod tests {
         patch.insert(Module::Osc {
             wave: crate::patch::Wave::Sine,
             frequency: Hertz::new(440.0).unwrap(),
-            shift: 0.0,
+            shift: Sample::ZERO,
             gain: Unit::ONE,
             unipolar: false,
         });
@@ -1060,24 +1037,24 @@ mod tests {
     }
 
     #[test]
-    fn compile_rejects_invalid_input_slot() {
+    fn invalid_input_slot_is_rejected_before_compile() {
         let mut patch = Patch::new();
-        let freq = patch.insert(Module::Freq);
+        patch.insert(Module::Freq);
         let gate = patch.insert(Module::Gate);
-        patch.connect_input(freq, gate, 0).unwrap();
+        assert_eq!(
+            patch.input_port(gate, 0),
+            Err(crate::patch::ConnectError::ClosedInput)
+        );
         patch.output(gate).unwrap();
         let rate = SampleRate::new(44_100).unwrap();
 
-        assert_eq!(
-            CompiledPatch::new(&patch, rate),
-            Err(CompileError::InvalidInput)
-        );
+        assert!(CompiledPatch::new(&patch, rate).is_ok());
     }
 
     #[test]
     fn probe_values_expose_probe_node_output() {
         let mut patch = Patch::new();
-        let source = patch.insert(Module::Constant(0.25));
+        let source = patch.insert(Module::Constant(Sample::new(0.25).unwrap()));
         let probe = patch.insert(Module::Probe);
         patch.connect(source, probe).unwrap();
         patch.output(probe).unwrap();
@@ -1094,7 +1071,7 @@ mod tests {
     #[test]
     fn input_values_expose_connected_module_inputs() {
         let mut patch = Patch::new();
-        let source = patch.insert(Module::Constant(0.25));
+        let source = patch.insert(Module::Constant(Sample::new(0.25).unwrap()));
         let lowpass = patch.insert(Module::Lowpass {
             cutoff: Hertz::new(1000.0).unwrap(),
         });

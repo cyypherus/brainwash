@@ -1,6 +1,6 @@
 use crate::model::{
-    EnvPointerPhase, GridPointerPhase, GridPos, GridViewSize, GuiAction, GuiState, Mode,
-    ModuleCategory, ModuleId, ModuleKind, Orientation, ParameterValue,
+    EnvPointerPhase, GridPointerPhase, GridPos, GridRenderModule, GridViewSize, GuiAction,
+    GuiState, Mode, ModuleCategory, ModuleId, ModuleKind, Orientation, ParameterValue,
 };
 use haven::*;
 
@@ -481,8 +481,9 @@ fn grid_preview(state: &GuiState) -> Option<GridPreview> {
     match state.mode() {
         Mode::Move { module, origin } => {
             let module = state.moving_module(module)?;
-            let width = state.module_width(module).saturating_sub(1);
-            let height = state.module_height(module).saturating_sub(1);
+            let render_module = state.grid_render_module(module);
+            let width = render_module.width.saturating_sub(1);
+            let height = render_module.height.saturating_sub(1);
             Some(GridPreview {
                 source_module: Some(module.id()),
                 source_min: module.position(),
@@ -555,15 +556,14 @@ fn grid_preview_layer<'a>(
     let modules = if let Some(source_module) = preview.source_module {
         state
             .moving_module(source_module)
+            .map(|module| state.grid_render_module(module))
             .into_iter()
             .collect::<Vec<_>>()
     } else {
         state
-            .modules()
-            .iter()
-            .filter(|module| {
-                module_overlaps_rect(state, module, preview.source_min, preview.source_max)
-            })
+            .grid_render_modules()
+            .into_iter()
+            .filter(|module| module_overlaps_rect(module, preview.source_min, preview.source_max))
             .collect::<Vec<_>>()
     };
     stack_aligned(
@@ -571,27 +571,10 @@ fn grid_preview_layer<'a>(
         modules
             .into_iter()
             .map(|module| {
-                let position = module.position();
+                let position = module.module.position();
                 let target_x = position.x as i16 + preview.dx;
                 let target_y = position.y as i16 + preview.dy;
-                let probe_value = (module.kind() == ModuleKind::Probe)
-                    .then(|| state.probe_history(module.id()).last().copied())
-                    .flatten();
-                let meter_values = if state.show_meters() {
-                    state.meter_values(module.id())
-                } else {
-                    Vec::new()
-                };
-                module_tile(
-                    PREVIEW_ID_OFFSET + cell_id(position),
-                    state,
-                    module,
-                    probe_value,
-                    &meter_values,
-                    0.58,
-                    app,
-                )
-                .offset(
+                module_tile(PREVIEW_ID_OFFSET + cell_id(position), &module, 0.58, app).offset(
                     target_x as f32 * (CELL + GAP) + TILE_PAD - view_x,
                     target_y as f32 * (CELL + GAP) + TILE_PAD - view_y,
                 )
@@ -604,23 +587,18 @@ fn grid_preview_layer<'a>(
 
 fn modules_in_rect(state: &GuiState, min: GridPos, max: GridPos) -> Vec<ModuleId> {
     state
-        .modules()
-        .iter()
-        .filter(|module| module_overlaps_rect(state, module, min, max))
-        .map(|module| module.id())
+        .grid_render_modules()
+        .into_iter()
+        .filter(|module| module_overlaps_rect(module, min, max))
+        .map(|module| module.module.id())
         .collect()
 }
 
-fn module_overlaps_rect(
-    state: &GuiState,
-    module: &crate::model::Module,
-    min: GridPos,
-    max: GridPos,
-) -> bool {
-    module.position().x <= max.x
-        && module.position().x + state.module_width(module) > min.x
-        && module.position().y <= max.y
-        && module.position().y + state.module_height(module) > min.y
+fn module_overlaps_rect(module: &GridRenderModule<'_>, min: GridPos, max: GridPos) -> bool {
+    module.module.position().x <= max.x
+        && module.module.position().x + module.width > min.x
+        && module.module.position().y <= max.y
+        && module.module.position().y + module.height > min.y
 }
 
 fn connection_layer<'a>(
@@ -630,30 +608,27 @@ fn connection_layer<'a>(
     hidden: &[ModuleId],
 ) -> View<'a, GuiState> {
     let mut layers = Vec::new();
+    let modules = state.grid_render_modules();
     for (index, connection) in state.connections().into_iter().enumerate() {
         if hidden.contains(&connection.from()) || hidden.contains(&connection.to()) {
             continue;
         }
-        let Some(_) = state
-            .modules()
+        let Some(source) = modules
             .iter()
-            .find(|module| module.id() == connection.from())
+            .find(|module| module.module.id() == connection.from())
         else {
             continue;
         };
-        let Some(_) = state
-            .modules()
+        let Some(target) = modules
             .iter()
-            .find(|module| module.id() == connection.to())
+            .find(|module| module.module.id() == connection.to())
         else {
             continue;
         };
         let id = id_offset + 60_000 + index as u64 * 10;
-        let segment = connection_segment(
-            connection.from_cell(),
-            connection.orientation(),
-            connection.to_cell(),
-        );
+        let Some(segment) = connection_segment(source, target, connection) else {
+            continue;
+        };
         layers.push(
             rect(id)
                 .fill(accent().with_alpha(0.62))
@@ -677,7 +652,63 @@ struct WireSegment {
     height: f32,
 }
 
-fn connection_segment(from: GridPos, orientation: Orientation, to: GridPos) -> WireSegment {
+fn connection_segment(
+    source: &GridRenderModule<'_>,
+    target: &GridRenderModule<'_>,
+    connection: crate::model::Connection,
+) -> Option<WireSegment> {
+    if source.module.position().x + source.width <= target.module.position().x {
+        if let (Some(source_y), Some(target_y)) = (
+            source
+                .right_output_offsets
+                .get(connection.output())
+                .copied()
+                .flatten(),
+            target
+                .left_input_offsets
+                .get(connection.input())
+                .copied()
+                .flatten(),
+        ) {
+            let source_y = source.module.position().y + source_y;
+            let target_y = target.module.position().y + target_y;
+            if source_y == target_y {
+                return Some(wire_segment(
+                    GridPos::new(source.module.position().x + source.width - 1, source_y),
+                    Orientation::Right,
+                    GridPos::new(target.module.position().x, target_y),
+                ));
+            }
+        }
+    }
+    if source.module.position().y + source.height <= target.module.position().y {
+        if let (Some(source_x), Some(target_x)) = (
+            source
+                .bottom_output_offsets
+                .get(connection.output())
+                .copied()
+                .flatten(),
+            target
+                .top_input_offsets
+                .get(connection.input())
+                .copied()
+                .flatten(),
+        ) {
+            let source_x = source.module.position().x + source_x;
+            let target_x = target.module.position().x + target_x;
+            if source_x == target_x {
+                return Some(wire_segment(
+                    GridPos::new(source_x, source.module.position().y + source.height - 1),
+                    Orientation::Down,
+                    GridPos::new(target_x, target.module.position().y),
+                ));
+            }
+        }
+    }
+    None
+}
+
+fn wire_segment(from: GridPos, orientation: Orientation, to: GridPos) -> WireSegment {
     let (x1, y1) = port_center(from, orientation, true);
     let (x2, y2) = port_center(to, orientation, false);
     if matches!(orientation, Orientation::Right) {
@@ -719,29 +750,12 @@ fn module_layer<'a>(
     stack_aligned(
         Align::TopLeading,
         state
-            .modules()
-            .iter()
-            .filter(|module| !hidden.contains(&module.id()))
+            .grid_render_modules()
+            .into_iter()
+            .filter(|module| !hidden.contains(&module.module.id()))
             .map(|module| {
-                let position = module.position();
-                let probe_value = (module.kind() == ModuleKind::Probe)
-                    .then(|| state.probe_history(module.id()).last().copied())
-                    .flatten();
-                let meter_values = if state.show_meters() {
-                    state.meter_values(module.id())
-                } else {
-                    Vec::new()
-                };
-                module_tile(
-                    id_offset + cell_id(position),
-                    state,
-                    module,
-                    probe_value,
-                    &meter_values,
-                    1.,
-                    app,
-                )
-                .offset(
+                let position = module.module.position();
+                module_tile(id_offset + cell_id(position), &module, 1., app).offset(
                     position.x as f32 * (CELL + GAP) + TILE_PAD,
                     position.y as f32 * (CELL + GAP) + TILE_PAD,
                 )
@@ -768,7 +782,7 @@ fn edit_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState
     match (state.mode(), module) {
         (Mode::Edit { parameter, .. }, Some(module)) => {
             rows.push(editor_header(500, module.kind().label(), "Parameters", app));
-            for (index, parameter_row_value) in module.parameters().iter().enumerate() {
+            for (index, parameter_row_value) in module.parameters().into_iter().enumerate() {
                 rows.push(parameter_row(
                     index,
                     parameter == index,
@@ -877,7 +891,7 @@ fn editor_header<'a>(
 fn parameter_row<'a>(
     index: usize,
     selected: bool,
-    parameter: &'a crate::model::ModuleParameter,
+    parameter: crate::model::ModuleParameter,
     app: &mut PaneState,
 ) -> View<'a, GuiState> {
     let id = 600 + index as u64 * 10;
@@ -1591,25 +1605,22 @@ fn grid_cell<'a>(
 
 fn module_tile<'a>(
     id: u64,
-    state: &'a GuiState,
-    module: &'a crate::model::Module,
-    probe_value: Option<f32>,
-    meter_values: &[f32],
+    module: &GridRenderModule<'a>,
     alpha: f32,
     app: &mut PaneState,
 ) -> View<'a, GuiState> {
     let alpha = alpha.clamp(0., 1.);
-    let kind = module.kind();
+    let kind = module.module.kind();
     let mut code = kind.label().chars().take(3).collect::<String>();
     code.make_ascii_uppercase();
-    let input_count = state.module_input_count(module);
-    let output_count = state.module_output_count(module);
-    let tile_width = module_span(state.module_width(module));
-    let tile_height = module_span(state.module_height(module));
+    let input_count = module.input_count;
+    let output_count = module.output_count;
+    let tile_width = module_span(module.width);
+    let tile_height = module_span(module.height);
     let mut layers = vec![
         rect(id + 1)
             .fill(
-                if module.disabled() {
+                if module.module.disabled() {
                     Color::from_rgb8(160, 42, 54)
                 } else {
                     module_color(kind.category())
@@ -1617,13 +1628,13 @@ fn module_tile<'a>(
                 .with_alpha(alpha),
             )
             .stroke(
-                if module.disabled() {
+                if module.module.disabled() {
                     Color::from_rgb8(248, 92, 92)
                 } else {
                     Color::from_rgb8(10, 12, 14)
                 }
                 .with_alpha(alpha),
-                Stroke::new(if module.disabled() { 2. } else { 1. }),
+                Stroke::new(if module.module.disabled() { 2. } else { 1. }),
             )
             .corner_rounding(6.)
             .build(app),
@@ -1645,13 +1656,8 @@ fn module_tile<'a>(
     match kind {
         ModuleKind::TurnRightDown => {
             layers.push(
-                input_port(
-                    id + 30_000,
-                    state.module_input_connected(module, 0),
-                    alpha,
-                    app,
-                )
-                .offset(PORT_INSET, port_axis(0)),
+                input_port(id + 30_000, module.input_connected[0], alpha, app)
+                    .offset(PORT_INSET, port_axis(0)),
             );
             layers.push(
                 output_port(id + 33_000, alpha, app)
@@ -1660,13 +1666,8 @@ fn module_tile<'a>(
         }
         ModuleKind::TurnDownRight => {
             layers.push(
-                input_port(
-                    id + 31_000,
-                    state.module_input_connected(module, 0),
-                    alpha,
-                    app,
-                )
-                .offset(port_axis(0), PORT_INSET),
+                input_port(id + 31_000, module.input_connected[0], alpha, app)
+                    .offset(port_axis(0), PORT_INSET),
             );
             layers.push(
                 output_port(id + 32_000, alpha, app)
@@ -1675,13 +1676,8 @@ fn module_tile<'a>(
         }
         ModuleKind::LeftSplit => {
             layers.push(
-                input_port(
-                    id + 30_000,
-                    state.module_input_connected(module, 0),
-                    alpha,
-                    app,
-                )
-                .offset(PORT_INSET, port_axis(0)),
+                input_port(id + 30_000, module.input_connected[0], alpha, app)
+                    .offset(PORT_INSET, port_axis(0)),
             );
             layers.push(
                 output_port(id + 33_000, alpha, app)
@@ -1694,13 +1690,8 @@ fn module_tile<'a>(
         }
         ModuleKind::TopSplit => {
             layers.push(
-                input_port(
-                    id + 31_000,
-                    state.module_input_connected(module, 0),
-                    alpha,
-                    app,
-                )
-                .offset(port_axis(0), PORT_INSET),
+                input_port(id + 31_000, module.input_connected[0], alpha, app)
+                    .offset(port_axis(0), PORT_INSET),
             );
             layers.push(
                 output_port(id + 33_000, alpha, app)
@@ -1713,22 +1704,12 @@ fn module_tile<'a>(
         }
         ModuleKind::RightJoin => {
             layers.push(
-                input_port(
-                    id + 30_000,
-                    state.module_input_connected(module, 0),
-                    alpha,
-                    app,
-                )
-                .offset(PORT_INSET, port_axis(0)),
+                input_port(id + 30_000, module.input_connected[0], alpha, app)
+                    .offset(PORT_INSET, port_axis(0)),
             );
             layers.push(
-                input_port(
-                    id + 31_001,
-                    state.module_input_connected(module, 1),
-                    alpha,
-                    app,
-                )
-                .offset(port_axis(0), PORT_INSET),
+                input_port(id + 31_001, module.input_connected[1], alpha, app)
+                    .offset(port_axis(0), PORT_INSET),
             );
             layers.push(
                 output_port(id + 32_000, alpha, app)
@@ -1737,22 +1718,12 @@ fn module_tile<'a>(
         }
         ModuleKind::DownJoin => {
             layers.push(
-                input_port(
-                    id + 30_000,
-                    state.module_input_connected(module, 0),
-                    alpha,
-                    app,
-                )
-                .offset(PORT_INSET, port_axis(0)),
+                input_port(id + 30_000, module.input_connected[0], alpha, app)
+                    .offset(PORT_INSET, port_axis(0)),
             );
             layers.push(
-                input_port(
-                    id + 31_001,
-                    state.module_input_connected(module, 1),
-                    alpha,
-                    app,
-                )
-                .offset(port_axis(0), PORT_INSET),
+                input_port(id + 31_001, module.input_connected[1], alpha, app)
+                    .offset(port_axis(0), PORT_INSET),
             );
             layers.push(
                 output_port(id + 33_000, alpha, app)
@@ -1760,7 +1731,7 @@ fn module_tile<'a>(
             );
         }
         _ => {
-            if state.module_has_input_left(module) {
+            if module.has_input_left {
                 for index in 0..input_count {
                     let y = port_axis(index);
                     let port_id = if index == 0 && output_count == 0 {
@@ -1769,15 +1740,10 @@ fn module_tile<'a>(
                         id + 30_000 + index as u64
                     };
                     layers.push(
-                        input_port(
-                            port_id,
-                            state.module_input_connected(module, index),
-                            alpha,
-                            app,
-                        )
-                        .offset(PORT_INSET, y),
+                        input_port(port_id, module.input_connected[index as usize], alpha, app)
+                            .offset(PORT_INSET, y),
                     );
-                    if let Some(value) = meter_values.get(index as usize) {
+                    if let Some(value) = module.meter_values.get(index as usize) {
                         layers.push(
                             meter_indicator(id + 34_000 + index as u64, *value, false, alpha, app)
                                 .offset(PORT_INSET + PORT_SIZE + 2., y),
@@ -1786,19 +1752,19 @@ fn module_tile<'a>(
                 }
             }
 
-            if state.module_has_input_top(module) {
+            if module.has_input_top {
                 for index in 0..input_count {
                     let x = port_axis(index);
                     layers.push(
                         input_port(
                             id + 31_000 + index as u64,
-                            state.module_input_connected(module, index),
+                            module.input_connected[index as usize],
                             alpha,
                             app,
                         )
                         .offset(x, PORT_INSET),
                     );
-                    if let Some(value) = meter_values.get(index as usize) {
+                    if let Some(value) = module.meter_values.get(index as usize) {
                         layers.push(
                             meter_indicator(id + 35_000 + index as u64, *value, true, alpha, app)
                                 .offset(x, PORT_INSET + PORT_SIZE + 2.),
@@ -1807,7 +1773,7 @@ fn module_tile<'a>(
                 }
             }
 
-            if state.module_has_output_right(module) {
+            if module.has_output_right {
                 for index in 0..output_count {
                     let port_id = if output_count == 1 {
                         id + 4
@@ -1821,7 +1787,7 @@ fn module_tile<'a>(
                 }
             }
 
-            if state.module_has_output_bottom(module) {
+            if module.has_output_bottom {
                 for index in 0..output_count {
                     layers.push(
                         output_port(id + 33_000 + index as u64, alpha, app)
@@ -1832,7 +1798,7 @@ fn module_tile<'a>(
         }
     }
 
-    if let Some(value) = probe_value {
+    if let Some(value) = module.probe_value {
         let track_width = (tile_width - 8.).max(1.);
         let level = ((value.clamp(-1., 1.) + 1.) * 0.5).clamp(0., 1.);
         layers.push(
@@ -4360,7 +4326,7 @@ mod tests {
     #[test]
     fn horizontal_connection_segment_uses_port_edges() {
         assert_eq!(
-            connection_segment(GridPos::new(0, 0), Orientation::Right, GridPos::new(2, 0)),
+            wire_segment(GridPos::new(0, 0), Orientation::Right, GridPos::new(2, 0)),
             WireSegment {
                 x: 22.5,
                 y: 13.,
@@ -4373,7 +4339,7 @@ mod tests {
     #[test]
     fn vertical_connection_segment_uses_port_edges() {
         assert_eq!(
-            connection_segment(GridPos::new(0, 0), Orientation::Down, GridPos::new(0, 2)),
+            wire_segment(GridPos::new(0, 0), Orientation::Down, GridPos::new(0, 2)),
             WireSegment {
                 x: 13.,
                 y: 22.5,

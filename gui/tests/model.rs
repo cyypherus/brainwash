@@ -5,8 +5,11 @@ use brainwash_gui::model::{
     ParameterValue, TimeUnit, all_modules,
 };
 use brainwash_gui::view::main_view;
-use haven::{Key, MouseButton, NamedKey, PaneBuilder, Point, render::Frame, render::RenderItem};
+use haven::{
+    Key, MouseButton, NamedKey, Pane, PaneBuilder, Point, render::Frame, render::RenderItem,
+};
 use std::fs;
+use std::path::PathBuf;
 
 #[test]
 fn module_inventory_matches_tui_surface_count() {
@@ -467,40 +470,51 @@ fn save_export_and_quit_prompts_track_requested_state() {
     state.apply(GuiAction::Save);
     assert_eq!(state.mode(), Mode::SavePrompt);
     assert_eq!(state.prompt_text(), "patch.bw");
+    let save_path = project_path("save-prompt");
+    let save_path = save_path.to_string_lossy().into_owned();
+    replace_prompt_text(&mut state, &save_path);
     state.apply(GuiAction::Confirm);
-    assert_eq!(state.saved_path(), Some("patch.bw"));
+    assert_eq!(state.saved_path(), Some(save_path.as_str()));
     assert!(!state.dirty());
+    let project = brainwash::project::load(save_path.as_ref()).unwrap();
+    assert_eq!(project.modules.len(), 1);
+    assert_eq!(
+        project.modules[0].kind,
+        brainwash::project::ModuleKind::Standard(brainwash::project::StandardModule::Freq)
+    );
 
     state.apply(GuiAction::Export);
     assert_eq!(state.mode(), Mode::ExportPrompt);
-    assert_eq!(state.prompt_text(), "patch.wav");
     state.apply(GuiAction::Up);
     assert_eq!(state.export_loops(), 2);
     state.apply(GuiAction::Confirm);
-    assert_eq!(state.exported_path(), Some("patch.wav"));
+    assert!(state.exported_path().unwrap().ends_with(".wav"));
 }
 
 #[test]
 fn save_and_export_prompt_confirm_existing_paths_before_overwrite() {
     let mut state = GuiState::new(8, 8);
+    let save_path = project_path("overwrite-save")
+        .to_string_lossy()
+        .into_owned();
+    let export_path = project_path("overwrite-export")
+        .with_extension("wav")
+        .to_string_lossy()
+        .into_owned();
 
     state.apply(GuiAction::Save);
+    replace_prompt_text(&mut state, &save_path);
     state.apply(GuiAction::Confirm);
-    assert_eq!(state.saved_path(), Some("patch.bw"));
+    assert_eq!(state.saved_path(), Some(save_path.as_str()));
 
     state.apply(GuiAction::Export);
+    replace_prompt_text(&mut state, &export_path);
     state.apply(GuiAction::Confirm);
-    assert_eq!(state.exported_path(), Some("patch.wav"));
+    assert_eq!(state.exported_path(), Some(export_path.as_str()));
 
     state.apply(GuiAction::SaveAs);
     assert_eq!(state.mode(), Mode::SavePrompt);
-    state.apply(GuiAction::TextStart);
-    for _ in 0..8 {
-        state.apply(GuiAction::DeleteChar);
-    }
-    for character in "patch.wav".chars() {
-        state.apply(GuiAction::InputChar(character));
-    }
+    replace_prompt_text(&mut state, &export_path);
     state.apply(GuiAction::Confirm);
     assert_eq!(state.mode(), Mode::SaveConfirm);
     state.apply(GuiAction::Cancel);
@@ -509,28 +523,16 @@ fn save_and_export_prompt_confirm_existing_paths_before_overwrite() {
     assert_eq!(state.mode(), Mode::SaveConfirm);
     state.apply(GuiAction::Confirm);
     assert_eq!(state.mode(), Mode::Normal);
-    assert_eq!(state.saved_path(), Some("patch.wav"));
+    assert_eq!(state.saved_path(), Some(export_path.as_str()));
 
     state.apply(GuiAction::SaveAs);
-    state.apply(GuiAction::TextStart);
-    for _ in 0..9 {
-        state.apply(GuiAction::DeleteChar);
-    }
-    for character in "patch.bw".chars() {
-        state.apply(GuiAction::InputChar(character));
-    }
+    replace_prompt_text(&mut state, &save_path);
     state.apply(GuiAction::Confirm);
     state.apply(GuiAction::Confirm);
-    assert_eq!(state.saved_path(), Some("patch.bw"));
+    assert_eq!(state.saved_path(), Some(save_path.as_str()));
 
     state.apply(GuiAction::Export);
-    state.apply(GuiAction::TextStart);
-    for _ in 0..12 {
-        state.apply(GuiAction::DeleteChar);
-    }
-    for character in "patch.bw".chars() {
-        state.apply(GuiAction::InputChar(character));
-    }
+    replace_prompt_text(&mut state, &save_path);
     state.apply(GuiAction::Confirm);
     assert_eq!(state.mode(), Mode::ExportConfirm);
     state.apply(GuiAction::Cancel);
@@ -539,7 +541,7 @@ fn save_and_export_prompt_confirm_existing_paths_before_overwrite() {
     assert_eq!(state.mode(), Mode::ExportConfirm);
     state.apply(GuiAction::Confirm);
     assert_eq!(state.mode(), Mode::Normal);
-    assert_eq!(state.exported_path(), Some("patch.bw"));
+    assert_eq!(state.exported_path(), Some(save_path.as_str()));
 }
 
 #[test]
@@ -793,22 +795,26 @@ fn haven_overwrite_confirm_keys_match_tui() {
     let mut state = GuiState::new(8, 8);
     let mut pane = PaneBuilder::new("main", main_view).build();
     pane.redraw(&mut state, 640, 480, 1.0);
+    let save_path = project_path("haven-overwrite-save")
+        .to_string_lossy()
+        .into_owned();
+    let export_path = project_path("haven-overwrite-export")
+        .with_extension("wav")
+        .to_string_lossy()
+        .into_owned();
 
     pane.key_pressed(&mut state, Key::character("w"));
+    replace_prompt_text_pane(&mut pane, &mut state, &save_path);
     pane.key_pressed(&mut state, NamedKey::Enter);
-    assert_eq!(state.saved_path(), Some("patch.bw"));
+    assert_eq!(state.saved_path(), Some(save_path.as_str()));
 
     pane.key_pressed(&mut state, Key::character("e"));
+    replace_prompt_text_pane(&mut pane, &mut state, &export_path);
     pane.key_pressed(&mut state, NamedKey::Enter);
-    assert_eq!(state.exported_path(), Some("patch.wav"));
+    assert_eq!(state.exported_path(), Some(export_path.as_str()));
 
     pane.key_pressed(&mut state, Key::character("W"));
-    for _ in 0..8 {
-        pane.key_pressed(&mut state, NamedKey::Backspace);
-    }
-    for character in "patch.wav".chars() {
-        pane.key_pressed(&mut state, Key::character(character.to_string()));
-    }
+    replace_prompt_text_pane(&mut pane, &mut state, &export_path);
     pane.key_pressed(&mut state, NamedKey::Enter);
     assert_eq!(state.mode(), Mode::SaveConfirm);
     pane.key_pressed(&mut state, Key::character("n"));
@@ -816,7 +822,7 @@ fn haven_overwrite_confirm_keys_match_tui() {
     pane.key_pressed(&mut state, NamedKey::Enter);
     pane.key_pressed(&mut state, Key::character("y"));
     assert_eq!(state.mode(), Mode::Normal);
-    assert_eq!(state.saved_path(), Some("patch.wav"));
+    assert_eq!(state.saved_path(), Some(export_path.as_str()));
 }
 
 #[test]
@@ -915,13 +921,15 @@ fn haven_prompt_keys_drive_model() {
     pane.key_pressed(&mut state, Key::character("@"));
     pane.key_pressed(&mut state, Key::character("!"));
     assert_eq!(state.prompt_text(), "patch.bwewnCG@!");
+    let save_path = project_path("haven-prompt").to_string_lossy().into_owned();
+    replace_prompt_text_pane(&mut pane, &mut state, &save_path);
     pane.key_pressed(&mut state, NamedKey::Enter);
-    assert_eq!(state.saved_path(), Some("patch.bwewnCG@!"));
+    assert_eq!(state.saved_path(), Some(save_path.as_str()));
 
     pane.key_pressed(&mut state, Key::character("e"));
     pane.key_pressed(&mut state, NamedKey::ArrowUp);
     pane.key_pressed(&mut state, NamedKey::Enter);
-    assert_eq!(state.exported_path(), Some("patch.bwewnCG@!.wav"));
+    assert!(state.exported_path().unwrap().ends_with(".wav"));
     assert_eq!(state.export_loops(), 2);
 
     pane.key_pressed(&mut state, Key::character("Q"));
@@ -1843,7 +1851,6 @@ fn gui_subpatch_routes_parent_input_to_child_subpatch_input() {
     state.apply(GuiAction::ExitSubpatch);
     state.apply(GuiAction::Right);
     place_module_kind(&mut state, ModuleKind::Output);
-
     let mut compiled = state
         .compile_audio_patch(SampleRate::new(44_100).unwrap())
         .unwrap();
@@ -2100,6 +2107,73 @@ fn unrelated_subpatch_does_not_silence_direct_osc_output() {
     }
 
     assert!(max - min > 0.1, "{min} {max}");
+}
+
+#[test]
+fn subpatch_parent_inputs_route_by_port_order() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Gate);
+    state.apply(GuiAction::Down);
+    place_module_kind(&mut state, ModuleKind::Freq);
+    state.apply(GuiAction::Up);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Subpatch);
+    state.apply(GuiAction::EditSubpatch);
+    place_module_kind(&mut state, ModuleKind::SubpatchInput);
+    state.apply(GuiAction::Down);
+    place_module_kind(&mut state, ModuleKind::SubpatchInput);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::SubpatchOutput);
+    state.apply(GuiAction::ExitSubpatch);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Output);
+
+    let mut compiled = state
+        .compile_audio_patch(SampleRate::new(44_100).unwrap())
+        .unwrap();
+    let value = compiled
+        .next_with_controls(PatchControls {
+            frequency: Hertz::new(0.25),
+            gate: 1.0,
+            degree: 0,
+        })
+        .left()
+        .value();
+
+    assert!((value - 0.25).abs() < 0.001, "{value}");
+}
+
+#[test]
+fn subpatch_parent_outputs_route_by_port_order() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Subpatch);
+    state.apply(GuiAction::EditSubpatch);
+    place_module_kind(&mut state, ModuleKind::Gate);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::SubpatchOutput);
+    state.apply(GuiAction::Down);
+    place_module_kind(&mut state, ModuleKind::Freq);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::SubpatchOutput);
+    state.apply(GuiAction::ExitSubpatch);
+    state.apply(GuiAction::Right);
+    state.apply(GuiAction::Right);
+    state.apply(GuiAction::Down);
+    place_module_kind(&mut state, ModuleKind::Output);
+
+    let mut compiled = state
+        .compile_audio_patch(SampleRate::new(44_100).unwrap())
+        .unwrap();
+    let value = compiled
+        .next_with_controls(PatchControls {
+            frequency: Hertz::new(0.25),
+            gate: 1.0,
+            degree: 0,
+        })
+        .left()
+        .value();
+
+    assert!((value - 0.25).abs() < 0.001, "{value}");
 }
 
 #[test]
@@ -2597,12 +2671,7 @@ fn load_action_sets_one_shot_load_request() {
 
 #[test]
 fn load_project_replaces_state_from_project_file() {
-    let mut path = std::env::temp_dir();
-    path.push(format!(
-        "brainwash-gui-load-{}-{}.bw",
-        std::process::id(),
-        std::thread::current().name().unwrap_or("test")
-    ));
+    let path = project_path("load");
     fs::write(
         &path,
         r#"(
@@ -2662,6 +2731,11 @@ fn load_project_replaces_state_from_project_file() {
     assert_eq!(osc.parameters()[0].value_label(), "square");
     assert_eq!(osc.parameters()[1].value_label(), "440 hz");
     assert_eq!(osc.parameters()[3].value_label(), "0.75");
+    assert!(!osc.parameters()[0].connected());
+    assert!(osc.parameters()[1].connected());
+    assert!(osc.parameters()[2].connected());
+    assert!(osc.parameters()[3].connected());
+    assert!(!osc.parameters()[4].connected());
 
     let output = state
         .modules()
@@ -2673,6 +2747,150 @@ fn load_project_replaces_state_from_project_file() {
     assert!(!state.take_load_request());
 
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn load_project_rejects_module_kind_and_params_disagreement() {
+    let path = project_path("mismatched-params");
+    fs::write(
+        &path,
+        r#"(
+  bpm: 120.0,
+  bars: 1.0,
+  scale_idx: 0,
+  modules: [
+    (
+      id: 1,
+      kind: Standard(Output),
+      x: 0,
+      y: 0,
+      params: Osc(
+        wave: Sin,
+        freq: (unit: Hz, seconds: 999.0, samples: 999.0, bar_num: 1, bar_denom: 4, hz: 440.0),
+        shift: 0.0,
+        gain: 1.0,
+        uni: false,
+        connected: 255,
+      ),
+    ),
+  ],
+  track: None,
+  subpatches: [],
+)"#,
+    )
+    .unwrap();
+
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Gate);
+    let error = state.load_project(&path).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert_eq!(state.modules().len(), 1);
+    assert_eq!(state.modules()[0].kind(), ModuleKind::Gate);
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn load_project_rejects_invalid_active_time_value() {
+    let path = project_path("invalid-time");
+    fs::write(
+        &path,
+        r#"(
+  bpm: 120.0,
+  bars: 1.0,
+  scale_idx: 0,
+  modules: [
+    (
+      id: 1,
+      kind: Standard(Rise),
+      x: 0,
+      y: 0,
+      params: Rise(
+        time: (unit: Bars, seconds: 0.1, samples: 100.0, bar_num: 1, bar_denom: 0, hz: 12.0),
+        connected: 255,
+      ),
+    ),
+  ],
+  track: None,
+  subpatches: [],
+)"#,
+    )
+    .unwrap();
+
+    let mut state = GuiState::new(8, 8);
+    let error = state.load_project(&path).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(state.modules().is_empty());
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn load_project_rejects_invalid_inactive_time_value() {
+    let path = project_path("inactive-time");
+    fs::write(
+        &path,
+        r#"(
+  bpm: 120.0,
+  bars: 1.0,
+  scale_idx: 0,
+  modules: [
+    (
+      id: 1,
+      kind: Standard(Rise),
+      x: 0,
+      y: 0,
+      params: Rise(
+        time: (unit: Hz, seconds: 999.0, samples: 999.0, bar_num: 1, bar_denom: 0, hz: 12.0),
+        connected: 255,
+      ),
+    ),
+  ],
+  track: None,
+  subpatches: [],
+)"#,
+    )
+    .unwrap();
+
+    let mut state = GuiState::new(8, 8);
+    let error = state.load_project(&path).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(state.modules().is_empty());
+
+    let _ = fs::remove_file(path);
+}
+
+fn project_path(name: &str) -> PathBuf {
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "brainwash-gui-{name}-{}-{}.bw",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    path
+}
+
+fn replace_prompt_text(state: &mut GuiState, text: &str) {
+    state.apply(GuiAction::TextStart);
+    while !state.prompt_text().is_empty() {
+        state.apply(GuiAction::DeleteChar);
+    }
+    for character in text.chars() {
+        state.apply(GuiAction::InputChar(character));
+    }
+}
+
+fn replace_prompt_text_pane(pane: &mut Pane<GuiState>, state: &mut GuiState, text: &str) {
+    pane.key_pressed(state, NamedKey::Home);
+    while !state.prompt_text().is_empty() {
+        pane.key_pressed(state, NamedKey::Delete);
+    }
+    for character in text.chars() {
+        pane.key_pressed(state, Key::character(character.to_string()));
+    }
 }
 
 fn place_module(state: &mut GuiState, category_rights: usize, selection_downs: usize) {

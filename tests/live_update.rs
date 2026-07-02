@@ -2,7 +2,7 @@ use assert_no_alloc::assert_no_alloc;
 use brainwash::compile::{CompiledPatch, PatchControls, PatchEngine, UpdateRejected};
 use brainwash::live::RealtimePatchEngine;
 use brainwash::patch::{Module, Patch, Wave};
-use brainwash::sample::Unit;
+use brainwash::sample::{Sample, Unit};
 use brainwash::scale::cmin;
 use brainwash::time::{Hertz, SampleRate};
 use brainwash::track::Track;
@@ -166,11 +166,12 @@ fn patch_controls_drive_oscillator_frequency() {
     let osc = patch.insert(Module::Osc {
         wave: Wave::Saw,
         frequency: Hertz::new(110.0).unwrap(),
-        shift: 0.0,
+        shift: Sample::ZERO,
         gain: Unit::ONE,
         unipolar: false,
     });
-    patch.connect(freq, osc).unwrap();
+    let port = patch.input_port(osc, 0).unwrap();
+    patch.connect_input(freq, port).unwrap();
     patch.output(osc).unwrap();
     let mut compiled = CompiledPatch::new(&patch, rate).unwrap();
 
@@ -269,7 +270,7 @@ fn compiled_patch(wave: Wave, frequency: f32, rate: SampleRate) -> CompiledPatch
     let osc = patch.insert(Module::Osc {
         wave,
         frequency: Hertz::new(frequency).unwrap(),
-        shift: 0.0,
+        shift: Sample::ZERO,
         gain: Unit::ONE,
         unipolar: false,
     });

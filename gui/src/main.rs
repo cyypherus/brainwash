@@ -15,7 +15,7 @@ fn main() {
     };
     let mut state = GuiState::default();
     match &mut audio {
-        Some(audio) => match audio.handle() {
+        Some(audio) => match audio.take_handle() {
             Some(handle) => state.set_audio(handle),
             None => state.set_audio_unavailable("handle unavailable"),
         },
