@@ -27,6 +27,7 @@ pub struct AudioHandle {
     probe_bus: Arc<ProbeBus>,
     meter_bus: Arc<MeterBus>,
     rate: SampleRate,
+    patch_generation: u64,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -157,6 +158,7 @@ impl AudioRuntime {
                 probe_bus,
                 meter_bus,
                 rate,
+                patch_generation: 0,
             }),
             _stream: stream,
         })
@@ -178,35 +180,54 @@ impl AudioHandle {
             .map_err(|_| AudioCommandRejected)
     }
 
-    pub fn submit(&mut self, patch: CompiledPatch) -> Result<(), AudioCommandRejected> {
-        let result = self
-            .patch_pending
-            .push(PatchBank::new(patch))
-            .map_err(|_| AudioCommandRejected);
-        self.collect_retired();
-        result
+    pub fn set_latest_patch(&mut self, patch: CompiledPatch) {
+        self.set_latest_bank(PatchBank::new(patch));
     }
 
-    pub(crate) fn submit_with_telemetry(
+    pub(crate) fn set_latest_patch_with_telemetry(
         &mut self,
         patch: CompiledPatch,
         probes: &[ProbeRoute],
         meters: &[MeterRoute],
         voice_mode: VoiceMode,
-    ) -> Result<(), AudioCommandRejected> {
+    ) {
         let probe_routes = ProbeRoutes::new(probes);
         let meter_routes = MeterRoutes::new(meters);
-        let result = self
-            .patch_pending
-            .push(PatchBank::new_with_telemetry(
-                patch,
-                probe_routes,
-                meter_routes,
-                voice_mode,
-            ))
-            .map_err(|_| AudioCommandRejected);
-        self.collect_retired();
-        result
+        self.set_latest_bank(PatchBank::new_with_telemetry(
+            patch,
+            probe_routes,
+            meter_routes,
+            voice_mode,
+        ));
+    }
+
+    fn set_latest_bank(&mut self, mut bank: PatchBank) {
+        self.patch_generation = self.patch_generation.wrapping_add(1);
+        bank.generation = self.patch_generation;
+        eprintln!(
+            "[bw dbg audio] publish patch gen={} voice_mode={:?} probes={} meters={}",
+            bank.generation,
+            bank.voice_mode,
+            bank.probes.iter().count(),
+            bank.meters.iter().count()
+        );
+        loop {
+            self.collect_retired();
+            match self.patch_pending.push(bank) {
+                Ok(()) => {
+                    eprintln!("[bw dbg audio] queued patch gen={}", self.patch_generation);
+                    return;
+                }
+                Err(rtrb::PushError::Full(returned)) => {
+                    bank = returned;
+                    eprintln!(
+                        "[bw dbg audio] waiting to queue patch gen={} transport_full",
+                        bank.generation
+                    );
+                    std::thread::yield_now();
+                }
+            }
+        }
     }
 
     pub(crate) fn probe_history(&self, module: ModuleId, voice: usize, len: usize) -> Vec<f32> {
@@ -585,12 +606,14 @@ struct PatchBank {
     probes: ProbeRoutes,
     meters: MeterRoutes,
     voice_mode: VoiceMode,
+    generation: u64,
 }
 
 struct VoicePatchRuntime {
     voices: [PatchEngine; VOICES],
     pending: Consumer<PatchBank>,
     retired_output: Producer<PatchBank>,
+    pending_bank: Option<PatchBank>,
     probe_bus: Arc<ProbeBus>,
     meter_bus: Arc<MeterBus>,
     probes: ProbeRoutes,
@@ -598,6 +621,7 @@ struct VoicePatchRuntime {
     voice_mode: VoiceMode,
     retired: Option<PatchBank>,
     probe_cursor: usize,
+    blocked_generation: Option<u64>,
 }
 
 impl PatchBank {
@@ -621,6 +645,7 @@ impl PatchBank {
             probes,
             meters,
             voice_mode,
+            generation: 0,
         }
     }
 }
@@ -642,6 +667,7 @@ impl VoicePatchRuntime {
             voices: bank.voices.map(PatchEngine::new),
             pending,
             retired_output,
+            pending_bank: None,
             probe_bus,
             meter_bus,
             probes,
@@ -649,6 +675,7 @@ impl VoicePatchRuntime {
             voice_mode,
             retired: None,
             probe_cursor: 0,
+            blocked_generation: None,
         }
     }
 
@@ -660,32 +687,33 @@ impl VoicePatchRuntime {
 
     fn begin_buffer(&mut self) {
         self.return_retired();
+        self.read_pending();
         self.accept_pending();
     }
 
     fn next_frame(&mut self, controls: [PatchControls; VOICES], record_meters: bool) -> Frame {
         let mut left = 0.0;
         let mut right = 0.0;
-        for (voice, (engine, controls)) in self
-            .voices
-            .iter_mut()
-            .zip(controls)
-            .take(self.voice_mode.count())
-            .enumerate()
-        {
-            let frame = engine.next_with_controls(controls);
-            record_probe_values(
-                &self.probe_bus,
-                &self.probes,
-                self.probe_cursor,
-                voice,
-                engine,
-            );
-            if record_meters {
-                record_meter_values(&self.meter_bus, &self.meters, voice, engine);
+        let active_voices = self.voice_mode.count();
+        for (voice, (engine, controls)) in self.voices.iter_mut().zip(controls).enumerate() {
+            if voice >= active_voices && engine.can_replace() {
+                continue;
             }
-            left += frame.left().value();
-            right += frame.right().value();
+            let frame = engine.next_with_controls(controls);
+            if voice < active_voices {
+                record_probe_values(
+                    &self.probe_bus,
+                    &self.probes,
+                    self.probe_cursor,
+                    voice,
+                    engine,
+                );
+                if record_meters {
+                    record_meter_values(&self.meter_bus, &self.meters, voice, engine);
+                }
+                left += frame.left().value();
+                right += frame.right().value();
+            }
         }
         self.probe_bus.advance(self.probe_cursor);
         self.probe_cursor = (self.probe_cursor + 1) % PROBE_HISTORY;
@@ -711,30 +739,71 @@ impl VoicePatchRuntime {
             probes: ProbeRoutes::empty(),
             meters: MeterRoutes::empty(),
             voice_mode: self.voice_mode,
+            generation: 0,
         };
         if let Err(error) = self.retired_output.push(bank) {
             let rtrb::PushError::Full(bank) = error;
+            eprintln!("[bw dbg audio] retired output full while returning active bank");
             self.retired = Some(bank);
+        }
+    }
+
+    fn read_pending(&mut self) {
+        if self.retired.is_some() {
+            return;
+        }
+        while let Ok(bank) = self.pending.pop() {
+            let generation = bank.generation;
+            eprintln!(
+                "[bw dbg audio] callback received patch gen={} voice_mode={:?}",
+                generation, bank.voice_mode
+            );
+            if let Some(old) = self.pending_bank.replace(bank)
+                && let Err(error) = self.retired_output.push(old)
+            {
+                let rtrb::PushError::Full(old) = error;
+                eprintln!(
+                    "[bw dbg audio] retired output full while superseding patch gen={}",
+                    old.generation
+                );
+                self.retired = Some(old);
+                return;
+            }
+            eprintln!("[bw dbg audio] latest pending patch gen={generation}");
         }
     }
 
     fn accept_pending(&mut self) {
         if self.retired.is_some() || self.voices.iter().any(|engine| !engine.can_replace()) {
+            if let Some(bank) = &self.pending_bank
+                && self.blocked_generation != Some(bank.generation)
+            {
+                eprintln!(
+                    "[bw dbg audio] install blocked gen={} retired={} replaceable={}",
+                    bank.generation,
+                    self.retired.is_some(),
+                    self.voices.iter().all(|engine| engine.can_replace())
+                );
+                self.blocked_generation = Some(bank.generation);
+            }
             return;
         }
-        let Ok(bank) = self.pending.pop() else {
+        let Some(bank) = self.pending_bank.take() else {
             return;
         };
+        let generation = bank.generation;
         let PatchBank {
             voices,
             probes,
             meters,
             voice_mode,
+            generation: _,
         } = bank;
         for (engine, next) in self.voices.iter_mut().zip(voices) {
             if let Err(UpdateRejected::Busy(_) | UpdateRejected::RetiredPatchPending(_)) =
                 engine.replace(next)
             {
+                eprintln!("[bw dbg audio] install rejected unexpectedly gen={generation}");
                 return;
             }
         }
@@ -743,6 +812,14 @@ impl VoicePatchRuntime {
         self.probes = probes;
         self.meters = meters;
         self.voice_mode = voice_mode;
+        self.blocked_generation = None;
+        eprintln!(
+            "[bw dbg audio] installed patch gen={} voice_mode={:?} probes={} meters={}",
+            generation,
+            self.voice_mode,
+            self.probes.iter().count(),
+            self.meters.iter().count()
+        );
     }
 }
 
@@ -896,7 +973,7 @@ fn accept_track(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{GuiAction, GuiState};
+    use crate::model::{GuiAction, GuiState, ModuleCategory};
     use assert_no_alloc::assert_no_alloc;
     use brainwash::patch::{Module, Patch, Wave};
     use brainwash::sample::{Sample as AudioSample, Unit};
@@ -912,50 +989,83 @@ mod tests {
     }
 
     #[test]
-    fn submit_reports_rejection_when_queue_is_full() {
+    fn patch_update_waits_for_transport_slot_instead_of_rejecting() {
         let rate = SampleRate::new(44_100).unwrap();
-        let mut handle = test_handle();
+        let (patch_pending, mut callback_patch_pending) = RingBuffer::new(1);
+        let (_patch_retired_callback, patch_retired) = RingBuffer::new(2);
+        let (track_pending, _track_callback) = RingBuffer::new(2);
+        let (_track_retired_callback, track_retired) = RingBuffer::new(2);
+        let (play_pending, _play_callback) = RingBuffer::new(2);
+        let mut handle = AudioHandle {
+            patch_pending,
+            patch_retired,
+            track_pending,
+            track_retired,
+            play_pending,
+            probe_bus: Arc::new(ProbeBus::new()),
+            meter_bus: Arc::new(MeterBus::new()),
+            rate,
+            patch_generation: 0,
+        };
+        handle.set_latest_patch(compiled_saw_patch(110.0, rate));
+        let release = std::thread::spawn(move || {
+            while callback_patch_pending.pop().is_err() {
+                std::thread::yield_now();
+            }
+            callback_patch_pending
+        });
 
-        assert_eq!(handle.submit(compiled_saw_patch(110.0, rate)), Ok(()));
-        assert_eq!(handle.submit(compiled_saw_patch(220.0, rate)), Ok(()));
-        assert_eq!(
-            handle.submit(compiled_saw_patch(330.0, rate)),
-            Err(AudioCommandRejected)
-        );
+        handle.set_latest_patch(compiled_saw_patch(220.0, rate));
+
+        let mut callback_patch_pending = release.join().unwrap();
+        assert!(callback_patch_pending.pop().is_ok());
     }
 
     #[test]
-    fn submit_with_telemetry_reports_rejection_when_queue_is_full() {
+    fn gui_compile_error_publishes_silence_after_valid_patch() {
         let rate = SampleRate::new(44_100).unwrap();
-        let mut handle = test_handle();
+        let (patch_pending, mut callback_patch_pending) = RingBuffer::new(16);
+        let (_patch_retired_callback, patch_retired) = RingBuffer::new(16);
+        let (track_pending, _track_callback) = RingBuffer::new(2);
+        let (_track_retired_callback, track_retired) = RingBuffer::new(2);
+        let (play_pending, _play_callback) = RingBuffer::new(2);
+        let mut state = GuiState::new(8, 8);
+        state.set_audio(AudioHandle {
+            patch_pending,
+            patch_retired,
+            track_pending,
+            track_retired,
+            play_pending,
+            probe_bus: Arc::new(ProbeBus::new()),
+            meter_bus: Arc::new(MeterBus::new()),
+            rate,
+            patch_generation: 0,
+        });
+        drain_latest_patch(&mut callback_patch_pending);
 
-        assert_eq!(
-            handle.submit_with_telemetry(
-                compiled_saw_patch(110.0, rate),
-                &[],
-                &[],
-                VoiceMode::Single
-            ),
-            Ok(())
-        );
-        assert_eq!(
-            handle.submit_with_telemetry(
-                compiled_saw_patch(220.0, rate),
-                &[],
-                &[],
-                VoiceMode::Single
-            ),
-            Ok(())
-        );
-        assert_eq!(
-            handle.submit_with_telemetry(
-                compiled_saw_patch(330.0, rate),
-                &[],
-                &[],
-                VoiceMode::Single
-            ),
-            Err(AudioCommandRejected)
-        );
+        state.apply(GuiAction::OpenPalette);
+        state.apply(GuiAction::Confirm);
+        state.apply(GuiAction::Right);
+        state.apply(GuiAction::Palette(ModuleCategory::Output));
+        state.apply(GuiAction::Confirm);
+        let mut valid = drain_latest_patch(&mut callback_patch_pending)
+            .expect("valid gui patch should publish audio");
+        let mut audible = false;
+        for _ in 0..128 {
+            let frame = valid.voices[0].next();
+            audible |= frame.left().value().abs() > 0.001 || frame.right().value().abs() > 0.001;
+        }
+        assert!(audible);
+
+        state.apply(GuiAction::Delete);
+        assert_eq!(state.audio_status(), "Silent: connect signal to Output");
+        let mut silent = drain_latest_patch(&mut callback_patch_pending)
+            .expect("invalid gui patch should publish silence");
+        for _ in 0..128 {
+            let frame = silent.voices[0].next();
+            assert_eq!(frame.left().value(), 0.0);
+            assert_eq!(frame.right().value(), 0.0);
+        }
     }
 
     #[test]
@@ -1071,6 +1181,105 @@ mod tests {
             let gated = gated.next_with_controls(controls).left().value();
             assert!((default - gated).abs() < 0.0001, "{default} {gated}");
         }
+    }
+
+    #[test]
+    fn single_voice_mode_retires_inactive_engines_after_patch_swap() {
+        let rate = SampleRate::new(44_100).unwrap();
+        let (mut pending_input, pending_output) = RingBuffer::new(2);
+        let (retired_input, mut retired_output) = RingBuffer::new(2);
+        let mut runtime = VoicePatchRuntime::new(
+            PatchBank::new_with_telemetry(
+                CompiledPatch::silence(),
+                ProbeRoutes::empty(),
+                MeterRoutes::empty(),
+                VoiceMode::Single,
+            ),
+            pending_output,
+            retired_input,
+            Arc::new(ProbeBus::new()),
+            Arc::new(MeterBus::new()),
+        );
+        assert!(
+            pending_input
+                .push(PatchBank::new_with_telemetry(
+                    compiled_saw_patch(220.0, rate),
+                    ProbeRoutes::empty(),
+                    MeterRoutes::empty(),
+                    VoiceMode::Single,
+                ))
+                .is_ok()
+        );
+
+        assert_no_alloc(|| {
+            for _ in 0..130 {
+                runtime.next_with_controls([PatchControls::default(); VOICES]);
+            }
+        });
+
+        assert!(retired_output.pop().is_ok());
+    }
+
+    #[test]
+    fn patch_runtime_installs_latest_pending_patch_after_busy_swap() {
+        let rate = SampleRate::new(44_100).unwrap();
+        let (mut pending_input, pending_output) = RingBuffer::new(2);
+        let (retired_input, mut retired_output) = RingBuffer::new(8);
+        let mut runtime = VoicePatchRuntime::new(
+            PatchBank::new_with_telemetry(
+                constant_patch(0.0, rate),
+                ProbeRoutes::empty(),
+                MeterRoutes::empty(),
+                VoiceMode::Single,
+            ),
+            pending_output,
+            retired_input,
+            Arc::new(ProbeBus::new()),
+            Arc::new(MeterBus::new()),
+        );
+        let controls = [PatchControls::default(); VOICES];
+
+        assert!(
+            pending_input
+                .push(PatchBank::new_with_telemetry(
+                    constant_patch(0.25, rate),
+                    ProbeRoutes::empty(),
+                    MeterRoutes::empty(),
+                    VoiceMode::Single,
+                ))
+                .is_ok()
+        );
+        runtime.next_with_controls(controls);
+        assert!(
+            pending_input
+                .push(PatchBank::new_with_telemetry(
+                    constant_patch(0.5, rate),
+                    ProbeRoutes::empty(),
+                    MeterRoutes::empty(),
+                    VoiceMode::Single,
+                ))
+                .is_ok()
+        );
+        assert!(
+            pending_input
+                .push(PatchBank::new_with_telemetry(
+                    constant_patch(0.75, rate),
+                    ProbeRoutes::empty(),
+                    MeterRoutes::empty(),
+                    VoiceMode::Single,
+                ))
+                .is_ok()
+        );
+
+        assert_no_alloc(|| {
+            for _ in 0..260 {
+                runtime.next_with_controls(controls);
+            }
+        });
+
+        while retired_output.pop().is_ok() {}
+        let value = runtime.next_with_controls(controls).left().value();
+        assert!((value - 0.75).abs() < 0.001, "{value}");
     }
 
     #[test]
@@ -1461,6 +1670,14 @@ mod tests {
         panic!("{name}");
     }
 
+    fn drain_latest_patch(pending: &mut Consumer<PatchBank>) -> Option<PatchBank> {
+        let mut latest = None;
+        while let Ok(bank) = pending.pop() {
+            latest = Some(bank);
+        }
+        latest
+    }
+
     fn metered_patch(rate: SampleRate) -> (CompiledPatch, MeterRoute) {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Constant(AudioSample::new(0.5).unwrap()));
@@ -1490,6 +1707,7 @@ mod tests {
             probe_bus: Arc::new(ProbeBus::new()),
             meter_bus: Arc::new(MeterBus::new()),
             rate: SampleRate::new(44_100).unwrap(),
+            patch_generation: 0,
         }
     }
 
@@ -1513,6 +1731,13 @@ mod tests {
         let port = patch.input_port(osc, 0).unwrap();
         patch.connect_input(freq, port).unwrap();
         patch.output(osc).unwrap();
+        CompiledPatch::new(&patch, rate).unwrap()
+    }
+
+    fn constant_patch(value: f32, rate: SampleRate) -> CompiledPatch {
+        let mut patch = Patch::new();
+        let source = patch.insert(Module::Constant(AudioSample::new(value).unwrap()));
+        patch.output(source).unwrap();
         CompiledPatch::new(&patch, rate).unwrap()
     }
 

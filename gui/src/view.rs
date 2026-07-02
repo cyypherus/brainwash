@@ -108,7 +108,8 @@ fn toolbar<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
                 GuiAction::TogglePlay,
                 state.playing(),
                 app,
-            ),
+            )
+            .width(50.),
             action_button(
                 binding!(state.meters_button),
                 "Meters",
@@ -394,6 +395,7 @@ fn grid_view<'a>(
     let view = state.grid_view_offset_for_size(size);
     let pixel_x = view.x as f32 * (CELL + GAP);
     let pixel_y = view.y as f32 * (CELL + GAP);
+    let (inset_x, inset_y) = grid_inset(area, size);
     let hidden = preview
         .filter(|preview| !preview.copy)
         .map(|preview| {
@@ -412,15 +414,15 @@ fn grid_view<'a>(
             &hidden,
             preview.is_none_or(|preview| preview.copy),
         )
-        .offset(-pixel_x, -pixel_y),
+        .offset(inset_x - pixel_x, inset_y - pixel_y),
     ];
     if let Some(preview) = preview {
         layers.push(grid_preview_layer(
             state,
             app,
             preview,
-            pixel_x,
-            pixel_y,
+            pixel_x - inset_x,
+            pixel_y - inset_y,
             area.width,
             area.height,
         ));
@@ -454,12 +456,24 @@ fn grid_content<'a>(
             row_spaced(GAP, cells).height(CELL)
         })
         .collect::<Vec<_>>();
+    let cursor = state.cursor();
     stack_aligned(
         Align::TopLeading,
         vec![
             column_spaced(GAP, row_views),
             connection_layer(state, app, id_offset, hidden),
             module_layer(state, app, id_offset, hidden),
+            rect(id_offset + 72_000)
+                .fill(Color::TRANSPARENT)
+                .stroke(Color::from_rgb8(248, 250, 252), Stroke::new(3.))
+                .corner_rounding(6.)
+                .build(app)
+                .width(CELL)
+                .height(CELL)
+                .offset(
+                    cursor.x as f32 * (CELL + GAP),
+                    cursor.y as f32 * (CELL + GAP),
+                ),
         ],
     )
     .width(grid_span(columns))
@@ -1549,6 +1563,10 @@ fn parameter_fill(value: &ParameterValue) -> f32 {
             ((*value - *min) as f32 / (*max - *min).max(1) as f32).clamp(0., 1.)
         }
         ParameterValue::Time { value, .. } => (*value as f32 / 10_000.).clamp(0., 1.),
+        ParameterValue::Bars {
+            numerator,
+            denominator,
+        } => (*numerator as f32 / (*denominator).max(1) as f32 / 16.).clamp(0., 1.),
         ParameterValue::Input => 1.,
         ParameterValue::Enum { index, options } => {
             if options.len() <= 1 {
@@ -1949,7 +1967,11 @@ fn grid_pointer_surface(
 }
 
 fn grid_position(point: Point, view: GridPos, size: GridViewSize, area: Area) -> Option<GridPos> {
-    if point.x < 0. || point.y < 0. || point.x >= area.width || point.y >= area.height {
+    let (inset_x, inset_y) = grid_inset(area, size);
+    let point = Point::new(point.x - inset_x, point.y - inset_y);
+    let width = grid_span(size.columns());
+    let height = grid_span(size.rows());
+    if point.x < 0. || point.y < 0. || point.x >= width || point.y >= height {
         return None;
     }
     let x = (point.x / (CELL + GAP)).floor() as u16;
@@ -1965,6 +1987,13 @@ fn grid_view_size(state: &GuiState, area: Area) -> GridViewSize {
     GridViewSize::new(
         visible_grid_cells(area.width).min(columns),
         visible_grid_cells(area.height).min(rows),
+    )
+}
+
+fn grid_inset(area: Area, size: GridViewSize) -> (f32, f32) {
+    (
+        ((area.width - grid_span(size.columns())) * 0.5).max(0.),
+        ((area.height - grid_span(size.rows())) * 0.5).max(0.),
     )
 }
 
@@ -4346,6 +4375,25 @@ mod tests {
                 width: 4.,
                 height: 51.,
             }
+        );
+    }
+
+    #[test]
+    fn grid_position_accounts_for_balanced_padding() {
+        let area = Area::new(0., 0., 100., 70.);
+        let size = GridViewSize::new(3, 2);
+
+        assert_eq!(
+            grid_position(Point::new(1., 1.), GridPos::new(0, 0), size, area),
+            None
+        );
+        assert_eq!(
+            grid_position(Point::new(17., 4.), GridPos::new(0, 0), size, area),
+            Some(GridPos::new(0, 0))
+        );
+        assert_eq!(
+            grid_position(Point::new(98., 68.), GridPos::new(0, 0), size, area),
+            None
         );
     }
 }

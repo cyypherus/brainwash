@@ -445,6 +445,7 @@ struct IntParam {
 struct TimeParam {
     value: i32,
     unit: TimeUnit,
+    denominator: i32,
     connected: bool,
 }
 
@@ -488,6 +489,10 @@ pub enum ParameterValue {
     Time {
         value: i32,
         unit: TimeUnit,
+    },
+    Bars {
+        numerator: i32,
+        denominator: i32,
     },
     Input,
     Enum {
@@ -587,12 +592,20 @@ fn int_parameter(name: &'static str, param: IntParam) -> ModuleParameter {
 }
 
 fn time_parameter(name: &'static str, param: TimeParam) -> ModuleParameter {
-    ModuleParameter {
-        name,
-        value: ParameterValue::Time {
+    let value = if param.unit == TimeUnit::Bars {
+        ParameterValue::Bars {
+            numerator: param.value,
+            denominator: param.denominator,
+        }
+    } else {
+        ParameterValue::Time {
             value: param.value,
             unit: param.unit,
-        },
+        }
+    };
+    ModuleParameter {
+        name,
+        value,
         connected: param.connected,
     }
 }
@@ -642,6 +655,7 @@ fn time_param(value: i32, unit: TimeUnit) -> TimeParam {
     TimeParam {
         value,
         unit,
+        denominator: 4,
         connected: true,
     }
 }
@@ -1582,11 +1596,21 @@ fn set_time_param(
     if index != expected {
         return false;
     }
-    let ParameterValue::Time { value, unit } = &parameter.value else {
-        return false;
-    };
-    target.value = *value;
-    target.unit = *unit;
+    match &parameter.value {
+        ParameterValue::Time { value, unit } if *unit != TimeUnit::Bars => {
+            target.value = *value;
+            target.unit = *unit;
+        }
+        ParameterValue::Bars {
+            numerator,
+            denominator,
+        } => {
+            target.value = (*numerator).max(1);
+            target.unit = TimeUnit::Bars;
+            target.denominator = (*denominator).max(1);
+        }
+        _ => return false,
+    }
     target.connected = parameter.connected;
     true
 }
@@ -1809,9 +1833,13 @@ impl ParameterValue {
             ParameterValue::Time { value, unit } => match unit {
                 TimeUnit::Seconds => format!("{:.2}s", *value as f32 / 100.0),
                 TimeUnit::Samples => format!("{value} smp"),
-                TimeUnit::Bars => format!("{}/16", value.max(&1)),
+                TimeUnit::Bars => "1/4".to_string(),
                 TimeUnit::Hertz => format!("{value} hz"),
             },
+            ParameterValue::Bars {
+                numerator,
+                denominator,
+            } => format!("{}/{}", numerator.max(&1), denominator.max(&1)),
             ParameterValue::Input => "input".to_string(),
             ParameterValue::Enum { index, options } => {
                 options.get(*index).copied().unwrap_or_default().to_string()
@@ -1829,14 +1857,19 @@ impl ParameterValue {
     fn accepts_typed_value(&self) -> bool {
         matches!(
             self,
-            ParameterValue::Float { .. } | ParameterValue::Time { .. }
+            ParameterValue::Float { .. }
+                | ParameterValue::Time { .. }
+                | ParameterValue::Bars { .. }
         )
     }
 
     fn is_port(&self) -> bool {
         matches!(
             self,
-            ParameterValue::Float { .. } | ParameterValue::Time { .. } | ParameterValue::Input
+            ParameterValue::Float { .. }
+                | ParameterValue::Time { .. }
+                | ParameterValue::Bars { .. }
+                | ParameterValue::Input
         )
     }
 
@@ -1846,8 +1879,12 @@ impl ParameterValue {
             ParameterValue::Time { value, unit } => match unit {
                 TimeUnit::Seconds => format!("{}", *value as f32 / 100.0),
                 TimeUnit::Samples | TimeUnit::Hertz => value.to_string(),
-                TimeUnit::Bars => format!("{}/16", value.max(&1)),
+                TimeUnit::Bars => "1/4".to_string(),
             },
+            ParameterValue::Bars {
+                numerator,
+                denominator,
+            } => format!("{}/{}", numerator.max(&1), denominator.max(&1)),
             ParameterValue::Int { value, .. } => value.to_string(),
             ParameterValue::Input => String::new(),
             ParameterValue::Enum { index, options } => {
@@ -1903,6 +1940,27 @@ impl ParameterValue {
                 *value = next;
                 changed
             }
+            ParameterValue::Bars {
+                numerator,
+                denominator,
+            } => {
+                let before = (*numerator, *denominator);
+                let max_num = if *denominator == 1 { 16 } else { *denominator };
+                if up {
+                    if *numerator < max_num {
+                        *numerator += 1;
+                    } else if *denominator > 1 {
+                        *denominator /= 2;
+                        *numerator = 1;
+                    }
+                } else if *numerator > 1 {
+                    *numerator -= 1;
+                } else if *denominator < 64 {
+                    *denominator *= 2;
+                    *numerator = *denominator;
+                }
+                before != (*numerator, *denominator)
+            }
             ParameterValue::Input => false,
             ParameterValue::Enum { index, options } => {
                 if options.is_empty() {
@@ -1925,16 +1983,31 @@ impl ParameterValue {
     }
 
     fn cycle_unit(&mut self) -> bool {
-        let ParameterValue::Time { unit, .. } = self else {
-            return false;
-        };
-        *unit = match unit {
-            TimeUnit::Seconds => TimeUnit::Samples,
-            TimeUnit::Samples => TimeUnit::Bars,
-            TimeUnit::Bars => TimeUnit::Hertz,
-            TimeUnit::Hertz => TimeUnit::Seconds,
-        };
-        true
+        match self {
+            ParameterValue::Time { unit, .. } => {
+                *unit = match unit {
+                    TimeUnit::Seconds => TimeUnit::Samples,
+                    TimeUnit::Samples => {
+                        *self = ParameterValue::Bars {
+                            numerator: 1,
+                            denominator: 4,
+                        };
+                        return true;
+                    }
+                    TimeUnit::Bars => TimeUnit::Hertz,
+                    TimeUnit::Hertz => TimeUnit::Seconds,
+                };
+                true
+            }
+            ParameterValue::Bars { .. } => {
+                *self = ParameterValue::Time {
+                    value: 1,
+                    unit: TimeUnit::Hertz,
+                };
+                true
+            }
+            _ => false,
+        }
     }
 }
 
@@ -2528,12 +2601,12 @@ impl GuiState {
     fn moved_position(
         &self,
         module: &Module,
-        _origin: GridPos,
+        origin: GridPos,
         grab: GridPos,
         target: GridPos,
     ) -> GridPos {
-        let x = module.position.x as i16 + target.x as i16 - grab.x as i16;
-        let y = module.position.y as i16 + target.y as i16 - grab.y as i16;
+        let x = origin.x as i16 + target.x as i16 - grab.x as i16;
+        let y = origin.y as i16 + target.y as i16 - grab.y as i16;
         self.bounded_module_position(module, x, y)
             .unwrap_or(module.position)
     }
@@ -2878,6 +2951,12 @@ impl GuiState {
                     }
                     continue;
                 };
+                eprintln!(
+                    "root output {:?} -> {:?} input {}",
+                    connection.from,
+                    output.id,
+                    input
+                );
                 let port = patch
                     .input_port(output_id, input)
                     .map_err(AudioPatchError::Connect)?;
@@ -2923,6 +3002,12 @@ impl GuiState {
                 ) else {
                     continue;
                 };
+                eprintln!(
+                    "root subpatch {:?} -> {:?} sub input {:?}",
+                    connection.from,
+                    target.id,
+                    input_id
+                );
                 let port = patch.input_port(to, 0).map_err(AudioPatchError::Connect)?;
                 patch
                     .connect_input(from, port)
@@ -2934,6 +3019,13 @@ impl GuiState {
                 let Some(to) = audio_id(&ids, AudioKey::Root(connection.to)) else {
                     continue;
                 };
+                eprintln!(
+                    "root normal {:?} -> {:?} {:?} input {}",
+                    connection.from,
+                    connection.to,
+                    target.kind(),
+                    input
+                );
                 let port = patch
                     .input_port(to, input)
                     .map_err(AudioPatchError::Connect)?;
@@ -2984,6 +3076,14 @@ impl GuiState {
                 if !self.module_input_connected(target, input as u16) {
                     continue;
                 }
+                eprintln!(
+                    "sub {:?} {:?} -> {:?} {:?} input {}",
+                    owner,
+                    connection.from,
+                    connection.to,
+                    target.kind(),
+                    input
+                );
                 let port = patch
                     .input_port(to, input)
                     .map_err(AudioPatchError::Connect)?;
@@ -3105,26 +3205,41 @@ impl GuiState {
         };
         match self.compile_gui_audio_patch(rate) {
             Ok(patch) => {
+                let modules = self.modules().len();
+                let active_modules = self
+                    .modules()
+                    .iter()
+                    .filter(|module| !module.disabled)
+                    .count();
                 let Some(audio) = self.audio.as_mut() else {
                     self.audio_status = "Audio disabled".to_string();
                     return;
                 };
-                let submitted = audio.submit_with_telemetry(
+                eprintln!(
+                    "[bw dbg model] publish compiled patch modules={} active_modules={} voice_mode={:?} probes={} meters={}",
+                    modules,
+                    active_modules,
+                    patch.voice_mode,
+                    patch.probes.len(),
+                    patch.meters.len()
+                );
+                audio.set_latest_patch_with_telemetry(
                     patch.patch,
                     &patch.probes,
                     &patch.meters,
                     patch.voice_mode,
                 );
-                self.audio_status = if submitted.is_ok() {
-                    "Audio ready".to_string()
-                } else {
-                    "Audio busy: patch rejected".to_string()
-                };
+                self.audio_status = "Audio ready".to_string();
             }
             Err(error) => {
                 if let Some(audio) = self.audio.as_mut() {
                     audio.collect_retired();
+                    audio.set_latest_patch(CompiledPatch::silence());
                 }
+                eprintln!(
+                    "[bw dbg model] compile error {:?}; published silence",
+                    error
+                );
                 self.audio_status = format!("Silent: {}", audio_patch_error_message(&error));
             }
         }
@@ -3693,7 +3808,7 @@ impl GuiState {
             .find(|candidate| candidate.id == module)
             .and_then(|module| module.parameter(parameter))
             .map(|parameter| match parameter.value {
-                ParameterValue::Time { .. } => TextInputKind::Time,
+                ParameterValue::Time { .. } | ParameterValue::Bars { .. } => TextInputKind::Time,
                 _ => TextInputKind::Number,
             })
             .unwrap_or(TextInputKind::Number)
@@ -4363,7 +4478,9 @@ impl GuiState {
                     if changed
                         && matches!(
                             row.value,
-                            ParameterValue::Float { .. } | ParameterValue::Time { .. }
+                            ParameterValue::Float { .. }
+                                | ParameterValue::Time { .. }
+                                | ParameterValue::Bars { .. }
                         )
                     {
                         row.connected = false;
@@ -4389,7 +4506,9 @@ impl GuiState {
                     };
                     if matches!(
                         row.value,
-                        ParameterValue::Float { .. } | ParameterValue::Time { .. }
+                        ParameterValue::Float { .. }
+                            | ParameterValue::Time { .. }
+                            | ParameterValue::Bars { .. }
                     ) {
                         row.connected = !row.connected;
                         module.set_parameter(parameter, row);
@@ -6110,8 +6229,11 @@ fn project_time(param: TimeParam) -> Result<ProjectTimeValue, String> {
         TimeUnit::Bars => {
             let bar_num = u8::try_from(param.value)
                 .map_err(|_| format!("bar time out of range {}", param.value))?;
+            let bar_denom = u8::try_from(param.denominator)
+                .map_err(|_| format!("bar time denominator out of range {}", param.denominator))?;
             value.unit = ProjectTimeUnit::Bars;
             value.bar_num = bar_num;
+            value.bar_denom = bar_denom.max(1);
         }
         TimeUnit::Hertz => {
             value.unit = ProjectTimeUnit::Hz;
@@ -6742,15 +6864,8 @@ fn set_int(parameters: &mut [ModuleParameter], index: usize, value: i32) {
 }
 
 fn set_time(parameters: &mut [ModuleParameter], index: usize, value: ProjectTimeValue) {
-    if let Some(parameter) = parameters.get_mut(index)
-        && let ParameterValue::Time {
-            value: target,
-            unit,
-        } = &mut parameter.value
-    {
-        let (next_unit, next_value) = time_from_project(value);
-        *unit = next_unit;
-        *target = next_value;
+    if let Some(parameter) = parameters.get_mut(index) {
+        parameter.value = time_from_project(value);
     }
 }
 
@@ -6782,15 +6897,24 @@ fn apply_connected(parameters: &mut [ModuleParameter], connected: u8) {
     }
 }
 
-fn time_from_project(value: ProjectTimeValue) -> (TimeUnit, i32) {
+fn time_from_project(value: ProjectTimeValue) -> ParameterValue {
     match value.unit {
-        ProjectTimeUnit::Seconds => (TimeUnit::Seconds, (value.seconds * 100.0).round() as i32),
-        ProjectTimeUnit::Samples => (TimeUnit::Samples, value.samples.round() as i32),
-        ProjectTimeUnit::Bars => (
-            TimeUnit::Bars,
-            ((value.bar_num as f32 / value.bar_denom.max(1) as f32) * 16.0).round() as i32,
-        ),
-        ProjectTimeUnit::Hz => (TimeUnit::Hertz, value.hz.round() as i32),
+        ProjectTimeUnit::Seconds => ParameterValue::Time {
+            value: (value.seconds * 100.0).round() as i32,
+            unit: TimeUnit::Seconds,
+        },
+        ProjectTimeUnit::Samples => ParameterValue::Time {
+            value: value.samples.round() as i32,
+            unit: TimeUnit::Samples,
+        },
+        ProjectTimeUnit::Bars => ParameterValue::Bars {
+            numerator: i32::from(value.bar_num.max(1)),
+            denominator: i32::from(value.bar_denom.max(1)),
+        },
+        ProjectTimeUnit::Hz => ParameterValue::Time {
+            value: value.hz.round() as i32,
+            unit: TimeUnit::Hertz,
+        },
     }
 }
 
@@ -6877,6 +7001,26 @@ mod tests {
             }
             _ => panic!("wrong body"),
         }
+    }
+
+    #[test]
+    fn pointer_module_drag_uses_original_module_position() {
+        let mut state = GuiState::new(8, 8);
+        let module = Module {
+            id: ModuleId(0),
+            position: GridPos::new(1, 1),
+            orientation: Orientation::Right,
+            body: ModuleKind::Adsr.default_body(),
+            disabled: false,
+        };
+        state.instrument_mut().surface_mut().modules.push(module);
+
+        state.drag_grid_cell(GridPointerPhase::Start, GridPos::new(1, 2));
+        state.drag_grid_cell(GridPointerPhase::Drag, GridPos::new(3, 3));
+        state.drag_grid_cell(GridPointerPhase::Drag, GridPos::new(4, 4));
+        state.drag_grid_cell(GridPointerPhase::End, GridPos::new(4, 4));
+
+        assert_eq!(state.modules()[0].position, GridPos::new(4, 3));
     }
 }
 
@@ -7018,7 +7162,7 @@ fn module_uses_voice_controls(kind: ModuleKind) -> bool {
 
 fn audio_patch_error_message(error: &AudioPatchError) -> &'static str {
     match error {
-        AudioPatchError::MissingOutput => "connect Osc to Output",
+        AudioPatchError::MissingOutput => "connect signal to Output",
         AudioPatchError::InvalidParameter => "invalid parameter",
         AudioPatchError::Connect(_) => "invalid connection",
         AudioPatchError::Compile(CompileError::Cycle) => "cycle",
@@ -7153,12 +7297,15 @@ fn audio_module(
             samples: Arc::new(Vec::new()),
         }),
         ModuleKind::Probe => Ok(AudioModule::Probe),
+        ModuleKind::RightJoin | ModuleKind::DownJoin => Ok(AudioModule::Binary {
+            op: BinaryOp::Add,
+            a: AudioSample::ZERO,
+            b: AudioSample::ZERO,
+        }),
         ModuleKind::TurnRightDown
         | ModuleKind::TurnDownRight
         | ModuleKind::LeftSplit
         | ModuleKind::TopSplit
-        | ModuleKind::RightJoin
-        | ModuleKind::DownJoin
         | ModuleKind::SubpatchInput
         | ModuleKind::SubpatchOutput
         | ModuleKind::Subpatch => Ok(AudioModule::Pass),
@@ -7245,15 +7392,28 @@ fn audio_frequency(
     parameter: usize,
     rate: SampleRate,
 ) -> Result<Hertz, AudioPatchError> {
-    let Some(ParameterValue::Time { value, unit }) = module.parameter(parameter).map(|p| p.value)
-    else {
+    let Some(value) = module.parameter(parameter).map(|p| p.value) else {
         return Err(AudioPatchError::InvalidParameter);
     };
-    let hz = match unit {
-        TimeUnit::Hertz => value as f32,
-        TimeUnit::Seconds => 100.0 / value.max(1) as f32,
-        TimeUnit::Samples => rate.value() as f32 / value.max(1) as f32,
-        TimeUnit::Bars => 1.0,
+    let hz = match value {
+        ParameterValue::Time {
+            value,
+            unit: TimeUnit::Hertz,
+        } => value as f32,
+        ParameterValue::Time {
+            value,
+            unit: TimeUnit::Seconds,
+        } => 100.0 / value.max(1) as f32,
+        ParameterValue::Time {
+            value,
+            unit: TimeUnit::Samples,
+        } => rate.value() as f32 / value.max(1) as f32,
+        ParameterValue::Time {
+            unit: TimeUnit::Bars,
+            ..
+        }
+        | ParameterValue::Bars { .. } => 1.0,
+        _ => return Err(AudioPatchError::InvalidParameter),
     };
     Hertz::new(hz).ok_or(AudioPatchError::InvalidParameter)
 }
@@ -7264,21 +7424,40 @@ fn audio_duration(
     rate: SampleRate,
     bpm: u16,
 ) -> Result<Duration, AudioPatchError> {
-    let Some(ParameterValue::Time { value, unit }) = module.parameter(parameter).map(|p| p.value)
-    else {
+    let Some(value) = module.parameter(parameter).map(|p| p.value) else {
         return Err(AudioPatchError::InvalidParameter);
     };
-    match unit {
-        TimeUnit::Seconds => seconds(value as f32 / 100.0),
-        TimeUnit::Samples => Ok(Duration::Samples(Samples::new(value.max(1) as u64))),
-        TimeUnit::Bars => {
+    match value {
+        ParameterValue::Time {
+            value,
+            unit: TimeUnit::Seconds,
+        } => seconds(value as f32 / 100.0),
+        ParameterValue::Time {
+            value,
+            unit: TimeUnit::Samples,
+        } => Ok(Duration::Samples(Samples::new(value.max(1) as u64))),
+        ParameterValue::Time {
+            value,
+            unit: TimeUnit::Bars,
+        } => {
             let beats = value as f32 / 16.0 * 4.0;
             seconds(beats * 60.0 / bpm.max(1) as f32)
         }
-        TimeUnit::Hertz => {
+        ParameterValue::Bars {
+            numerator,
+            denominator,
+        } => {
+            let beats = numerator.max(1) as f32 / denominator.max(1) as f32 * 4.0;
+            seconds(beats * 60.0 / bpm.max(1) as f32)
+        }
+        ParameterValue::Time {
+            value,
+            unit: TimeUnit::Hertz,
+        } => {
             let hz = value.max(1) as f32;
             seconds(1.0 / hz.min(rate.value() as f32))
         }
+        _ => Err(AudioPatchError::InvalidParameter),
     }
 }
 
@@ -7388,24 +7567,27 @@ fn typed_parameter_value(current: &ParameterValue, text: &str) -> Option<Paramet
                 value: text.parse::<i32>().ok()?.max(1),
                 unit: *unit,
             }),
-            TimeUnit::Bars => {
-                let (num, denom) = text.split_once('/')?;
-                let num = num.parse::<i32>().ok()?.max(1);
-                let denom = denom.parse::<i32>().ok()?;
-                if denom <= 0 {
-                    return None;
-                }
-                Some(ParameterValue::Time {
-                    value: ((num * 16) / denom).max(1),
-                    unit: *unit,
-                })
-            }
+            TimeUnit::Bars => typed_bars(text),
         },
+        ParameterValue::Bars { .. } => typed_bars(text),
         ParameterValue::Int { .. }
         | ParameterValue::Input
         | ParameterValue::Enum { .. }
         | ParameterValue::Toggle(_) => None,
     }
+}
+
+fn typed_bars(text: &str) -> Option<ParameterValue> {
+    let (num, denom) = text.split_once('/')?;
+    let numerator = num.parse::<i32>().ok()?.max(1);
+    let denominator = denom.parse::<i32>().ok()?;
+    if denominator <= 0 {
+        return None;
+    }
+    Some(ParameterValue::Bars {
+        numerator,
+        denominator,
+    })
 }
 
 fn normalized_rect(anchor: GridPos, extent: GridPos) -> (GridPos, GridPos) {

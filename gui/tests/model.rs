@@ -369,6 +369,26 @@ fn edit_mode_adjusts_parameters_ports_units_and_undoes() {
 }
 
 #[test]
+fn fraction_time_parameters_use_tui_fraction_scale() {
+    let mut state = GuiState::new(8, 8);
+    place_module(&mut state, 3, 0);
+
+    state.apply(GuiAction::Edit);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::CycleUnit);
+    assert_eq!(
+        state.module_at(GridPos::new(0, 0)).unwrap().parameters()[1].value_label(),
+        "1/4"
+    );
+
+    state.apply(GuiAction::ValueUp);
+    assert_eq!(
+        state.module_at(GridPos::new(0, 0)).unwrap().parameters()[1].value_label(),
+        "2/4"
+    );
+}
+
+#[test]
 fn typed_value_input_commits_numeric_parameter() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 0, 4);
@@ -1664,6 +1684,57 @@ fn routing_modules_accept_derived_input_connections() {
 }
 
 #[test]
+fn routing_join_compiles_with_both_inputs_connected() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Gate);
+    state.apply(GuiAction::Right);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::TurnRightDown);
+    state.apply(GuiAction::Left);
+    state.apply(GuiAction::Left);
+    state.apply(GuiAction::Down);
+    place_module_kind(&mut state, ModuleKind::Gate);
+    state.apply(GuiAction::Right);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::RightJoin);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Output);
+
+    let connections = state.connections();
+    assert_eq!(connections.len(), 4);
+    let mut compiled = state
+        .compile_audio_patch(SampleRate::new(44_100).unwrap())
+        .unwrap();
+    let frame = compiled.next_with_controls(PatchControls {
+        frequency: Hertz::new(330.0),
+        gate: 1.0,
+        degree: 0,
+    });
+
+    assert!(frame.left().value() > 0.0);
+}
+
+#[test]
+fn inspect_snare2_after_join_fix() {
+    let mut state = GuiState::new(32, 32);
+    state.load_project(std::path::Path::new("../snare2.bw")).unwrap();
+    let mut compiled = state
+        .compile_audio_patch(SampleRate::new(44_100).unwrap())
+        .unwrap();
+    let controls = PatchControls {
+        frequency: Hertz::new(330.0),
+        gate: 1.0,
+        degree: 0,
+    };
+    let mut audible = false;
+    for _ in 0..44_100 {
+        let frame = compiled.next_with_controls(controls);
+        audible |= frame.left().value().abs() > 0.0001 || frame.right().value().abs() > 0.0001;
+    }
+    assert!(audible);
+}
+
+#[test]
 fn haven_grid_renders_connections_and_ports() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 0, 0);
@@ -1688,6 +1759,19 @@ fn haven_grid_renders_connections_and_ports() {
         pane.location(40_020).unwrap(),
         Point::new(origin.x + 73.5, origin.y + 15.),
     );
+}
+
+#[test]
+fn haven_grid_renders_cursor_over_module() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Osc);
+    let mut pane = PaneBuilder::new("main", main_view).build();
+    pane.redraw(&mut state, 640, 480, 1.0);
+
+    let cell = pane.location(view_cell_id(GridPos::new(0, 0))).unwrap();
+    let cursor = pane.location(72_000).unwrap();
+
+    assert_point_near(cursor, cell);
 }
 
 #[test]
