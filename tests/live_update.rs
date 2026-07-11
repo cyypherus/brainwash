@@ -1,7 +1,7 @@
 use assert_no_alloc::assert_no_alloc;
 use brainwash::compile::{CompiledPatch, PatchControls, PatchEngine, UpdateRejected};
 use brainwash::live::RealtimePatchEngine;
-use brainwash::patch::{Module, Patch, Wave};
+use brainwash::patch::{InputKind, Module, Patch, Wave};
 use brainwash::sample::{Sample, Unit};
 use brainwash::scale::cmin;
 use brainwash::time::{Hertz, SampleRate};
@@ -170,7 +170,7 @@ fn patch_controls_drive_oscillator_frequency() {
         gain: Unit::ONE,
         unipolar: false,
     });
-    let port = patch.input_port(osc, 0).unwrap();
+    let port = patch.input_port(osc, InputKind::Freq).unwrap();
     patch.connect_input(freq, port).unwrap();
     patch.output(osc).unwrap();
     let mut compiled = CompiledPatch::new(&patch, rate).unwrap();

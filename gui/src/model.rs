@@ -2,7 +2,8 @@ use crate::audio::{AudioHandle, MeterRoute, ProbeRoute, VoiceMode};
 use brainwash::compile::{CompileError, CompiledPatch};
 use brainwash::patch::{
     BinaryOp, CompressorRatio, ConnectError, Distortion as AudioDistortion, Drive,
-    EnvPoint as AudioEnvPoint, Gain, Module as AudioModule, ModuleId as AudioModuleId, Patch, Wave,
+    EnvPoint as AudioEnvPoint, Gain, InputKind as AudioInputKind, Module as AudioModule,
+    ModuleId as AudioModuleId, Patch, Wave,
 };
 use brainwash::project::{
     self, DistType as ProjectDistType, ModuleDef as ProjectModuleDef, ModuleId as ProjectModuleId,
@@ -66,7 +67,13 @@ pub struct Connection {
     from: ModuleId,
     to: ModuleId,
     output: usize,
-    input: usize,
+    input: ConnectionInput,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ConnectionInput {
+    index: usize,
+    audio: AudioInputKind,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -219,6 +226,12 @@ struct GuiAudioPatch {
 enum AudioKey {
     Root(ModuleId),
     Subpatch { owner: ModuleId, module: ModuleId },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AudioNode {
+    key: AudioKey,
+    id: AudioModuleId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -821,7 +834,11 @@ impl Connection {
     }
 
     pub(crate) fn input(self) -> usize {
-        self.input
+        self.input.index
+    }
+
+    fn audio_input(self) -> AudioInputKind {
+        self.input.audio
     }
 }
 
@@ -1346,10 +1363,7 @@ impl ModuleBody {
     }
 
     fn input_count(&self) -> u16 {
-        self.parameters()
-            .into_iter()
-            .filter(|parameter| parameter.value.is_port())
-            .count() as u16
+        self.audio_inputs().len() as u16
     }
 
     fn input_connected(&self, port: u16) -> bool {
@@ -1359,6 +1373,93 @@ impl ModuleBody {
             .nth(port as usize)
             .map(|parameter| parameter.connected)
             .unwrap_or(true)
+    }
+
+    fn audio_inputs(&self) -> &'static [AudioInputKind] {
+        match self {
+            ModuleBody::Freq
+            | ModuleBody::Gate
+            | ModuleBody::Degree
+            | ModuleBody::DegreeGate { .. } => &[],
+            ModuleBody::Osc { .. } => &[
+                AudioInputKind::Freq,
+                AudioInputKind::Shift,
+                AudioInputKind::Gain,
+            ],
+            ModuleBody::Rise { .. } | ModuleBody::Fall { .. } => {
+                &[AudioInputKind::Gate, AudioInputKind::Time]
+            }
+            ModuleBody::Ramp { .. } => &[AudioInputKind::Value, AudioInputKind::Time],
+            ModuleBody::Adsr { .. } => &[
+                AudioInputKind::Rise,
+                AudioInputKind::Fall,
+                AudioInputKind::Attack,
+                AudioInputKind::Sustain,
+            ],
+            ModuleBody::Envelope { .. } => &[AudioInputKind::Phase],
+            ModuleBody::Lowpass { .. } | ModuleBody::Highpass { .. } => {
+                &[AudioInputKind::In, AudioInputKind::Freq, AudioInputKind::Q]
+            }
+            ModuleBody::Comb { .. } => &[
+                AudioInputKind::In,
+                AudioInputKind::Time,
+                AudioInputKind::Feedback,
+                AudioInputKind::Damp,
+            ],
+            ModuleBody::Allpass { .. } => &[
+                AudioInputKind::In,
+                AudioInputKind::Time,
+                AudioInputKind::Feedback,
+            ],
+            ModuleBody::Delay { .. } => &[AudioInputKind::In, AudioInputKind::Time],
+            ModuleBody::DelayTap { .. } => &[AudioInputKind::In],
+            ModuleBody::Reverb { .. } => &[
+                AudioInputKind::In,
+                AudioInputKind::Room,
+                AudioInputKind::Damp,
+                AudioInputKind::Mod,
+                AudioInputKind::Diff,
+            ],
+            ModuleBody::Distortion { .. } => &[
+                AudioInputKind::In,
+                AudioInputKind::Drive,
+                AudioInputKind::Asym,
+            ],
+            ModuleBody::Compressor { .. } => &[
+                AudioInputKind::In,
+                AudioInputKind::Thresh,
+                AudioInputKind::Ratio,
+                AudioInputKind::Attack,
+                AudioInputKind::Release,
+                AudioInputKind::Gain,
+            ],
+            ModuleBody::Flanger { .. } => &[
+                AudioInputKind::In,
+                AudioInputKind::Rate,
+                AudioInputKind::Depth,
+                AudioInputKind::Feedback,
+            ],
+            ModuleBody::Multiply { .. }
+            | ModuleBody::Add { .. }
+            | ModuleBody::GreaterThan { .. }
+            | ModuleBody::LessThan { .. } => &[AudioInputKind::A, AudioInputKind::B],
+            ModuleBody::Switch { .. } => &[
+                AudioInputKind::Select,
+                AudioInputKind::A,
+                AudioInputKind::B,
+            ],
+            ModuleBody::Random { .. } => &[AudioInputKind::Gate],
+            ModuleBody::Sample { .. } => &[AudioInputKind::Position],
+            ModuleBody::Probe { .. } => &[AudioInputKind::In],
+            ModuleBody::Output { .. } => &[AudioInputKind::A, AudioInputKind::B],
+            ModuleBody::SubpatchOutput { .. } => &[AudioInputKind::In],
+            ModuleBody::TurnRightDown
+            | ModuleBody::TurnDownRight
+            | ModuleBody::LeftSplit
+            | ModuleBody::TopSplit => &[AudioInputKind::In],
+            ModuleBody::SubpatchInput | ModuleBody::Subpatch => &[],
+            ModuleBody::RightJoin | ModuleBody::DownJoin => &[AudioInputKind::A, AudioInputKind::B],
+        }
     }
 
     fn env_points(&self) -> &[EnvPoint] {
@@ -2477,6 +2578,13 @@ impl GuiState {
         module.input_connected(port)
     }
 
+    fn module_audio_input(&self, module: &Module, port: usize) -> Option<AudioInputKind> {
+        if module.kind() == ModuleKind::Subpatch {
+            return (port < self.module_input_count(module) as usize).then_some(AudioInputKind::In);
+        }
+        module.body.audio_inputs().get(port).copied()
+    }
+
     fn module_has_input_top(&self, module: &Module) -> bool {
         if self.module_input_count(module) == 0 {
             return false;
@@ -2693,12 +2801,16 @@ impl GuiState {
                                 if self
                                     .left_input_offset(target, input)
                                     .is_some_and(|target_y| target.position.y + target_y == y)
+                                    && let Some(audio) = self.module_audio_input(target, input)
                                 {
                                     connections.push(Connection {
                                         from: source.id,
                                         to: target.id,
                                         output,
-                                        input,
+                                        input: ConnectionInput {
+                                            index: input,
+                                            audio,
+                                        },
                                     });
                                     break;
                                 }
@@ -2729,12 +2841,16 @@ impl GuiState {
                                 if self
                                     .top_input_offset(target, input)
                                     .is_some_and(|target_x| target.position.x + target_x == x)
+                                    && let Some(audio) = self.module_audio_input(target, input)
                                 {
                                     connections.push(Connection {
                                         from: source.id,
                                         to: target.id,
                                         output,
-                                        input,
+                                        input: ConnectionInput {
+                                            index: input,
+                                            audio,
+                                        },
                                     });
                                     break;
                                 }
@@ -2795,7 +2911,7 @@ impl GuiState {
             .iter()
             .filter(|connection| connection.to == output.id)
         {
-            let input = connection.input;
+            let input = connection.input();
             if input >= self.module_input_count(output) as usize {
                 continue;
             }
@@ -2878,7 +2994,10 @@ impl GuiState {
                     meters.push(route);
                 }
             }
-            ids.push((AudioKey::Root(id), audio_id));
+            ids.push(AudioNode {
+                key: AudioKey::Root(id),
+                id: audio_id,
+            });
         }
 
         for owner in needed
@@ -2918,13 +3037,13 @@ impl GuiState {
                         meters.push(route);
                     }
                 }
-                ids.push((
-                    AudioKey::Subpatch {
+                ids.push(AudioNode {
+                    key: AudioKey::Subpatch {
                         owner: owner_id,
                         module: module.id,
                     },
-                    audio_id,
-                ));
+                    id: audio_id,
+                });
             }
         }
 
@@ -2938,7 +3057,7 @@ impl GuiState {
         for connection in &connections {
             let from = root_connection_source(root_modules, instrument, &ids, connection);
             if connection.to == output.id {
-                let input = connection.input;
+                let input = connection.input();
                 if input >= self.module_input_count(output) as usize {
                     continue;
                 }
@@ -2951,14 +3070,8 @@ impl GuiState {
                     }
                     continue;
                 };
-                eprintln!(
-                    "root output {:?} -> {:?} input {}",
-                    connection.from,
-                    output.id,
-                    input
-                );
                 let port = patch
-                    .input_port(output_id, input)
+                    .input_port(output_id, connection.audio_input())
                     .map_err(AudioPatchError::Connect)?;
                 patch
                     .connect_input(from, port)
@@ -2971,7 +3084,7 @@ impl GuiState {
             else {
                 continue;
             };
-            let input = connection.input;
+            let input = connection.input();
             if input >= self.module_input_count(target) as usize {
                 continue;
             }
@@ -3002,13 +3115,9 @@ impl GuiState {
                 ) else {
                     continue;
                 };
-                eprintln!(
-                    "root subpatch {:?} -> {:?} sub input {:?}",
-                    connection.from,
-                    target.id,
-                    input_id
-                );
-                let port = patch.input_port(to, 0).map_err(AudioPatchError::Connect)?;
+                let port = patch
+                    .input_port(to, AudioInputKind::In)
+                    .map_err(AudioPatchError::Connect)?;
                 patch
                     .connect_input(from, port)
                     .map_err(AudioPatchError::Connect)?;
@@ -3019,15 +3128,8 @@ impl GuiState {
                 let Some(to) = audio_id(&ids, AudioKey::Root(connection.to)) else {
                     continue;
                 };
-                eprintln!(
-                    "root normal {:?} -> {:?} {:?} input {}",
-                    connection.from,
-                    connection.to,
-                    target.kind(),
-                    input
-                );
                 let port = patch
-                    .input_port(to, input)
+                    .input_port(to, connection.audio_input())
                     .map_err(AudioPatchError::Connect)?;
                 patch
                     .connect_input(from, port)
@@ -3069,23 +3171,15 @@ impl GuiState {
                 ) else {
                     continue;
                 };
-                let input = connection.input;
+                let input = connection.input();
                 if input >= self.module_input_count(target) as usize {
                     continue;
                 }
                 if !self.module_input_connected(target, input as u16) {
                     continue;
                 }
-                eprintln!(
-                    "sub {:?} {:?} -> {:?} {:?} input {}",
-                    owner,
-                    connection.from,
-                    connection.to,
-                    target.kind(),
-                    input
-                );
                 let port = patch
-                    .input_port(to, input)
+                    .input_port(to, connection.audio_input())
                     .map_err(AudioPatchError::Connect)?;
                 patch
                     .connect_input(from, port)
@@ -7313,15 +7407,15 @@ fn audio_module(
     }
 }
 
-fn audio_id(ids: &[(AudioKey, AudioModuleId)], key: AudioKey) -> Option<AudioModuleId> {
+fn audio_id(ids: &[AudioNode], key: AudioKey) -> Option<AudioModuleId> {
     ids.iter()
-        .find_map(|(candidate, audio_id)| (*candidate == key).then_some(*audio_id))
+        .find_map(|candidate| (candidate.key == key).then_some(candidate.id))
 }
 
 fn root_connection_source(
     root_modules: &[Module],
     instrument: &Instrument,
-    ids: &[(AudioKey, AudioModuleId)],
+    ids: &[AudioNode],
     connection: &Connection,
 ) -> Option<AudioModuleId> {
     let source = root_modules

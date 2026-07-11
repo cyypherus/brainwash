@@ -975,7 +975,7 @@ mod tests {
     use super::*;
     use crate::model::{GuiAction, GuiState, ModuleCategory};
     use assert_no_alloc::assert_no_alloc;
-    use brainwash::patch::{Module, Patch, Wave};
+    use brainwash::patch::{InputKind, Module, Patch, Wave};
     use brainwash::sample::{Sample as AudioSample, Unit};
     use brainwash::scale::cmin;
 
@@ -1109,7 +1109,7 @@ mod tests {
             gain: Unit::ONE,
             unipolar: false,
         });
-        let port = patch.input_port(osc, 0).unwrap();
+        let port = patch.input_port(osc, InputKind::Freq).unwrap();
         patch.connect_input(freq, port).unwrap();
         patch.output(osc).unwrap();
         let compiled = CompiledPatch::new(&patch, rate).unwrap();
@@ -1684,7 +1684,8 @@ mod tests {
         let lowpass = patch.insert(Module::Lowpass {
             cutoff: Hertz::new(1000.0).unwrap(),
         });
-        patch.connect(source, lowpass).unwrap();
+        let port = patch.input_port(lowpass, InputKind::In).unwrap();
+        patch.connect_input(source, port).unwrap();
         patch.output(lowpass).unwrap();
         (
             CompiledPatch::new(&patch, rate).unwrap(),
@@ -1728,7 +1729,7 @@ mod tests {
             gain: Unit::ONE,
             unipolar: false,
         });
-        let port = patch.input_port(osc, 0).unwrap();
+        let port = patch.input_port(osc, InputKind::Freq).unwrap();
         patch.connect_input(freq, port).unwrap();
         patch.output(osc).unwrap();
         CompiledPatch::new(&patch, rate).unwrap()
@@ -1764,7 +1765,7 @@ mod tests {
             gain: Unit::ONE,
             unipolar: false,
         });
-        let port = patch.input_port(osc, 2).unwrap();
+        let port = patch.input_port(osc, InputKind::Gain).unwrap();
         patch.connect_input(gate, port).unwrap();
         patch.output(osc).unwrap();
         CompiledPatch::new(&patch, rate).unwrap()

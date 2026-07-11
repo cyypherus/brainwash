@@ -202,6 +202,7 @@ struct Flanger {
 }
 
 const UPDATE_FADE_FRAMES: usize = 128;
+const MAX_INPUTS: usize = 6;
 
 impl Default for PatchControls {
     fn default() -> Self {
@@ -246,9 +247,17 @@ impl CompiledPatch {
                 .iter()
                 .find_map(|(id, rank)| (*id == connection.input.module).then_some(*rank))
                 .ok_or(CompileError::MissingModule)?;
+            let module = order
+                .get(target)
+                .and_then(|module_index| patch.modules().get(*module_index))
+                .map(|(_, module)| module)
+                .ok_or(CompileError::MissingModule)?;
+            let input = module
+                .input_index(connection.input.input)
+                .ok_or(CompileError::InvalidInput)?;
             let slot = inputs
                 .get_mut(target)
-                .and_then(|inputs| inputs.get_mut(connection.input.index))
+                .and_then(|inputs| inputs.get_mut(input))
                 .ok_or(CompileError::InvalidInput)?;
             *slot = Some(source);
         }
@@ -443,10 +452,40 @@ impl Node {
             }
             Node::Rise(ramp) | Node::Fall(ramp) => Sample::raw(ramp.next(in0.value())),
             Node::Ramp(ramp) => Sample::raw(ramp.next(in0.value())),
-            Node::Adsr(adsr) => Sample::raw(adsr.next(in0.value(), in1.value())),
+            Node::Adsr(adsr) => {
+                if let Some(attack) = inputs
+                    .get(2)
+                    .and_then(|input| input.and_then(|input| Unit::new(input.value())))
+                {
+                    adsr.attack_ratio = attack;
+                }
+                if let Some(sustain) = inputs
+                    .get(3)
+                    .and_then(|input| input.and_then(|input| Unit::new(input.value())))
+                {
+                    adsr.sustain = sustain;
+                }
+                Sample::raw(adsr.next(in0.value(), in1.value()))
+            }
             Node::Envelope { points } => Sample::raw(envelope_value(points, in0.value())),
-            Node::Lowpass(filter) => filter.lowpass(in0),
-            Node::Highpass(filter) => filter.highpass(in0),
+            Node::Lowpass(filter) => {
+                if let Some(cutoff) = inputs
+                    .get(1)
+                    .and_then(|input| input.and_then(|input| filter_cutoff(input.value())))
+                {
+                    filter.cutoff = cutoff;
+                }
+                filter.lowpass(in0)
+            }
+            Node::Highpass(filter) => {
+                if let Some(cutoff) = inputs
+                    .get(1)
+                    .and_then(|input| input.and_then(|input| filter_cutoff(input.value())))
+                {
+                    filter.cutoff = cutoff;
+                }
+                filter.highpass(in0)
+            }
             Node::Comb(comb) => Sample::raw(comb.next(in0.value())),
             Node::Allpass(allpass) => Sample::raw(allpass.next(in0.value())),
             Node::Delay(delay) => delay.process(in0),
@@ -921,8 +960,8 @@ fn create_node(module: &Module, rate: SampleRate) -> Result<Node, CompileError> 
     })
 }
 
-fn input_values(input_slots: &[Option<usize>], values: &[Sample]) -> [Option<Sample>; 3] {
-    let mut inputs = [None; 3];
+fn input_values(input_slots: &[Option<usize>], values: &[Sample]) -> [Option<Sample>; MAX_INPUTS] {
+    let mut inputs = [None; MAX_INPUTS];
     for (index, source) in input_slots.iter().copied().take(inputs.len()).enumerate() {
         inputs[index] = source.and_then(|source| values.get(source).copied());
     }
@@ -931,6 +970,10 @@ fn input_values(input_slots: &[Option<usize>], values: &[Sample]) -> [Option<Sam
 
 fn sample(inputs: &[Option<Sample>], index: usize) -> Sample {
     inputs.get(index).copied().flatten().unwrap_or(Sample::ZERO)
+}
+
+fn filter_cutoff(value: f32) -> Option<Hertz> {
+    Hertz::new(20.0 * 1000.0_f32.powf(value.clamp(0.0, 1.0)))
 }
 
 fn audio_wave(wave: crate::patch::Wave) -> Wave {
@@ -1002,6 +1045,7 @@ fn sample_value(samples: &[Sample], position: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::patch::InputKind;
     use crate::patch::{Module, Patch};
     use crate::time::Hertz;
 
@@ -1042,7 +1086,7 @@ mod tests {
         patch.insert(Module::Freq);
         let gate = patch.insert(Module::Gate);
         assert_eq!(
-            patch.input_port(gate, 0),
+            patch.input_port(gate, InputKind::Freq),
             Err(crate::patch::ConnectError::ClosedInput)
         );
         patch.output(gate).unwrap();
@@ -1075,7 +1119,8 @@ mod tests {
         let lowpass = patch.insert(Module::Lowpass {
             cutoff: Hertz::new(1000.0).unwrap(),
         });
-        patch.connect(source, lowpass).unwrap();
+        let port = patch.input_port(lowpass, InputKind::In).unwrap();
+        patch.connect_input(source, port).unwrap();
         patch.output(lowpass).unwrap();
 
         let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
@@ -1086,6 +1131,31 @@ mod tests {
         });
 
         assert!(values.contains(&(lowpass, 0, 0.25)));
+    }
+
+    #[test]
+    fn input_values_include_high_numbered_semantic_ports() {
+        let mut patch = Patch::new();
+        let source = patch.insert(Module::Constant(Sample::new(0.5).unwrap()));
+        let compressor = patch.insert(Module::Compressor {
+            threshold: Unit::new(0.5).unwrap(),
+            ratio: crate::patch::CompressorRatio::new(2.0).unwrap(),
+            attack: Duration::Samples(crate::time::Samples::new(1)),
+            release: Duration::Samples(crate::time::Samples::new(1)),
+            makeup: crate::patch::Gain::new(1.0).unwrap(),
+        });
+        let port = patch.input_port(compressor, InputKind::Gain).unwrap();
+        patch.connect_input(source, port).unwrap();
+        patch.output(compressor).unwrap();
+
+        let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+        compiled.next();
+        let mut values = Vec::new();
+        compiled.visit_input_values(|module, input, value| {
+            values.push((module, input, value.value()));
+        });
+
+        assert!(values.contains(&(compressor, 5, 0.5)));
     }
 
     #[test]

@@ -29,6 +29,39 @@ pub enum BinaryOp {
     LessThan,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum InputKind {
+    In,
+    Gate,
+    Phase,
+    Freq,
+    Shift,
+    Gain,
+    Rise,
+    Fall,
+    Value,
+    Time,
+    Feedback,
+    Damp,
+    Room,
+    Mod,
+    Diff,
+    Drive,
+    Asym,
+    Thresh,
+    Ratio,
+    Attack,
+    Release,
+    Sustain,
+    Rate,
+    Depth,
+    A,
+    B,
+    Select,
+    Position,
+    Q,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct Drive(f32);
 
@@ -212,7 +245,7 @@ pub enum ConnectError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct InputPort {
     pub(crate) module: ModuleId,
-    pub(crate) index: usize,
+    pub(crate) input: InputKind,
 }
 
 impl Patch {
@@ -237,27 +270,28 @@ impl Patch {
             from,
             InputPort {
                 module: to,
-                index: 0,
+                input: module.inputs()[0],
             },
         )
     }
 
-    pub fn input_port(&self, module: ModuleId, input: usize) -> Result<InputPort, ConnectError> {
+    pub fn input_port(
+        &self,
+        module: ModuleId,
+        input: InputKind,
+    ) -> Result<InputPort, ConnectError> {
         let target = self.module(module).ok_or(ConnectError::MissingModule)?;
-        if input >= target.input_count() {
+        if target.input_index(input).is_none() {
             return Err(ConnectError::ClosedInput);
         }
-        Ok(InputPort {
-            module,
-            index: input,
-        })
+        Ok(InputPort { module, input })
     }
 
     pub fn connect_input(&mut self, from: ModuleId, input: InputPort) -> Result<(), ConnectError> {
         let to = input.module;
         self.module(from).ok_or(ConnectError::MissingModule)?;
         let target = self.module(to).ok_or(ConnectError::MissingModule)?;
-        if input.index >= target.input_count() {
+        if target.input_index(input.input).is_none() {
             return Err(ConnectError::ClosedInput);
         }
         if self
@@ -297,34 +331,72 @@ impl Patch {
 }
 
 impl Module {
-    pub(crate) fn input_count(&self) -> usize {
+    pub fn inputs(&self) -> &'static [InputKind] {
         match self {
             Module::Freq
             | Module::Gate
             | Module::Degree
             | Module::DegreeGate { .. }
-            | Module::Constant(_)
-            | Module::Random => 0,
-            Module::Pass
-            | Module::Rise { .. }
-            | Module::Fall { .. }
-            | Module::Ramp { .. }
-            | Module::Envelope { .. }
-            | Module::Lowpass { .. }
-            | Module::Highpass { .. }
-            | Module::Comb { .. }
-            | Module::Allpass { .. }
-            | Module::Delay { .. }
-            | Module::DelayTap { .. }
-            | Module::Reverb { .. }
-            | Module::Distortion { .. }
-            | Module::Compressor { .. }
-            | Module::Flanger { .. }
-            | Module::Sample { .. }
-            | Module::Probe => 1,
-            Module::Binary { .. } | Module::Adsr { .. } => 2,
-            Module::Osc { .. } | Module::Switch { .. } => 3,
+            | Module::Constant(_) => &[],
+            Module::Random => &[InputKind::Gate],
+            Module::Pass | Module::DelayTap { .. } | Module::Probe => &[InputKind::In],
+            Module::Rise { .. } | Module::Fall { .. } => &[InputKind::Gate, InputKind::Time],
+            Module::Ramp { .. } => &[InputKind::Value, InputKind::Time],
+            Module::Adsr { .. } => &[
+                InputKind::Rise,
+                InputKind::Fall,
+                InputKind::Attack,
+                InputKind::Sustain,
+            ],
+            Module::Envelope { .. } => &[InputKind::Phase],
+            Module::Lowpass { .. } | Module::Highpass { .. } => {
+                &[InputKind::In, InputKind::Freq, InputKind::Q]
+            }
+            Module::Comb { .. } => &[
+                InputKind::In,
+                InputKind::Time,
+                InputKind::Feedback,
+                InputKind::Damp,
+            ],
+            Module::Allpass { .. } => &[InputKind::In, InputKind::Time, InputKind::Feedback],
+            Module::Delay { .. } => &[InputKind::In, InputKind::Time],
+            Module::Reverb { .. } => &[
+                InputKind::In,
+                InputKind::Room,
+                InputKind::Damp,
+                InputKind::Mod,
+                InputKind::Diff,
+            ],
+            Module::Distortion { .. } => &[InputKind::In, InputKind::Drive, InputKind::Asym],
+            Module::Compressor { .. } => &[
+                InputKind::In,
+                InputKind::Thresh,
+                InputKind::Ratio,
+                InputKind::Attack,
+                InputKind::Release,
+                InputKind::Gain,
+            ],
+            Module::Flanger { .. } => &[
+                InputKind::In,
+                InputKind::Rate,
+                InputKind::Depth,
+                InputKind::Feedback,
+            ],
+            Module::Sample { .. } => &[InputKind::Position],
+            Module::Binary { .. } => &[InputKind::A, InputKind::B],
+            Module::Osc { .. } => &[InputKind::Freq, InputKind::Shift, InputKind::Gain],
+            Module::Switch { .. } => &[InputKind::Select, InputKind::A, InputKind::B],
         }
+    }
+
+    pub(crate) fn input_count(&self) -> usize {
+        self.inputs().len()
+    }
+
+    pub(crate) fn input_index(&self, input: InputKind) -> Option<usize> {
+        self.inputs()
+            .iter()
+            .position(|candidate| *candidate == input)
     }
 }
 
@@ -348,7 +420,10 @@ mod tests {
         let source = patch.insert(Module::Gate);
         let target = patch.insert(Module::Gate);
 
-        assert_eq!(patch.input_port(target, 0), Err(ConnectError::ClosedInput));
+        assert_eq!(
+            patch.input_port(target, InputKind::Freq),
+            Err(ConnectError::ClosedInput)
+        );
         assert_eq!(patch.connections.len(), 0);
         assert_eq!(
             patch.connect(source, target),
@@ -387,7 +462,7 @@ mod tests {
             gain: Unit::ONE,
             unipolar: false,
         });
-        let port = patch.input_port(target, 2).unwrap();
+        let port = patch.input_port(target, InputKind::Gain).unwrap();
 
         patch.connect_input(source, port).unwrap();
 
@@ -397,9 +472,29 @@ mod tests {
                 from: source,
                 input: InputPort {
                     module: target,
-                    index: 2
+                    input: InputKind::Gain
                 }
             }]
+        );
+    }
+
+    #[test]
+    fn module_inputs_are_semantic_shape() {
+        assert_eq!(
+            Module::Lowpass {
+                cutoff: Hertz::new(1000.0).unwrap()
+            }
+            .inputs(),
+            &[InputKind::In, InputKind::Freq, InputKind::Q]
+        );
+        assert_eq!(
+            Module::Binary {
+                op: BinaryOp::Add,
+                a: Sample::ZERO,
+                b: Sample::ZERO
+            }
+            .inputs(),
+            &[InputKind::A, InputKind::B]
         );
     }
 

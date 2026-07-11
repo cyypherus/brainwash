@@ -1715,23 +1715,25 @@ fn routing_join_compiles_with_both_inputs_connected() {
 }
 
 #[test]
-fn inspect_snare2_after_join_fix() {
-    let mut state = GuiState::new(32, 32);
-    state.load_project(std::path::Path::new("../snare2.bw")).unwrap();
-    let mut compiled = state
+fn filter_frequency_port_compiles_from_semantic_shape() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Osc);
+    state.apply(GuiAction::Right);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Highpass);
+    state.apply(GuiAction::Left);
+    state.apply(GuiAction::Left);
+    state.apply(GuiAction::Down);
+    place_module_kind(&mut state, ModuleKind::Gate);
+    state.apply(GuiAction::Right);
+    state.apply(GuiAction::Right);
+    state.apply(GuiAction::Up);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Output);
+
+    state
         .compile_audio_patch(SampleRate::new(44_100).unwrap())
         .unwrap();
-    let controls = PatchControls {
-        frequency: Hertz::new(330.0),
-        gate: 1.0,
-        degree: 0,
-    };
-    let mut audible = false;
-    for _ in 0..44_100 {
-        let frame = compiled.next_with_controls(controls);
-        audible |= frame.left().value().abs() > 0.0001 || frame.right().value().abs() > 0.0001;
-    }
-    assert!(audible);
 }
 
 #[test]

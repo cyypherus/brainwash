@@ -234,10 +234,7 @@ impl FilePatch {
         for connection in self.connections {
             let from = *ids.get(&connection.from).ok_or(LoadError::Value)?;
             let to = *ids.get(&connection.to).ok_or(LoadError::Value)?;
-            let port = patch.input_port(to, 0).map_err(|_| LoadError::Value)?;
-            patch
-                .connect_input(from, port)
-                .map_err(|_| LoadError::Value)?;
+            patch.connect(from, to).map_err(|_| LoadError::Value)?;
         }
         let output = *ids.get(&self.output).ok_or(LoadError::Value)?;
         patch.output(output).map_err(|_| LoadError::Value)?;
