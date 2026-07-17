@@ -10,6 +10,7 @@ const GAP: f32 = 3.;
 const TILE_PAD: f32 = 3.;
 const PORT_SIZE: f32 = 7.;
 const PORT_INSET: f32 = 1.;
+const METER_SIZE: f32 = 13.;
 const WIRE_THICKNESS: f32 = 4.;
 const PALETTE_ROW_HEIGHT: f32 = 23.;
 const TITLE_BAR_SPACE: f32 = 40.;
@@ -19,7 +20,10 @@ const ENVELOPE_VALUE_MAX: f32 = 1.;
 const PREVIEW_ID_OFFSET: u64 = 100_000;
 
 pub fn main_view<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
-    let side_panel = shortcut_panel(state, app);
+    let side_panel = column_spaced(
+        PANEL_GAP,
+        vec![document_bar(state, app), shortcut_panel(state, app)],
+    );
 
     let mut layers = vec![
         row_spaced_aligned(
@@ -41,17 +45,21 @@ pub fn main_view<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
         state.mode(),
         Mode::QuitConfirm
             | Mode::ValueInput { .. }
-            | Mode::SavePrompt
-            | Mode::SaveConfirm
+            | Mode::LoadConfirm
             | Mode::ExportPrompt
             | Mode::ExportConfirm
             | Mode::TrackPrompt
             | Mode::TrackSettings { .. }
     ) {
+        let prompt_height = if matches!(state.mode(), Mode::LoadConfirm) {
+            132.
+        } else {
+            178.
+        };
         layers.push(
             prompt_panel(state, app)
                 .width(360.)
-                .height(178.)
+                .height(prompt_height)
                 .align(Align::CenterCenter),
         );
     }
@@ -61,7 +69,7 @@ pub fn main_view<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
     ];
     if matches!(state.mode(), Mode::Palette) || state.palette_searching() {
         root_layers.push(
-            stack(vec![palette_panel(state, app).align(Align::CenterCenter)])
+            stack(vec![palette_panel(state, app).align(Align::TopCenter)])
                 .pad_top(TITLE_BAR_SPACE)
                 .expand(),
         );
@@ -119,7 +127,7 @@ fn toolbar<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
             ),
             action_button(
                 binding!(state.load_button),
-                "Load",
+                "Open",
                 GuiAction::Load,
                 false,
                 app,
@@ -156,6 +164,37 @@ fn toolbar<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
             ),
         ],
     )
+}
+
+fn document_bar<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
+    let document_color = if state.dirty() {
+        Color::from_rgb8(255, 200, 100)
+    } else {
+        fg()
+    };
+    let status_color = if state.document_status().contains("failed") {
+        Color::from_rgb8(255, 120, 120)
+    } else {
+        quiet()
+    };
+    row_spaced(
+        PANEL_GAP,
+        vec![
+            text(4_100, state.document_label())
+                .font_size(12)
+                .fill(document_color)
+                .view()
+                .build(app)
+                .pad_x(2.),
+            text(4_101, state.document_status())
+                .font_size(12)
+                .fill(status_color)
+                .view()
+                .build(app)
+                .pad_x(2.),
+        ],
+    )
+    .height(20.)
 }
 
 fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
@@ -371,8 +410,7 @@ fn mode_color(state: &GuiState) -> Color {
         | Mode::SampleView { .. }
         | Mode::TrackSettings { .. } => accent(),
         Mode::QuitConfirm
-        | Mode::SavePrompt
-        | Mode::SaveConfirm
+        | Mode::LoadConfirm
         | Mode::ExportPrompt
         | Mode::ExportConfirm
         | Mode::TrackPrompt => Color::from_rgb8(190, 76, 91),
@@ -804,6 +842,36 @@ fn edit_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState
                     app,
                 ));
             }
+            if module.kind() == ModuleKind::Sample {
+                let module_id = module.id();
+                rows.push(
+                    button(3_200, binding!(state.sample_button))
+                        .surface(|state, app| {
+                            let fill = if state.hovered {
+                                Color::from_rgb8(43, 49, 58)
+                            } else {
+                                field()
+                            };
+                            rect(3_201)
+                                .fill(fill)
+                                .stroke(line(), Stroke::new(1.))
+                                .corner_rounding(6.)
+                                .build(app)
+                        })
+                        .label(|_, app| {
+                            text(3_202, "Relink sample")
+                                .font_size(12)
+                                .fill(fg())
+                                .view()
+                                .build(app)
+                                .pad_x(9.)
+                                .pad_y(5.)
+                        })
+                        .on_click(move |state, _| state.request_relink_sample(module_id))
+                        .build(app)
+                        .height(28.),
+                );
+            }
             if module.kind().has_visual_editor() {
                 rows.push(special_editor_button(
                     parameter == module.parameters().len(),
@@ -1001,8 +1069,7 @@ fn prompt_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSta
     let (title, body) = match state.mode() {
         Mode::QuitConfirm => ("Quit", "Discard unsaved patch changes?"),
         Mode::ValueInput { .. } => ("Value", "Type a numeric value"),
-        Mode::SavePrompt => ("Save", "Patch file"),
-        Mode::SaveConfirm => ("Overwrite", "Replace existing patch?"),
+        Mode::LoadConfirm => ("Unsaved changes", "Save before opening another patch?"),
         Mode::ExportPrompt => ("Export", "WAV file"),
         Mode::ExportConfirm => ("Overwrite", "Replace existing WAV?"),
         Mode::TrackPrompt => ("Track", "Note pattern"),
@@ -1029,10 +1096,12 @@ fn prompt_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSta
                 })
                 .build(app),
         ])
+    } else if matches!(state.mode(), Mode::LoadConfirm) {
+        space()
     } else {
         let value = match state.mode() {
             Mode::QuitConfirm => "Press Enter to quit".to_string(),
-            Mode::SaveConfirm | Mode::ExportConfirm => "Press Enter to overwrite".to_string(),
+            Mode::ExportConfirm => "Press Enter to overwrite".to_string(),
             Mode::TrackSettings { parameter } => settings_text(state, parameter),
             _ => {
                 let mut text = state.prompt_text().to_string();
@@ -1078,28 +1147,64 @@ fn prompt_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSta
                     .view()
                     .build(app)
                     .height(22.),
-                input.height(38.),
-                row_spaced(
-                    PANEL_GAP,
-                    vec![
-                        action_button(
-                            binding!(state.cancel_button),
-                            "Cancel",
-                            GuiAction::Cancel,
-                            false,
-                            app,
-                        )
-                        .width(82.),
-                        action_button(
-                            binding!(state.confirm_button),
-                            "Confirm",
-                            GuiAction::Confirm,
-                            true,
-                            app,
-                        )
-                        .width(92.),
-                    ],
-                )
+                input.height(if matches!(state.mode(), Mode::LoadConfirm) {
+                    0.
+                } else {
+                    38.
+                }),
+                if matches!(state.mode(), Mode::LoadConfirm) {
+                    row_spaced(
+                        PANEL_GAP,
+                        vec![
+                            action_button(
+                                binding!(state.cancel_button),
+                                "Cancel",
+                                GuiAction::Cancel,
+                                false,
+                                app,
+                            )
+                            .width(78.),
+                            action_button(
+                                binding!(state.discard_button),
+                                "Don't Save",
+                                GuiAction::Delete,
+                                false,
+                                app,
+                            )
+                            .width(104.),
+                            action_button(
+                                binding!(state.confirm_button),
+                                "Save",
+                                GuiAction::Confirm,
+                                true,
+                                app,
+                            )
+                            .width(72.),
+                        ],
+                    )
+                } else {
+                    row_spaced(
+                        PANEL_GAP,
+                        vec![
+                            action_button(
+                                binding!(state.cancel_button),
+                                "Cancel",
+                                GuiAction::Cancel,
+                                false,
+                                app,
+                            )
+                            .width(82.),
+                            action_button(
+                                binding!(state.confirm_button),
+                                "Confirm",
+                                GuiAction::Confirm,
+                                true,
+                                app,
+                            )
+                            .width(92.),
+                        ],
+                    )
+                }
                 .height(28.),
             ],
         )
@@ -1568,6 +1673,7 @@ fn parameter_fill(value: &ParameterValue) -> f32 {
             denominator,
         } => (*numerator as f32 / (*denominator).max(1) as f32 / 16.).clamp(0., 1.),
         ParameterValue::Input => 1.,
+        ParameterValue::File { .. } => 1.,
         ParameterValue::Enum { index, options } => {
             if options.len() <= 1 {
                 1.
@@ -1635,6 +1741,7 @@ fn module_tile<'a>(
     let output_count = module.output_count;
     let tile_width = module_span(module.width);
     let tile_height = module_span(module.height);
+    let meter_inset = (METER_SIZE - PORT_SIZE) * 0.5;
     let mut layers = vec![
         rect(id + 1)
             .fill(
@@ -1656,26 +1763,38 @@ fn module_tile<'a>(
             )
             .corner_rounding(6.)
             .build(app),
-        rect(id + 9)
-            .fill(Color::from_rgb8(8, 10, 12).with_alpha(0.42 * alpha))
-            .corner_rounding(5.)
-            .build(app)
-            .height(10.)
-            .width(tile_width),
-        text(id + 2, code)
-            .font_size(8)
-            .fill(Color::from_rgb8(248, 250, 252).with_alpha(alpha))
-            .view()
-            .build(app)
-            .width(tile_width)
-            .height(10.),
     ];
+    if kind != ModuleKind::Probe {
+        layers.push(
+            rect(id + 9)
+                .fill(Color::from_rgb8(8, 10, 12).with_alpha(0.42 * alpha))
+                .corner_rounding(5.)
+                .build(app)
+                .height(10.)
+                .width(tile_width),
+        );
+        layers.push(
+            text(id + 2, code)
+                .font_size(8)
+                .fill(Color::from_rgb8(248, 250, 252).with_alpha(alpha))
+                .view()
+                .build(app)
+                .width(tile_width)
+                .height(10.),
+        );
+    }
 
     match kind {
         ModuleKind::TurnRightDown => {
             layers.push(
-                input_port(id + 30_000, module.input_connected[0], alpha, app)
-                    .offset(PORT_INSET, port_axis(0)),
+                input_port(
+                    id + 30_000,
+                    module.input_connected[0],
+                    module.meter_values.first().copied(),
+                    alpha,
+                    app,
+                )
+                .offset(PORT_INSET - meter_inset, port_axis(0) - meter_inset),
             );
             layers.push(
                 output_port(id + 33_000, alpha, app)
@@ -1684,8 +1803,14 @@ fn module_tile<'a>(
         }
         ModuleKind::TurnDownRight => {
             layers.push(
-                input_port(id + 31_000, module.input_connected[0], alpha, app)
-                    .offset(port_axis(0), PORT_INSET),
+                input_port(
+                    id + 31_000,
+                    module.input_connected[0],
+                    module.meter_values.first().copied(),
+                    alpha,
+                    app,
+                )
+                .offset(port_axis(0) - meter_inset, PORT_INSET - meter_inset),
             );
             layers.push(
                 output_port(id + 32_000, alpha, app)
@@ -1694,8 +1819,14 @@ fn module_tile<'a>(
         }
         ModuleKind::LeftSplit => {
             layers.push(
-                input_port(id + 30_000, module.input_connected[0], alpha, app)
-                    .offset(PORT_INSET, port_axis(0)),
+                input_port(
+                    id + 30_000,
+                    module.input_connected[0],
+                    module.meter_values.first().copied(),
+                    alpha,
+                    app,
+                )
+                .offset(PORT_INSET - meter_inset, port_axis(0) - meter_inset),
             );
             layers.push(
                 output_port(id + 33_000, alpha, app)
@@ -1708,8 +1839,14 @@ fn module_tile<'a>(
         }
         ModuleKind::TopSplit => {
             layers.push(
-                input_port(id + 31_000, module.input_connected[0], alpha, app)
-                    .offset(port_axis(0), PORT_INSET),
+                input_port(
+                    id + 31_000,
+                    module.input_connected[0],
+                    module.meter_values.first().copied(),
+                    alpha,
+                    app,
+                )
+                .offset(port_axis(0) - meter_inset, PORT_INSET - meter_inset),
             );
             layers.push(
                 output_port(id + 33_000, alpha, app)
@@ -1722,12 +1859,24 @@ fn module_tile<'a>(
         }
         ModuleKind::RightJoin => {
             layers.push(
-                input_port(id + 30_000, module.input_connected[0], alpha, app)
-                    .offset(PORT_INSET, port_axis(0)),
+                input_port(
+                    id + 30_000,
+                    module.input_connected[0],
+                    module.meter_values.first().copied(),
+                    alpha,
+                    app,
+                )
+                .offset(PORT_INSET - meter_inset, port_axis(0) - meter_inset),
             );
             layers.push(
-                input_port(id + 31_001, module.input_connected[1], alpha, app)
-                    .offset(port_axis(0), PORT_INSET),
+                input_port(
+                    id + 31_001,
+                    module.input_connected[1],
+                    module.meter_values.get(1).copied(),
+                    alpha,
+                    app,
+                )
+                .offset(port_axis(0) - meter_inset, PORT_INSET - meter_inset),
             );
             layers.push(
                 output_port(id + 32_000, alpha, app)
@@ -1736,12 +1885,24 @@ fn module_tile<'a>(
         }
         ModuleKind::DownJoin => {
             layers.push(
-                input_port(id + 30_000, module.input_connected[0], alpha, app)
-                    .offset(PORT_INSET, port_axis(0)),
+                input_port(
+                    id + 30_000,
+                    module.input_connected[0],
+                    module.meter_values.first().copied(),
+                    alpha,
+                    app,
+                )
+                .offset(PORT_INSET - meter_inset, port_axis(0) - meter_inset),
             );
             layers.push(
-                input_port(id + 31_001, module.input_connected[1], alpha, app)
-                    .offset(port_axis(0), PORT_INSET),
+                input_port(
+                    id + 31_001,
+                    module.input_connected[1],
+                    module.meter_values.get(1).copied(),
+                    alpha,
+                    app,
+                )
+                .offset(port_axis(0) - meter_inset, PORT_INSET - meter_inset),
             );
             layers.push(
                 output_port(id + 33_000, alpha, app)
@@ -1758,15 +1919,15 @@ fn module_tile<'a>(
                         id + 30_000 + index as u64
                     };
                     layers.push(
-                        input_port(port_id, module.input_connected[index as usize], alpha, app)
-                            .offset(PORT_INSET, y),
+                        input_port(
+                            port_id,
+                            module.input_connected[index as usize],
+                            module.meter_values.get(index as usize).copied(),
+                            alpha,
+                            app,
+                        )
+                        .offset(PORT_INSET - meter_inset, y - meter_inset),
                     );
-                    if let Some(value) = module.meter_values.get(index as usize) {
-                        layers.push(
-                            meter_indicator(id + 34_000 + index as u64, *value, false, alpha, app)
-                                .offset(PORT_INSET + PORT_SIZE + 2., y),
-                        );
-                    }
                 }
             }
 
@@ -1777,17 +1938,12 @@ fn module_tile<'a>(
                         input_port(
                             id + 31_000 + index as u64,
                             module.input_connected[index as usize],
+                            module.meter_values.get(index as usize).copied(),
                             alpha,
                             app,
                         )
-                        .offset(x, PORT_INSET),
+                        .offset(x - meter_inset, PORT_INSET - meter_inset),
                     );
-                    if let Some(value) = module.meter_values.get(index as usize) {
-                        layers.push(
-                            meter_indicator(id + 35_000 + index as u64, *value, true, alpha, app)
-                                .offset(x, PORT_INSET + PORT_SIZE + 2.),
-                        );
-                    }
                 }
             }
 
@@ -1816,36 +1972,72 @@ fn module_tile<'a>(
         }
     }
 
+    if matches!(kind, ModuleKind::RightJoin | ModuleKind::DownJoin) {
+        layers.push(port_label(
+            id + 36_000,
+            format!("{}{}", module.input_labels[0], module.input_labels[1]),
+            alpha,
+            app,
+        ));
+    } else if kind != ModuleKind::Probe {
+        if module.has_input_left {
+            for index in 0..input_count {
+                layers.push(
+                    port_label(
+                        id + 36_000 + index as u64,
+                        module.input_labels[index as usize].to_string(),
+                        alpha,
+                        app,
+                    )
+                    .offset(0., index as f32 * (CELL + GAP)),
+                );
+            }
+        }
+        if module.has_input_top {
+            for index in 0..input_count {
+                layers.push(
+                    port_label(
+                        id + 37_000 + index as u64,
+                        module.input_labels[index as usize].to_string(),
+                        alpha,
+                        app,
+                    )
+                    .offset(index as f32 * (CELL + GAP), 0.),
+                );
+            }
+        }
+    }
+
     if let Some(value) = module.probe_value {
         let track_width = (tile_width - 8.).max(1.);
-        let level = ((value.clamp(-1., 1.) + 1.) * 0.5).clamp(0., 1.);
+        let level = value.abs().clamp(0., 1.);
         layers.push(
             rect(id + 6)
                 .fill(Color::from_rgb8(8, 10, 12).with_alpha(0.62 * alpha))
                 .corner_rounding(2.)
                 .build(app)
-                .height(3.)
+                .height(2.)
                 .width(track_width)
-                .offset(4., tile_height - 7.),
+                .offset(4., tile_height - 4.),
         );
         layers.push(
             rect(id + 7)
                 .fill(Color::from_rgb8(96, 210, 210).with_alpha(alpha))
                 .corner_rounding(2.)
                 .build(app)
-                .height(3.)
+                .height(2.)
                 .width((track_width * level).max(1.))
-                .offset(4., tile_height - 7.),
+                .offset(4., tile_height - 4.),
         );
         layers.push(
-            text(id + 8, format!("{value:+.1}"))
-                .font_size(8)
+            text(id + 8, format!("{value:+.2}"))
+                .font_size(7)
                 .fill(Color::from_rgb8(248, 250, 252).with_alpha(alpha))
                 .view()
                 .build(app)
                 .width(tile_width)
-                .height(10.)
-                .offset(0., (tile_height * 0.5 - 4.).max(10.)),
+                .height(8.)
+                .offset(0., 1.),
         );
     }
 
@@ -1854,10 +2046,21 @@ fn module_tile<'a>(
         .height(tile_height)
 }
 
-fn input_port<'a>(id: u64, connected: bool, alpha: f32, app: &mut PaneState) -> View<'a, GuiState> {
-    if connected {
+fn input_port<'a>(
+    id: u64,
+    connected: bool,
+    meter_value: Option<f32>,
+    alpha: f32,
+    app: &mut PaneState,
+) -> View<'a, GuiState> {
+    let has_meter = meter_value.is_some();
+    let port = if connected {
         circle(id)
-            .fill(Color::from_rgb8(14, 16, 20).with_alpha(alpha))
+            .fill(if has_meter {
+                Color::TRANSPARENT
+            } else {
+                Color::from_rgb8(14, 16, 20).with_alpha(alpha)
+            })
             .stroke(
                 Color::from_rgb8(248, 250, 252).with_alpha(alpha),
                 Stroke::new(1.),
@@ -1867,14 +2070,21 @@ fn input_port<'a>(id: u64, connected: bool, alpha: f32, app: &mut PaneState) -> 
             .width(PORT_SIZE)
             .height(PORT_SIZE)
     } else {
-        text(id + 5_000, "X")
-            .font_size(11)
+        svg(id + 5_000, include_str!("../assets/port-disconnected.svg"))
             .fill(Color::from_rgb8(248, 250, 252).with_alpha(alpha))
             .view()
             .build(app)
             .width(PORT_SIZE)
             .height(PORT_SIZE)
+    };
+    let mut layers = Vec::new();
+    if let Some(value) = meter_value {
+        layers.push(meter_indicator(id + 10_000, value, alpha, app));
     }
+    layers.push(port);
+    stack_aligned(Align::CenterCenter, layers)
+        .width(METER_SIZE)
+        .height(METER_SIZE)
 }
 
 fn output_port<'a>(id: u64, alpha: f32, app: &mut PaneState) -> View<'a, GuiState> {
@@ -1886,32 +2096,67 @@ fn output_port<'a>(id: u64, alpha: f32, app: &mut PaneState) -> View<'a, GuiStat
         .height(PORT_SIZE)
 }
 
-fn meter_indicator<'a>(
-    id: u64,
-    value: f32,
-    horizontal: bool,
-    alpha: f32,
-    app: &mut PaneState,
-) -> View<'a, GuiState> {
+fn meter_indicator<'a>(id: u64, value: f32, alpha: f32, app: &mut PaneState) -> View<'a, GuiState> {
     let level = value.abs().clamp(0., 1.);
-    let brightness = (level * 0.8).min(0.8) + 0.2;
-    let color = Color::from_rgb8(
-        (96. * brightness) as u8,
-        (210. * brightness) as u8,
-        (210. * brightness) as u8,
-    );
-    let length = 2. + level * 5.;
-    let (width, height) = if horizontal {
-        (PORT_SIZE, length)
-    } else {
-        (length, PORT_SIZE)
-    };
-    rect(id)
-        .fill(color.with_alpha(alpha))
-        .corner_rounding(2.)
-        .build(app)
-        .width(width)
-        .height(height)
+    stack_aligned(
+        Align::CenterCenter,
+        vec![
+            circle(id)
+                .stroke(Color::BLACK.with_alpha(alpha), Stroke::new(2.))
+                .view()
+                .build(app)
+                .width(METER_SIZE)
+                .height(METER_SIZE),
+            path(id + 1, move |area| meter_arc_path(area, level))
+                .stroke(
+                    Color::from_rgb8(96, 210, 210).with_alpha(alpha),
+                    Stroke::new(2.).with_caps(Cap::Round),
+                )
+                .build(app)
+                .width(METER_SIZE)
+                .height(METER_SIZE),
+        ],
+    )
+    .width(METER_SIZE)
+    .height(METER_SIZE)
+}
+
+fn meter_arc_path(area: Area, level: f32) -> BezPath {
+    let mut path = BezPath::new();
+    if level <= 0. {
+        return path;
+    }
+    let center_x = area.x + area.width * 0.5;
+    let center_y = area.y + area.height * 0.5;
+    let radius = (area.width.min(area.height) * 0.5 - 1.).max(0.);
+    let sweep = level * std::f32::consts::TAU;
+    let segments = (level * 32.).ceil().max(1.) as u16;
+    for index in 0..=segments {
+        let angle = -std::f32::consts::FRAC_PI_2 + sweep * index as f32 / segments as f32;
+        let x = center_x + radius * angle.cos();
+        let y = center_y + radius * angle.sin();
+        if index == 0 {
+            path.move_to((x as f64, y as f64));
+        } else {
+            path.line_to((x as f64, y as f64));
+        }
+    }
+    path
+}
+
+fn port_label<'a>(id: u64, label: String, alpha: f32, app: &mut PaneState) -> View<'a, GuiState> {
+    stack_aligned(
+        Align::CenterCenter,
+        vec![
+            text(id, label)
+                .font_size(9)
+                .fill(Color::from_rgb8(248, 250, 252).with_alpha(0.8 * alpha))
+                .view()
+                .build(app),
+        ],
+    )
+    .width(CELL - TILE_PAD * 2.)
+    .height(CELL - TILE_PAD * 2.)
 }
 
 fn module_span(cells: u16) -> f32 {
@@ -1956,10 +2201,10 @@ fn grid_pointer_surface(
                     }
                 }
                 DragPhase::Completed { current, .. } => {
-                    if let Some(position) = grid_position(current, view, size, area) {
-                        state.set_grid_view_size(size);
-                        state.drag_grid_cell(GridPointerPhase::End, position);
-                    }
+                    state.set_grid_view_size(size);
+                    let position =
+                        grid_position(current, view, size, area).unwrap_or_else(|| state.cursor());
+                    state.drag_grid_cell(GridPointerPhase::End, position);
                 }
             },
         ))
@@ -2202,25 +2447,32 @@ fn shortcuts(state: &GuiState) -> Vec<(u8, &'static str, &'static str)> {
 }
 
 fn shortcut_panel<'a>(state: &GuiState, app: &mut PaneState) -> View<'a, GuiState> {
+    let hints = shortcuts(state);
     let mut rows = Vec::new();
     let mut previous_group = None;
-    for (index, (group, key, label)) in shortcuts(state).iter().copied().enumerate() {
+    for (index, (group, key, label)) in hints.iter().copied().enumerate() {
         if previous_group.is_some_and(|previous| previous != group) {
             rows.push(space().height(8.));
         }
         let id = 70_000 + index as u64 * 10;
-        rows.push(row_spaced_aligned(
+        rows.push(row_spaced(
             6.,
-            Align::Leading,
             vec![
                 text(id + 1, key)
                     .font_size(11)
                     .fill(accent())
+                    .align(Alignment::Start)
                     .view()
                     .build(app),
+                rect(id + 3)
+                    .fill(quiet().with_alpha(0.35))
+                    .build(app)
+                    .height(1.)
+                    .expand_x(),
                 text(id + 2, label)
                     .font_size(11)
                     .fill(fg())
+                    .align(Alignment::End)
                     .view()
                     .build(app),
             ],
@@ -2236,6 +2488,7 @@ fn shortcut_panel<'a>(state: &GuiState, app: &mut PaneState) -> View<'a, GuiStat
             .inert(),
         column_spaced_aligned(3., Align::TopLeading, rows).pad(10.),
     ])
+    .width(220.)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -2527,7 +2780,7 @@ const NORMAL_BINDINGS: &[KeyBinding] = &[
         "v",
         "meters",
     ),
-    KeyBinding::action(BindingInput::Character('O'), GuiAction::Load, "O", "load"),
+    KeyBinding::action(BindingInput::Character('O'), GuiAction::Load, "O", "open"),
     KeyBinding::action(BindingInput::Character('w'), GuiAction::Save, "w/W", "save"),
     KeyBinding::action(
         BindingInput::Character('W'),
@@ -4005,6 +4258,33 @@ const CONFIRM_BINDINGS: &[KeyBinding] = &[
     ),
 ];
 
+const LOAD_CONFIRM_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Enter),
+        GuiAction::Confirm,
+        "enter",
+        "save",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('d'),
+        GuiAction::Delete,
+        "d",
+        "don't save",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('D'),
+        GuiAction::Delete,
+        "d",
+        "don't save",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "esc",
+        "cancel",
+    ),
+];
+
 const SETTINGS_BINDINGS: &[KeyBinding] = &[
     KeyBinding::action(
         BindingInput::Character('j'),
@@ -4098,10 +4378,11 @@ fn bindings(state: &GuiState) -> &'static [KeyBinding] {
         Mode::Select { .. } => SELECT_BINDINGS,
         Mode::SelectMove { .. } => SELECT_MOVE_BINDINGS,
         Mode::CopySelection { .. } => COPY_SELECTION_BINDINGS,
-        Mode::ValueInput { .. } | Mode::SavePrompt => TEXT_BINDINGS,
+        Mode::ValueInput { .. } => TEXT_BINDINGS,
         Mode::ExportPrompt => EXPORT_TEXT_BINDINGS,
         Mode::TrackPrompt => TRACK_TEXT_BINDINGS,
-        Mode::SaveConfirm | Mode::ExportConfirm | Mode::QuitConfirm => CONFIRM_BINDINGS,
+        Mode::LoadConfirm => LOAD_CONFIRM_BINDINGS,
+        Mode::ExportConfirm | Mode::QuitConfirm => CONFIRM_BINDINGS,
         Mode::TrackSettings { .. } => SETTINGS_BINDINGS,
     }
 }
@@ -4127,6 +4408,7 @@ fn binding_inputs() -> Vec<BindingInput> {
         EXPORT_TEXT_BINDINGS,
         TRACK_TEXT_BINDINGS,
         CONFIRM_BINDINGS,
+        LOAD_CONFIRM_BINDINGS,
         SETTINGS_BINDINGS,
     ] {
         for binding in bindings {
@@ -4290,8 +4572,7 @@ fn mode_text(state: &GuiState) -> String {
         Mode::Select { anchor } => format!("Select {}:{}", anchor.x, anchor.y),
         Mode::SelectMove { origin, .. } => format!("Move selection {}:{}", origin.x, origin.y),
         Mode::CopySelection { origin, .. } => format!("Copy selection {}:{}", origin.x, origin.y),
-        Mode::SavePrompt => "Save".to_string(),
-        Mode::SaveConfirm => "Overwrite save".to_string(),
+        Mode::LoadConfirm => "Open".to_string(),
         Mode::ExportPrompt => "Export".to_string(),
         Mode::ExportConfirm => "Overwrite export".to_string(),
         Mode::TrackPrompt => "Track".to_string(),

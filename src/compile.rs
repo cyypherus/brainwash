@@ -57,10 +57,12 @@ enum Node {
     },
     Constant(Sample),
     Pass,
+    Transpose {
+        semitones: f32,
+    },
     Osc {
         osc: Oscillator,
         frequency: Hertz,
-        shift: f32,
         gain: Unit,
         unipolar: bool,
     },
@@ -421,10 +423,20 @@ impl Node {
             }
             Node::Constant(value) => *value,
             Node::Pass => Sample::raw(inputs.iter().flatten().map(|input| input.value()).sum()),
+            Node::Transpose { semitones } => Sample::raw(
+                in0.value()
+                    * 2.0_f32.powf(
+                        inputs
+                            .get(1)
+                            .copied()
+                            .flatten()
+                            .map_or(*semitones, |input| input.value())
+                            / 12.0,
+                    ),
+            ),
             Node::Osc {
                 osc,
                 frequency,
-                shift,
                 gain,
                 unipolar,
             } => {
@@ -432,16 +444,11 @@ impl Node {
                     .first()
                     .and_then(|input| input.and_then(|input| Hertz::new(input.value())))
                     .unwrap_or(*frequency);
-                let shift = inputs
-                    .get(1)
-                    .and_then(|input| input.map(|input| input.value()))
-                    .unwrap_or(*shift);
                 let gain = inputs
-                    .get(2)
+                    .get(1)
                     .and_then(|input| input.and_then(|input| Unit::new(input.value())))
                     .unwrap_or(*gain);
-                if let Some(frequency) = Hertz::new(frequency.value() * 2.0_f32.powf(shift / 12.0))
-                {
+                if let Some(frequency) = Hertz::new(frequency.value()) {
                     osc.set_frequency(frequency);
                 }
                 let mut value = osc.next().value();
@@ -857,16 +864,17 @@ fn create_node(module: &Module, rate: SampleRate) -> Result<Node, CompileError> 
         Module::DegreeGate { target } => Node::DegreeGate { target: *target },
         Module::Constant(value) => Node::Constant(*value),
         Module::Pass => Node::Pass,
+        Module::Transpose { semitones } => Node::Transpose {
+            semitones: semitones.value(),
+        },
         Module::Osc {
             wave,
             frequency,
-            shift,
             gain,
             unipolar,
         } => Node::Osc {
             osc: Oscillator::new(audio_wave(*wave), rate, *frequency),
             frequency: *frequency,
-            shift: shift.value(),
             gain: *gain,
             unipolar: *unipolar,
         },
@@ -1054,7 +1062,6 @@ mod tests {
         let osc = patch.insert(Module::Osc {
             wave: crate::patch::Wave::Sine,
             frequency: Hertz::new(rate).unwrap(),
-            shift: Sample::ZERO,
             gain: Unit::ONE,
             unipolar: false,
         });
@@ -1068,7 +1075,6 @@ mod tests {
         patch.insert(Module::Osc {
             wave: crate::patch::Wave::Sine,
             frequency: Hertz::new(440.0).unwrap(),
-            shift: Sample::ZERO,
             gain: Unit::ONE,
             unipolar: false,
         });
@@ -1131,6 +1137,21 @@ mod tests {
         });
 
         assert!(values.contains(&(lowpass, 0, 0.25)));
+    }
+
+    #[test]
+    fn transpose_converts_semitones_to_a_frequency_ratio() {
+        let mut patch = Patch::new();
+        let source = patch.insert(Module::Constant(Sample::new(0.25).unwrap()));
+        let transpose = patch.insert(Module::Transpose {
+            semitones: Sample::new(12.0).unwrap(),
+        });
+        let input = patch.input_port(transpose, InputKind::In).unwrap();
+        patch.connect_input(source, input).unwrap();
+        patch.output(transpose).unwrap();
+
+        let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+        assert!((compiled.next().left().value() - 0.5).abs() < 0.001);
     }
 
     #[test]

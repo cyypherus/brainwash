@@ -337,9 +337,14 @@ fn write_output<T>(
     }
     let target = if *playing { 1.0 } else { 0.0 };
     let step = 1.0 / PLAY_FADE_FRAMES;
-    let frame_count = data.chunks(channels).len();
     engine.begin_buffer();
-    for (index, output) in data.chunks_mut(channels).enumerate() {
+    if !*playing && *gain == 0.0 {
+        for output in data {
+            *output = T::from_sample(0.0);
+        }
+        return;
+    }
+    for output in data.chunks_mut(channels) {
         if *gain < target {
             *gain = (*gain + step).min(1.0);
         } else if *gain > target {
@@ -349,8 +354,7 @@ fn write_output<T>(
             .as_mut()
             .map(|track| track.next(*playing))
             .unwrap_or_default();
-        let record_meters = index + 1 == frame_count;
-        write_frame(output, engine.next_frame(controls, record_meters), *gain);
+        write_frame(output, engine.next_frame(controls), *gain);
     }
 }
 
@@ -567,12 +571,21 @@ impl MeterBus {
         }
     }
 
+    fn clear(&self, routes: &MeterRoutes) {
+        for route in routes.iter() {
+            self.clear_slot(route.slot);
+        }
+    }
+
     fn write(&self, slot: usize, voice: usize, input: usize, value: f32) {
         if voice >= VOICES || input >= METER_INPUTS {
             return;
         }
-        self.values[meter_value_index(voice, slot, input)]
-            .store(value.to_bits(), Ordering::Release);
+        let index = meter_value_index(voice, slot, input);
+        let peak = value.abs();
+        if peak > f32::from_bits(self.values[index].load(Ordering::Acquire)) {
+            self.values[index].store(peak.to_bits(), Ordering::Release);
+        }
     }
 
     fn values(&self, module: ModuleId, voice: usize) -> Vec<f32> {
@@ -682,16 +695,17 @@ impl VoicePatchRuntime {
     #[cfg(test)]
     fn next_with_controls(&mut self, controls: [PatchControls; VOICES]) -> Frame {
         self.begin_buffer();
-        self.next_frame(controls, true)
+        self.next_frame(controls)
     }
 
     fn begin_buffer(&mut self) {
         self.return_retired();
         self.read_pending();
         self.accept_pending();
+        self.meter_bus.clear(&self.meters);
     }
 
-    fn next_frame(&mut self, controls: [PatchControls; VOICES], record_meters: bool) -> Frame {
+    fn next_frame(&mut self, controls: [PatchControls; VOICES]) -> Frame {
         let mut left = 0.0;
         let mut right = 0.0;
         let active_voices = self.voice_mode.count();
@@ -708,9 +722,7 @@ impl VoicePatchRuntime {
                     voice,
                     engine,
                 );
-                if record_meters {
-                    record_meter_values(&self.meter_bus, &self.meters, voice, engine);
-                }
+                record_meter_values(&self.meter_bus, &self.meters, voice, engine);
                 left += frame.left().value();
                 right += frame.right().value();
             }
@@ -830,11 +842,13 @@ fn record_probe_values(
     voice: usize,
     engine: &PatchEngine,
 ) {
-    for (id, value) in engine.probe_values() {
-        if let Some(route) = probes.iter().find(|route| route.source == id) {
+    engine.visit_input_values(|module, input, value| {
+        if input == 0
+            && let Some(route) = probes.iter().find(|route| route.source == module)
+        {
             bus.write(route.slot, voice, cursor, value.value());
         }
-    }
+    });
 }
 
 fn record_meter_values(bus: &MeterBus, meters: &MeterRoutes, voice: usize, engine: &PatchEngine) {
@@ -1105,7 +1119,6 @@ mod tests {
         let osc = patch.insert(Module::Osc {
             wave: Wave::Saw,
             frequency: Hertz::new(110.0).unwrap(),
-            shift: AudioSample::ZERO,
             gain: Unit::ONE,
             unipolar: false,
         });
@@ -1353,7 +1366,7 @@ mod tests {
     }
 
     #[test]
-    fn voice_patch_runtime_skips_meter_recording_until_requested() {
+    fn voice_patch_runtime_records_meter_values() {
         let rate = SampleRate::new(44_100).unwrap();
         let (_pending_input, pending_output) = RingBuffer::new(2);
         let (retired_input, _retired_output) = RingBuffer::new(2);
@@ -1374,15 +1387,55 @@ mod tests {
         let controls = [PatchControls::default(); VOICES];
 
         runtime.begin_buffer();
-        for _ in 0..64 {
-            runtime.next_frame(controls, false);
-        }
-
-        assert_eq!(meter_bus.values(route.target, 0), vec![0.0]);
-
-        runtime.next_frame(controls, true);
+        runtime.next_frame(controls);
 
         assert_ne!(meter_bus.values(route.target, 0), vec![0.0]);
+    }
+
+    #[test]
+    fn meter_bus_keeps_the_highest_magnitude_in_a_buffer() {
+        let bus = MeterBus::new();
+
+        bus.write(0, 0, 0, -0.75);
+        bus.write(0, 0, 0, 0.25);
+
+        let value = f32::from_bits(bus.values[meter_value_index(0, 0, 0)].load(Ordering::Acquire));
+        assert_eq!(value, 0.75);
+    }
+
+    #[test]
+    fn probe_meter_records_the_value_at_its_input_port() {
+        let rate = SampleRate::new(44_100).unwrap();
+        let target = telemetry_module_id();
+        let mut patch = Patch::new();
+        let source = patch.insert(Module::Constant(AudioSample::new(0.25).unwrap()));
+        let probe = patch.insert(Module::Probe);
+        let port = patch.input_port(probe, InputKind::In).unwrap();
+        patch.connect_input(source, port).unwrap();
+        patch.output(probe).unwrap();
+        let probe_bus = Arc::new(ProbeBus::new());
+        let meter_bus = Arc::new(MeterBus::new());
+        let (_pending_input, pending_output) = RingBuffer::new(2);
+        let (retired_input, _retired_output) = RingBuffer::new(2);
+        let mut runtime = VoicePatchRuntime::new(
+            PatchBank::new_with_telemetry(
+                CompiledPatch::new(&patch, rate).unwrap(),
+                ProbeRoutes::new(&[ProbeRoute {
+                    source: probe,
+                    target,
+                }]),
+                MeterRoutes::new(&[MeterRoute::new(probe, target, 1).unwrap()]),
+                VoiceMode::Single,
+            ),
+            pending_output,
+            retired_input,
+            Arc::clone(&probe_bus),
+            Arc::clone(&meter_bus),
+        );
+
+        runtime.next_frame([PatchControls::default(); VOICES]);
+
+        assert_eq!(probe_bus.history(target, 0, 1), meter_bus.values(target, 0));
     }
 
     #[test]
@@ -1500,6 +1553,44 @@ mod tests {
         assert!(patch_retired_output.pop().is_ok());
         assert!(track_retired_output.pop().is_ok());
         assert_eq!(meter_bus.values(route.target, 0).len(), 1);
+    }
+
+    #[test]
+    fn write_output_does_not_process_when_paused() {
+        let rate = SampleRate::new(44_100).unwrap();
+        let (_patch_input, patch_output) = RingBuffer::new(2);
+        let (patch_retired_input, _patch_retired_output) = RingBuffer::new(2);
+        let (_track_input, mut track_output) = RingBuffer::new(2);
+        let (mut track_retired_input, _track_retired_output) = RingBuffer::new(2);
+        let (_play_input, mut play_output) = RingBuffer::new(2);
+        let mut runtime = VoicePatchRuntime::new(
+            PatchBank::new(compiled_saw_patch(110.0, rate)),
+            patch_output,
+            patch_retired_input,
+            Arc::new(ProbeBus::new()),
+            Arc::new(MeterBus::new()),
+        );
+        let mut track = None;
+        let mut retired_track = None;
+        let mut gain = 0.0;
+        let mut playing = false;
+        let mut data = [1.0f32; 128];
+
+        write_output(
+            &mut data,
+            2,
+            &mut play_output,
+            &mut playing,
+            &mut runtime,
+            &mut track_output,
+            &mut track_retired_input,
+            &mut track,
+            &mut retired_track,
+            &mut gain,
+        );
+
+        assert_eq!(runtime.probe_cursor, 0);
+        assert!(data.iter().all(|sample| *sample == 0.0));
     }
 
     #[test]
@@ -1725,7 +1816,6 @@ mod tests {
         let osc = patch.insert(Module::Osc {
             wave: Wave::Saw,
             frequency: Hertz::new(frequency).unwrap(),
-            shift: AudioSample::ZERO,
             gain: Unit::ONE,
             unipolar: false,
         });
@@ -1747,7 +1837,6 @@ mod tests {
         let osc = patch.insert(Module::Osc {
             wave: Wave::Saw,
             frequency: Hertz::new(440.0).unwrap(),
-            shift: AudioSample::ZERO,
             gain: Unit::ONE,
             unipolar: false,
         });
@@ -1761,7 +1850,6 @@ mod tests {
         let osc = patch.insert(Module::Osc {
             wave: Wave::Saw,
             frequency: Hertz::new(440.0).unwrap(),
-            shift: AudioSample::ZERO,
             gain: Unit::ONE,
             unipolar: false,
         });

@@ -35,7 +35,7 @@ pub enum InputKind {
     Gate,
     Phase,
     Freq,
-    Shift,
+    Semitones,
     Gain,
     Rise,
     Fall,
@@ -130,10 +130,12 @@ pub enum Module {
     },
     Constant(Sample),
     Pass,
+    Transpose {
+        semitones: Sample,
+    },
     Osc {
         wave: Wave,
         frequency: Hertz,
-        shift: Sample,
         gain: Unit,
         unipolar: bool,
     },
@@ -384,7 +386,8 @@ impl Module {
             ],
             Module::Sample { .. } => &[InputKind::Position],
             Module::Binary { .. } => &[InputKind::A, InputKind::B],
-            Module::Osc { .. } => &[InputKind::Freq, InputKind::Shift, InputKind::Gain],
+            Module::Transpose { .. } => &[InputKind::In, InputKind::Semitones],
+            Module::Osc { .. } => &[InputKind::Freq, InputKind::Gain],
             Module::Switch { .. } => &[InputKind::Select, InputKind::A, InputKind::B],
         }
     }
@@ -439,7 +442,6 @@ mod tests {
         let target = patch.insert(Module::Osc {
             wave: Wave::Sine,
             frequency: Hertz::new(440.0).unwrap(),
-            shift: Sample::ZERO,
             gain: Unit::ONE,
             unipolar: false,
         });
@@ -458,7 +460,6 @@ mod tests {
         let target = patch.insert(Module::Osc {
             wave: Wave::Sine,
             frequency: Hertz::new(440.0).unwrap(),
-            shift: Sample::ZERO,
             gain: Unit::ONE,
             unipolar: false,
         });

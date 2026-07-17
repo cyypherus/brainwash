@@ -3,6 +3,7 @@ use brainwash_gui::model::{GuiState, Mode};
 use brainwash_gui::view::main_view;
 use haven::winit::WinitApp;
 use haven::*;
+use std::path::Path;
 
 fn main() {
     let mut audio = match AudioRuntime::start() {
@@ -32,8 +33,53 @@ fn main() {
 }
 
 fn frame(state: &mut GuiState, app: &mut PaneState) {
-    if matches!(state.mode(), Mode::ProbeEdit { .. }) {
+    if state.playing() || matches!(state.mode(), Mode::ProbeEdit { .. }) {
         app.redraw();
+    }
+    if state.take_save_request() {
+        let dialog = rfd::FileDialog::new()
+            .add_filter("Brainwash", &["bw"])
+            .set_title("Save Brainwash Patch");
+        let dialog = if let Some(saved_path) = state.saved_path() {
+            let path = Path::new(saved_path);
+            let dialog = path
+                .parent()
+                .map(|parent| dialog.clone().set_directory(parent))
+                .unwrap_or(dialog);
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| dialog.clone().set_file_name(name))
+                .unwrap_or(dialog)
+        } else {
+            dialog.set_file_name("patch.bw")
+        };
+        if let Some(path) = dialog.save_file() {
+            let path = if path.extension().is_none() {
+                path.with_extension("bw")
+            } else {
+                path
+            };
+            let saved = state.save_project(&path);
+            let load_after_save = state.take_load_after_save();
+            if saved && load_after_save {
+                state.apply(brainwash_gui::model::GuiAction::Load);
+            }
+        } else {
+            state.take_load_after_save();
+        }
+        app.redraw();
+        return;
+    }
+    if let Some(module) = state.take_relink_sample_request() {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("WAV audio", &["wav", "wave"])
+            .set_title("Relink Sample")
+            .pick_file()
+        {
+            state.relink_sample(module, &path);
+        }
+        app.redraw();
+        return;
     }
     if !state.take_load_request() {
         return;
@@ -44,7 +90,6 @@ fn frame(state: &mut GuiState, app: &mut PaneState) {
     else {
         return;
     };
-    if let Err(error) = state.load_project(&path) {
-        eprintln!("Load failed: {error}");
-    }
+    let _ = state.load_project(&path);
+    app.redraw();
 }

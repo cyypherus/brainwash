@@ -70,14 +70,13 @@ enum FileModule {
     },
     Constant(f32),
     Pass,
+    Transpose {
+        semitones: f32,
+    },
     Osc {
         wave: FileWave,
         frequency: f32,
-        #[serde(default)]
-        shift: f32,
-        #[serde(default = "one")]
         gain: f32,
-        #[serde(default)]
         unipolar: bool,
     },
     Rise {
@@ -196,10 +195,6 @@ enum FileDuration {
     Seconds(f32),
 }
 
-fn one() -> f32 {
-    1.0
-}
-
 impl FilePatch {
     fn from_patch(patch: &Patch) -> Result<Self, SaveError> {
         Ok(Self {
@@ -251,16 +246,17 @@ impl FileModule {
             Module::DegreeGate { target } => FileModule::DegreeGate { target },
             Module::Constant(value) => FileModule::Constant(value.value()),
             Module::Pass => FileModule::Pass,
+            Module::Transpose { semitones } => FileModule::Transpose {
+                semitones: semitones.value(),
+            },
             Module::Osc {
                 wave,
                 frequency,
-                shift,
                 gain,
                 unipolar,
             } => FileModule::Osc {
                 wave: FileWave::from_wave(wave),
                 frequency: frequency.value(),
-                shift: shift.value(),
                 gain: gain.value(),
                 unipolar,
             },
@@ -381,16 +377,17 @@ impl FileModule {
                 Module::Constant(Sample::new(value).ok_or(LoadError::Value)?)
             }
             FileModule::Pass => Module::Pass,
+            FileModule::Transpose { semitones } => Module::Transpose {
+                semitones: Sample::new(semitones).ok_or(LoadError::Value)?,
+            },
             FileModule::Osc {
                 wave,
                 frequency,
-                shift,
                 gain,
                 unipolar,
             } => Module::Osc {
                 wave: wave.into_wave(),
                 frequency: Hertz::new(frequency).ok_or(LoadError::Value)?,
-                shift: Sample::new(shift).ok_or(LoadError::Value)?,
                 gain: Unit::new(gain).ok_or(LoadError::Value)?,
                 unipolar,
             },

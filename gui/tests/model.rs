@@ -2,7 +2,7 @@ use brainwash::compile::PatchControls;
 use brainwash::time::{Hertz, SampleRate};
 use brainwash_gui::model::{
     AudioPatchError, GridPos, GuiAction, GuiState, Mode, ModuleCategory, ModuleKind, Orientation,
-    ParameterValue, TimeUnit, all_modules,
+    ParameterValue, all_modules,
 };
 use brainwash_gui::view::main_view;
 use haven::{
@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 #[test]
 fn module_inventory_matches_tui_surface_count() {
-    assert_eq!(all_modules().len(), 38);
+    assert_eq!(all_modules().len(), 40);
     assert_eq!(all_modules()[0], ModuleKind::Osc);
     assert_eq!(all_modules()[1], ModuleKind::Output);
     assert_eq!(
@@ -21,7 +21,7 @@ fn module_inventory_matches_tui_surface_count() {
             .iter()
             .filter(|kind| kind.category() == ModuleCategory::Source)
             .count(),
-        7
+        9
     );
     assert_eq!(
         all_modules()
@@ -42,11 +42,36 @@ fn default_oscillator_uses_hertz() {
     assert_eq!(module.kind(), ModuleKind::Osc);
     assert_eq!(
         module.parameters()[1].value(),
-        &ParameterValue::Time {
-            value: 440,
-            unit: TimeUnit::Hertz,
+        &ParameterValue::Float {
+            value: 44_000,
+            min: 1,
+            max: 200_000,
+            step: 100,
         }
     );
+}
+
+#[test]
+fn rate_converts_one_second_to_one_hertz_for_an_oscillator() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Rate);
+    assert_eq!(state.modules()[0].parameters()[0].value_label(), "1.00s");
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Osc);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Output);
+
+    let mut patch = state
+        .compile_audio_patch(SampleRate::new(44_100).unwrap())
+        .unwrap();
+    let first = patch.next().left().value();
+    let after_one_second = (0..44_099)
+        .map(|_| patch.next().left().value())
+        .last()
+        .unwrap();
+
+    assert!(first.abs() < 0.001, "{first}");
+    assert!(after_one_second.abs() < 0.01, "{after_one_second}");
 }
 
 #[test]
@@ -308,7 +333,7 @@ fn copy_cancel_leaves_original_only() {
 }
 
 #[test]
-fn edit_mode_adjusts_parameters_ports_units_and_undoes() {
+fn edit_mode_adjusts_oscillator_hertz_and_ports() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 0, 4);
     let module = state.module_at(GridPos::new(0, 0)).unwrap().id();
@@ -335,9 +360,11 @@ fn edit_mode_adjusts_parameters_ports_units_and_undoes() {
     let parameter = &state.module_at(GridPos::new(0, 0)).unwrap().parameters()[1];
     assert_eq!(
         parameter.value(),
-        &ParameterValue::Time {
-            value: 440,
-            unit: TimeUnit::Seconds
+        &ParameterValue::Float {
+            value: 44_000,
+            min: 1,
+            max: 200_000,
+            step: 100,
         }
     );
 
@@ -345,9 +372,11 @@ fn edit_mode_adjusts_parameters_ports_units_and_undoes() {
     let parameter = &state.module_at(GridPos::new(0, 0)).unwrap().parameters()[1];
     assert_eq!(
         parameter.value(),
-        &ParameterValue::Time {
-            value: 442,
-            unit: TimeUnit::Seconds
+        &ParameterValue::Float {
+            value: 44_200,
+            min: 1,
+            max: 200_000,
+            step: 100,
         }
     );
     assert!(!parameter.connected());
@@ -360,9 +389,11 @@ fn edit_mode_adjusts_parameters_ports_units_and_undoes() {
     let parameter = &state.module_at(GridPos::new(0, 0)).unwrap().parameters()[1];
     assert_eq!(
         parameter.value(),
-        &ParameterValue::Time {
-            value: 442,
-            unit: TimeUnit::Seconds
+        &ParameterValue::Float {
+            value: 44_200,
+            min: 1,
+            max: 200_000,
+            step: 100,
         }
     );
     assert!(!parameter.connected());
@@ -425,9 +456,11 @@ fn typed_value_input_commits_numeric_parameter() {
     let parameter = &state.module_at(GridPos::new(0, 0)).unwrap().parameters()[1];
     assert_eq!(
         parameter.value(),
-        &ParameterValue::Time {
+        &ParameterValue::Float {
             value: 250,
-            unit: TimeUnit::Seconds
+            min: 1,
+            max: 200_000,
+            step: 100,
         }
     );
     assert!(!parameter.connected());
@@ -452,7 +485,7 @@ fn typed_value_input_filters_characters_like_tui() {
     assert_eq!(state.prompt_text(), "440");
     state.apply(GuiAction::InputChar('/'));
     state.apply(GuiAction::InputChar('a'));
-    assert_eq!(state.prompt_text(), "440/");
+    assert_eq!(state.prompt_text(), "440");
     state.apply(GuiAction::Cancel);
 
     state.apply(GuiAction::Down);
@@ -464,11 +497,11 @@ fn typed_value_input_filters_characters_like_tui() {
             parameter: 2
         }
     );
-    assert_eq!(state.prompt_text(), "0");
+    assert_eq!(state.prompt_text(), "1");
     state.apply(GuiAction::InputChar('/'));
     state.apply(GuiAction::InputChar('a'));
     state.apply(GuiAction::InputChar('5'));
-    assert_eq!(state.prompt_text(), "05");
+    assert_eq!(state.prompt_text(), "15");
 }
 
 #[test]
@@ -488,15 +521,15 @@ fn save_export_and_quit_prompts_track_requested_state() {
     assert_eq!(state.mode(), Mode::Normal);
 
     state.apply(GuiAction::Save);
-    assert_eq!(state.mode(), Mode::SavePrompt);
-    assert_eq!(state.prompt_text(), "patch.bw");
+    assert!(state.take_save_request());
     let save_path = project_path("save-prompt");
-    let save_path = save_path.to_string_lossy().into_owned();
-    replace_prompt_text(&mut state, &save_path);
-    state.apply(GuiAction::Confirm);
-    assert_eq!(state.saved_path(), Some(save_path.as_str()));
+    assert!(state.save_project(&save_path));
+    assert_eq!(
+        state.saved_path(),
+        Some(save_path.to_string_lossy().as_ref())
+    );
     assert!(!state.dirty());
-    let project = brainwash::project::load(save_path.as_ref()).unwrap();
+    let project = brainwash::project::load(&save_path).unwrap();
     assert_eq!(project.modules.len(), 1);
     assert_eq!(
         project.modules[0].kind,
@@ -514,45 +547,43 @@ fn save_export_and_quit_prompts_track_requested_state() {
 #[test]
 fn save_and_export_prompt_confirm_existing_paths_before_overwrite() {
     let mut state = GuiState::new(8, 8);
-    let save_path = project_path("overwrite-save")
-        .to_string_lossy()
-        .into_owned();
-    let export_path = project_path("overwrite-export")
-        .with_extension("wav")
-        .to_string_lossy()
-        .into_owned();
+    let save_path = project_path("overwrite-save");
+    let export_path = project_path("overwrite-export").with_extension("wav");
 
     state.apply(GuiAction::Save);
-    replace_prompt_text(&mut state, &save_path);
-    state.apply(GuiAction::Confirm);
-    assert_eq!(state.saved_path(), Some(save_path.as_str()));
+    assert!(state.take_save_request());
+    assert!(state.save_project(&save_path));
+    assert_eq!(
+        state.saved_path(),
+        Some(save_path.to_string_lossy().as_ref())
+    );
 
     state.apply(GuiAction::Export);
-    replace_prompt_text(&mut state, &export_path);
+    replace_prompt_text(&mut state, &export_path.to_string_lossy());
     state.apply(GuiAction::Confirm);
-    assert_eq!(state.exported_path(), Some(export_path.as_str()));
+    assert_eq!(
+        state.exported_path(),
+        Some(export_path.to_string_lossy().as_ref())
+    );
 
     state.apply(GuiAction::SaveAs);
-    assert_eq!(state.mode(), Mode::SavePrompt);
-    replace_prompt_text(&mut state, &export_path);
-    state.apply(GuiAction::Confirm);
-    assert_eq!(state.mode(), Mode::SaveConfirm);
-    state.apply(GuiAction::Cancel);
-    assert_eq!(state.mode(), Mode::SavePrompt);
-    state.apply(GuiAction::Confirm);
-    assert_eq!(state.mode(), Mode::SaveConfirm);
-    state.apply(GuiAction::Confirm);
-    assert_eq!(state.mode(), Mode::Normal);
-    assert_eq!(state.saved_path(), Some(export_path.as_str()));
+    assert!(state.take_save_request());
+    assert!(state.save_project(&export_path));
+    assert_eq!(
+        state.saved_path(),
+        Some(export_path.to_string_lossy().as_ref())
+    );
 
     state.apply(GuiAction::SaveAs);
-    replace_prompt_text(&mut state, &save_path);
-    state.apply(GuiAction::Confirm);
-    state.apply(GuiAction::Confirm);
-    assert_eq!(state.saved_path(), Some(save_path.as_str()));
+    assert!(state.take_save_request());
+    assert!(state.save_project(&save_path));
+    assert_eq!(
+        state.saved_path(),
+        Some(save_path.to_string_lossy().as_ref())
+    );
 
     state.apply(GuiAction::Export);
-    replace_prompt_text(&mut state, &save_path);
+    replace_prompt_text(&mut state, &save_path.to_string_lossy());
     state.apply(GuiAction::Confirm);
     assert_eq!(state.mode(), Mode::ExportConfirm);
     state.apply(GuiAction::Cancel);
@@ -561,7 +592,10 @@ fn save_and_export_prompt_confirm_existing_paths_before_overwrite() {
     assert_eq!(state.mode(), Mode::ExportConfirm);
     state.apply(GuiAction::Confirm);
     assert_eq!(state.mode(), Mode::Normal);
-    assert_eq!(state.exported_path(), Some(save_path.as_str()));
+    assert_eq!(
+        state.exported_path(),
+        Some(save_path.to_string_lossy().as_ref())
+    );
 }
 
 #[test]
@@ -631,6 +665,70 @@ fn subpatch_navigation_uses_isolated_surface() {
         ModuleKind::Gate
     );
     assert_ne!(state.module_at(GridPos::new(0, 0)).unwrap().id(), subpatch);
+}
+
+#[test]
+fn copying_subpatch_clones_its_surface_with_fresh_module_ids() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Subpatch);
+    state.apply(GuiAction::EditSubpatch);
+    place_module_kind(&mut state, ModuleKind::Gate);
+    let original_child = state.module_at(GridPos::new(0, 0)).unwrap().id();
+
+    state.apply(GuiAction::ExitSubpatch);
+    state.apply(GuiAction::Copy);
+    state.apply(GuiAction::Right);
+    state.apply(GuiAction::Confirm);
+
+    state.apply(GuiAction::EditSubpatch);
+    assert_eq!(
+        state.module_at(GridPos::new(0, 0)).unwrap().kind(),
+        ModuleKind::Gate
+    );
+    assert_ne!(
+        state.module_at(GridPos::new(0, 0)).unwrap().id(),
+        original_child
+    );
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Freq);
+
+    state.apply(GuiAction::ExitSubpatch);
+    state.apply(GuiAction::Left);
+    state.apply(GuiAction::EditSubpatch);
+    assert!(state.module_at(GridPos::new(1, 0)).is_none());
+}
+
+#[test]
+fn nested_subpatches_round_trip_through_project_files() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Subpatch);
+    state.apply(GuiAction::EditSubpatch);
+    place_module_kind(&mut state, ModuleKind::Gate);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Subpatch);
+    state.apply(GuiAction::EditSubpatch);
+    place_module_kind(&mut state, ModuleKind::Freq);
+    state.apply(GuiAction::ExitSubpatch);
+    state.apply(GuiAction::ExitSubpatch);
+
+    let path = project_path("nested-subpatch");
+    assert!(state.save_project(&path));
+
+    let mut loaded = GuiState::new(8, 8);
+    loaded.load_project(&path).unwrap();
+    loaded.apply(GuiAction::EditSubpatch);
+    assert_eq!(
+        loaded.module_at(GridPos::new(0, 0)).unwrap().kind(),
+        ModuleKind::Gate
+    );
+    loaded.apply(GuiAction::Right);
+    loaded.apply(GuiAction::EditSubpatch);
+    assert_eq!(
+        loaded.module_at(GridPos::new(0, 0)).unwrap().kind(),
+        ModuleKind::Freq
+    );
+
+    let _ = fs::remove_file(path);
 }
 
 #[test]
@@ -811,38 +909,36 @@ fn haven_transient_mode_confirm_keys_match_tui() {
 }
 
 #[test]
-fn haven_overwrite_confirm_keys_match_tui() {
+fn haven_native_save_requests_match_gui_actions() {
     let mut state = GuiState::new(8, 8);
     let mut pane = PaneBuilder::new("main", main_view).build();
     pane.redraw(&mut state, 640, 480, 1.0);
-    let save_path = project_path("haven-overwrite-save")
-        .to_string_lossy()
-        .into_owned();
-    let export_path = project_path("haven-overwrite-export")
-        .with_extension("wav")
-        .to_string_lossy()
-        .into_owned();
+    let save_path = project_path("haven-overwrite-save");
+    let export_path = project_path("haven-overwrite-export").with_extension("wav");
 
     pane.key_pressed(&mut state, Key::character("w"));
-    replace_prompt_text_pane(&mut pane, &mut state, &save_path);
-    pane.key_pressed(&mut state, NamedKey::Enter);
-    assert_eq!(state.saved_path(), Some(save_path.as_str()));
+    assert!(state.take_save_request());
+    assert!(state.save_project(&save_path));
+    assert_eq!(
+        state.saved_path(),
+        Some(save_path.to_string_lossy().as_ref())
+    );
 
     pane.key_pressed(&mut state, Key::character("e"));
-    replace_prompt_text_pane(&mut pane, &mut state, &export_path);
+    replace_prompt_text_pane(&mut pane, &mut state, &export_path.to_string_lossy());
     pane.key_pressed(&mut state, NamedKey::Enter);
-    assert_eq!(state.exported_path(), Some(export_path.as_str()));
+    assert_eq!(
+        state.exported_path(),
+        Some(export_path.to_string_lossy().as_ref())
+    );
 
     pane.key_pressed(&mut state, Key::character("W"));
-    replace_prompt_text_pane(&mut pane, &mut state, &export_path);
-    pane.key_pressed(&mut state, NamedKey::Enter);
-    assert_eq!(state.mode(), Mode::SaveConfirm);
-    pane.key_pressed(&mut state, Key::character("n"));
-    assert_eq!(state.mode(), Mode::SavePrompt);
-    pane.key_pressed(&mut state, NamedKey::Enter);
-    pane.key_pressed(&mut state, Key::character("y"));
-    assert_eq!(state.mode(), Mode::Normal);
-    assert_eq!(state.saved_path(), Some(export_path.as_str()));
+    assert!(state.take_save_request());
+    assert!(state.save_project(&export_path));
+    assert_eq!(
+        state.saved_path(),
+        Some(export_path.to_string_lossy().as_ref())
+    );
 }
 
 #[test]
@@ -905,7 +1001,7 @@ fn haven_palette_lays_out_categories_horizontally_and_modules_vertically() {
 }
 
 #[test]
-fn haven_palette_background_stays_centered_across_contents() {
+fn haven_palette_background_stays_top_aligned_across_contents() {
     let mut normal = GuiState::new(8, 8);
     normal.apply(GuiAction::OpenPalette);
     let mut normal_pane = PaneBuilder::new("main", main_view).build();
@@ -923,6 +1019,7 @@ fn haven_palette_background_stays_centered_across_contents() {
     let search_background = search_pane.location(200).unwrap();
 
     assert!((search_background.x - normal_background.x).abs() < 10.);
+    assert!((search_background.y - normal_background.y).abs() < 10.);
 }
 
 #[test]
@@ -932,19 +1029,13 @@ fn haven_prompt_keys_drive_model() {
     pane.redraw(&mut state, 640, 480, 1.0);
 
     pane.key_pressed(&mut state, Key::character("w"));
-    pane.key_pressed(&mut state, Key::character("e"));
-    pane.key_pressed(&mut state, Key::character("w"));
-    pane.key_pressed(&mut state, Key::character("n"));
-    assert_eq!(state.prompt_text(), "patch.bwewn");
-    pane.key_pressed(&mut state, Key::character("C"));
-    pane.key_pressed(&mut state, Key::character("G"));
-    pane.key_pressed(&mut state, Key::character("@"));
-    pane.key_pressed(&mut state, Key::character("!"));
-    assert_eq!(state.prompt_text(), "patch.bwewnCG@!");
-    let save_path = project_path("haven-prompt").to_string_lossy().into_owned();
-    replace_prompt_text_pane(&mut pane, &mut state, &save_path);
-    pane.key_pressed(&mut state, NamedKey::Enter);
-    assert_eq!(state.saved_path(), Some(save_path.as_str()));
+    assert!(state.take_save_request());
+    let save_path = project_path("haven-prompt");
+    assert!(state.save_project(&save_path));
+    assert_eq!(
+        state.saved_path(),
+        Some(save_path.to_string_lossy().as_ref())
+    );
 
     pane.key_pressed(&mut state, Key::character("e"));
     pane.key_pressed(&mut state, NamedKey::ArrowUp);
@@ -963,30 +1054,7 @@ fn haven_prompt_editing_keys_match_tui_text_input() {
     pane.redraw(&mut state, 640, 480, 1.0);
 
     pane.key_pressed(&mut state, Key::character("w"));
-    assert_eq!(state.mode(), Mode::SavePrompt);
-    assert_eq!(state.prompt_text(), "patch.bw");
-
-    pane.key_pressed(&mut state, NamedKey::Home);
-    assert_eq!(state.prompt_cursor(), 0);
-    pane.key_pressed(&mut state, NamedKey::Delete);
-    assert_eq!(state.prompt_text(), "atch.bw");
-
-    pane.key_pressed(&mut state, NamedKey::End);
-    assert_eq!(state.prompt_cursor(), "atch.bw".len());
-    pane.key_pressed(&mut state, NamedKey::Backspace);
-    assert_eq!(state.prompt_text(), "atch.b");
-    pane.key_pressed(&mut state, NamedKey::Space);
-    assert_eq!(state.prompt_text(), "atch.b ");
-    assert!(!state.playing());
-    pane.key_pressed(&mut state, NamedKey::Backspace);
-    assert_eq!(state.prompt_text(), "atch.b");
-
-    pane.key_pressed(&mut state, NamedKey::ArrowLeft);
-    pane.key_pressed(&mut state, Key::character("/"));
-    pane.key_pressed(&mut state, Key::character("."));
-    assert_eq!(state.prompt_text(), "atch./.b");
-
-    pane.key_pressed(&mut state, NamedKey::Escape);
+    assert!(state.take_save_request());
     assert_eq!(state.mode(), Mode::Normal);
     assert_eq!(state.saved_path(), None);
 }
@@ -1153,10 +1221,7 @@ fn haven_edit_keys_drive_parameter_editor() {
     );
     assert!(matches!(
         state.module_at(GridPos::new(0, 0)).unwrap().parameters()[1].value(),
-        ParameterValue::Time {
-            unit: TimeUnit::Seconds,
-            ..
-        }
+        ParameterValue::Float { .. }
     ));
     pane.key_pressed(&mut state, NamedKey::Space);
     assert!(state.playing());
@@ -1183,7 +1248,7 @@ fn haven_module_info_modal_does_not_duplicate_bottom_shortcuts() {
     assert!(pane.location(301).is_none());
     let panel = pane.location(300).unwrap();
     let first_row = pane.location(600).unwrap();
-    let last_row = pane.location(640).unwrap();
+    let last_row = pane.location(630).unwrap();
     assert_point_near_x(first_row, panel.x);
     assert_point_near_x(last_row, panel.x);
     assert!(first_row.y < panel.y);
@@ -1609,6 +1674,34 @@ fn aligned_modules_create_derived_connection() {
     assert_eq!(connections.len(), 1);
     assert_eq!(connections[0].from(), source);
     assert_eq!(connections[0].to(), target);
+}
+
+#[test]
+fn disconnected_input_does_not_create_derived_connection() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Freq);
+    state.apply(GuiAction::Right);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Osc);
+
+    state.apply(GuiAction::Edit);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::TogglePort);
+    state.apply(GuiAction::Cancel);
+
+    assert!(!state.module_at(GridPos::new(2, 0)).unwrap().parameters()[1].connected());
+    assert!(state.connections().is_empty());
+
+    let mut pane = PaneBuilder::new("main", main_view).build();
+    let (frame, _) = pane.redraw(&mut state, 760, 560, 1.0);
+
+    assert!(pane.location(60_000).is_none());
+    assert!(
+        frame
+            .items
+            .iter()
+            .any(|item| matches!(item, RenderItem::Svg { .. }))
+    );
 }
 
 #[test]
@@ -2098,9 +2191,7 @@ fn gate_into_osc_gain_matches_default_gain_when_gate_is_high() {
 
     let mut gated_state = GuiState::new(8, 8);
     gated_state.apply(GuiAction::Down);
-    gated_state.apply(GuiAction::Down);
     place_module_kind(&mut gated_state, ModuleKind::Gate);
-    gated_state.apply(GuiAction::Up);
     gated_state.apply(GuiAction::Up);
     gated_state.apply(GuiAction::Right);
     place_module_kind(&mut gated_state, ModuleKind::Osc);
@@ -2438,6 +2529,32 @@ fn haven_grid_drag_moves_selected_group() {
 }
 
 #[test]
+fn haven_grid_drag_release_in_gap_ends_selection_move() {
+    let mut state = GuiState::new(8, 8);
+    place_module(&mut state, 0, 0);
+    state.apply(GuiAction::Select);
+    let mut pane = PaneBuilder::new("main", main_view).build();
+    pane.redraw(&mut state, 920, 720, 1.0);
+
+    let start = grid_cell_center(&pane, 0, 0);
+    let destination = grid_cell_center(&pane, 1, 0);
+    let next_cell = grid_cell_origin(&pane, GridPos::new(2, 0));
+    pane.move_to(&mut state, start);
+    pane.press_button(&mut state, MouseButton::Left);
+    pane.move_to(&mut state, destination);
+    pane.move_to(&mut state, Point::new(next_cell.x - 1., destination.y));
+    pane.release_button(&mut state, MouseButton::Left);
+
+    assert_eq!(
+        state.mode(),
+        Mode::Select {
+            anchor: GridPos::new(1, 0)
+        }
+    );
+    assert!(state.module_at(GridPos::new(1, 0)).is_some());
+}
+
+#[test]
 fn haven_grid_view_scrolls_after_two_cell_edge_margin() {
     let mut state = GuiState::default();
     let mut pane = PaneBuilder::new("main", main_view).build();
@@ -2756,6 +2873,86 @@ fn load_action_sets_one_shot_load_request() {
 }
 
 #[test]
+fn loading_dirty_project_requires_an_explicit_choice() {
+    let mut state = GuiState::new(8, 8);
+    place_module(&mut state, 0, 0);
+
+    state.apply(GuiAction::Load);
+    assert_eq!(state.mode(), Mode::LoadConfirm);
+    assert!(!state.take_load_request());
+
+    state.apply(GuiAction::Cancel);
+    assert_eq!(state.mode(), Mode::Normal);
+    assert!(!state.take_load_request());
+
+    state.apply(GuiAction::Load);
+    state.apply(GuiAction::Delete);
+    assert_eq!(state.mode(), Mode::Normal);
+    assert!(state.take_load_request());
+}
+
+#[test]
+fn loading_restores_sample_path_and_relink_clears_missing_state() {
+    let path = project_path("sample-load");
+    let sample_name = "missing-sample.wav";
+    let project = brainwash::project::Project {
+        bpm: 120.0,
+        bars: 1.0,
+        scale_idx: 0,
+        modules: vec![brainwash::project::ModuleDef {
+            id: 1,
+            kind: brainwash::project::ModuleKind::Standard(
+                brainwash::project::StandardModule::Sample,
+            ),
+            x: 0,
+            y: 0,
+            orientation: brainwash::project::Orientation::Horizontal,
+            params: brainwash::project::ModuleParams::Sample {
+                file_idx: 0,
+                file_name: sample_name.to_string(),
+                samples: std::sync::Arc::new(Vec::new()),
+                connected: 255,
+            },
+        }],
+        track: None,
+        subpatches: Vec::new(),
+    };
+    brainwash::project::save(&path, &project).unwrap();
+
+    let mut state = GuiState::new(8, 8);
+    state.load_project(&path).unwrap();
+    assert_eq!(
+        state.modules()[0].parameters()[0].value_label(),
+        format!("missing: {sample_name}")
+    );
+    assert!(state.document_status().contains("missing sample files"));
+
+    let relinked = project_path("relinked-sample");
+    fs::write(&relinked, b"sample").unwrap();
+    let module = state.modules()[0].id();
+    assert!(state.relink_sample(module, &relinked));
+    assert_eq!(
+        state.modules()[0].parameters()[0].value_label(),
+        relinked.to_string_lossy()
+    );
+    assert!(state.dirty());
+
+    let saved = project_path("sample-relinked-save");
+    assert!(state.save_project(&saved));
+    let saved_project = brainwash::project::load(&saved).unwrap();
+    let brainwash::project::ModuleParams::Sample { file_name, .. } =
+        &saved_project.modules[0].params
+    else {
+        panic!("expected sample module parameters");
+    };
+    assert_eq!(file_name, &relinked.to_string_lossy());
+
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(relinked);
+    let _ = fs::remove_file(saved);
+}
+
+#[test]
 fn load_project_replaces_state_from_project_file() {
     let path = project_path("load");
     fs::write(
@@ -2772,8 +2969,7 @@ fn load_project_replaces_state_from_project_file() {
       y: 2,
       params: Osc(
         wave: Squ,
-        freq: (unit: Hz, seconds: 0.00227, samples: 100.0, bar_num: 1, bar_denom: 4, hz: 440.0),
-        shift: 0.0,
+        frequency: 440.0,
         gain: 0.75,
         uni: false,
         connected: 255,
@@ -2815,13 +3011,12 @@ fn load_project_replaces_state_from_project_file() {
         .unwrap();
     assert_eq!(osc.position(), GridPos::new(1, 2));
     assert_eq!(osc.parameters()[0].value_label(), "square");
-    assert_eq!(osc.parameters()[1].value_label(), "440 hz");
-    assert_eq!(osc.parameters()[3].value_label(), "0.75");
+    assert_eq!(osc.parameters()[1].value_label(), "440.00");
+    assert_eq!(osc.parameters()[2].value_label(), "0.75");
     assert!(!osc.parameters()[0].connected());
     assert!(osc.parameters()[1].connected());
     assert!(osc.parameters()[2].connected());
-    assert!(osc.parameters()[3].connected());
-    assert!(!osc.parameters()[4].connected());
+    assert!(!osc.parameters()[3].connected());
 
     let output = state
         .modules()

@@ -1,6 +1,6 @@
 use brainwash::compile::{CompiledPatch, PatchEngine};
 use brainwash::patch::{Module, Patch, Wave};
-use brainwash::sample::{Sample, Unit};
+use brainwash::sample::Unit;
 use brainwash::time::{Hertz, SampleRate};
 
 fn main() {
@@ -9,7 +9,6 @@ fn main() {
     let osc = patch.insert(Module::Osc {
         wave: Wave::Sine,
         frequency: Hertz::new(440.0).unwrap(),
-        shift: Sample::ZERO,
         gain: Unit::ONE,
         unipolar: false,
     });

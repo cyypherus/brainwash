@@ -95,6 +95,8 @@ pub enum StandardModule {
     Gate,
     Degree,
     DegreeGate,
+    Rate,
+    Transpose,
     Osc,
     Rise,
     Fall,
@@ -160,10 +162,16 @@ pub enum ModuleParams {
     DegreeGate {
         degree: i32,
     },
+    Rate {
+        time: TimeValue,
+    },
+    Transpose {
+        semitones: f32,
+        connected: u8,
+    },
     Osc {
         wave: WaveType,
-        freq: TimeValue,
-        shift: f32,
+        frequency: f32,
         gain: f32,
         uni: bool,
         connected: u8,
