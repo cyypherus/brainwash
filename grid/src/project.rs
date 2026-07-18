@@ -267,17 +267,310 @@ fn is_right(orientation: &Orientation) -> bool {
     *orientation == Orientation::Right
 }
 
-pub fn from_str(input: &str) -> Result<Project, ron::error::SpannedError> {
-    ron::from_str(input)
+fn project_params_match(kind: ModuleKind, params: &ModuleParams) -> bool {
+    matches!(
+        (kind, params),
+        (ModuleKind::Routing(_), ModuleParams::None)
+            | (
+                ModuleKind::Standard(StandardModule::Primitive),
+                ModuleParams::Primitive { .. }
+            )
+            | (
+                ModuleKind::Composition(CompositionModule::Input),
+                ModuleParams::CompositionInput { .. }
+            )
+            | (
+                ModuleKind::Composition(CompositionModule::Output),
+                ModuleParams::CompositionOutput { .. }
+            )
+            | (
+                ModuleKind::Composition(CompositionModule::Composition(_)),
+                ModuleParams::Composition { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Freq),
+                ModuleParams::None
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Gate),
+                ModuleParams::None
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Degree),
+                ModuleParams::None
+            )
+            | (
+                ModuleKind::Standard(StandardModule::DegreeGate),
+                ModuleParams::DegreeGate { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Rate),
+                ModuleParams::Rate { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Osc),
+                ModuleParams::Osc { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Rise),
+                ModuleParams::Rise { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Fall),
+                ModuleParams::Fall { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Ramp),
+                ModuleParams::Ramp { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Envelope),
+                ModuleParams::Envelope { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Lpf),
+                ModuleParams::Filter { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Hpf),
+                ModuleParams::Filter { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Comb),
+                ModuleParams::Comb { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Allpass),
+                ModuleParams::Allpass { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Delay),
+                ModuleParams::Delay { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::DelayTap(_)),
+                ModuleParams::DelayTap { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Mul),
+                ModuleParams::Mul { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Add),
+                ModuleParams::Add { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Gt),
+                ModuleParams::Gt { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Lt),
+                ModuleParams::Lt { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Switch),
+                ModuleParams::Switch { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Rng),
+                ModuleParams::None
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Sample),
+                ModuleParams::Sample { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Probe),
+                ModuleParams::Probe { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Output),
+                ModuleParams::Output { .. }
+            )
+    )
+}
+
+fn validate_project_params(params: &ModuleParams) -> Result<(), String> {
+    match params {
+        ModuleParams::Rate { time } => validate_project_time(*time),
+        ModuleParams::Osc { frequency, .. } => validate_finite(*frequency),
+        ModuleParams::Rise { time, .. }
+        | ModuleParams::Fall { time, .. }
+        | ModuleParams::Delay { time, .. } => validate_project_time(*time),
+        ModuleParams::Ramp { value, time, .. } => {
+            validate_finite(*value)?;
+            validate_project_time(*time)
+        }
+        ModuleParams::Envelope { points, .. } => {
+            for point in points {
+                validate_finite(point.time)?;
+                validate_finite(point.value)?;
+            }
+            Ok(())
+        }
+        ModuleParams::Filter { freq, q, .. } => {
+            validate_finite(*freq)?;
+            validate_finite(*q)
+        }
+        ModuleParams::Comb {
+            time,
+            feedback,
+            damp,
+            ..
+        } => {
+            validate_project_time(*time)?;
+            validate_finite(*feedback)?;
+            validate_finite(*damp)
+        }
+        ModuleParams::Allpass { time, feedback, .. } => {
+            validate_project_time(*time)?;
+            validate_finite(*feedback)
+        }
+        ModuleParams::Mul { a, b, .. }
+        | ModuleParams::Add { a, b, .. }
+        | ModuleParams::Gt { a, b, .. }
+        | ModuleParams::Lt { a, b, .. }
+        | ModuleParams::Switch { a, b, .. } => {
+            validate_finite(*a)?;
+            validate_finite(*b)
+        }
+        ModuleParams::Output { gain, .. } | ModuleParams::DelayTap { gain } => {
+            validate_finite(*gain)
+        }
+        ModuleParams::None
+        | ModuleParams::Primitive { .. }
+        | ModuleParams::DegreeGate { .. }
+        | ModuleParams::Sample { .. }
+        | ModuleParams::Probe { .. }
+        | ModuleParams::Composition { .. } => Ok(()),
+        ModuleParams::CompositionInput { label, value, .. } => {
+            validate_finite(*value)?;
+            if label.trim().is_empty() {
+                Err("empty composition port label".to_string())
+            } else {
+                Ok(())
+            }
+        }
+        ModuleParams::CompositionOutput { label } => {
+            if label.trim().is_empty() {
+                Err("empty composition port label".to_string())
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+fn validate_project_time(value: TimeValue) -> Result<(), String> {
+    validate_finite(value.seconds)?;
+    validate_finite(value.samples)?;
+    validate_finite(value.hz)?;
+    if value.bar_denom == 0 {
+        Err("invalid bar denominator".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_finite(value: f32) -> Result<(), String> {
+    if value.is_finite() {
+        Ok(())
+    } else {
+        Err("non-finite project value".to_string())
+    }
+}
+
+fn validate_module(module: &ModuleDef) -> Result<(), String> {
+    if !project_params_match(module.kind, &module.params) {
+        return Err(format!(
+            "module {} has mismatched params",
+            module.id.value()
+        ));
+    }
+    validate_project_params(&module.params)
+}
+
+fn validate_project(project: &Project) -> Result<(), String> {
+    validate_finite(project.bpm)?;
+    validate_finite(project.bars)?;
+    for module in &project.modules {
+        validate_module(module)?;
+    }
+    for composition in &project.compositions {
+        for module in &composition.modules {
+            validate_module(module)?;
+        }
+    }
+    Ok(())
+}
+
+fn from_str(input: &str) -> io::Result<Project> {
+    let project =
+        ron::from_str(input).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    validate_project(&project)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    Ok(project)
 }
 
 pub fn load(path: &Path) -> io::Result<Project> {
     let input = fs::read_to_string(path)?;
-    from_str(&input).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    from_str(&input)
 }
 
 pub fn save(path: &Path, project: &Project) -> io::Result<()> {
+    validate_project(project).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let output = ron::to_string(project)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     fs::write(path, output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_rejects_module_kind_and_params_disagreement() {
+        let error = from_str(
+            r#"(
+                modules: [(
+                    id: 1,
+                    kind: Standard(Output),
+                    x: 0,
+                    y: 0,
+                    params: None,
+                )],
+            )"#,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn project_rejects_invalid_inactive_time_value() {
+        let error = from_str(
+            r#"(
+                modules: [(
+                    id: 1,
+                    kind: Standard(Rise),
+                    x: 0,
+                    y: 0,
+                    params: Rise(
+                        time: (
+                            unit: Seconds,
+                            seconds: 0.1,
+                            samples: 100.0,
+                            bar_num: 1,
+                            bar_denom: 0,
+                            hz: 10.0,
+                        ),
+                        connected: 0,
+                    ),
+                )],
+            )"#,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    }
 }
