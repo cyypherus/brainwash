@@ -1,35 +1,25 @@
+use crate::effect::Distortion;
+use crate::osc::Wave;
 use crate::sample::{Sample, Unit};
-use crate::time::{Duration, Hertz};
+use crate::time::{Duration, Hertz, Seconds};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ModuleId(pub(crate) u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Wave {
-    Sine,
-    Square,
-    Triangle,
-    Saw,
-    Noise,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Distortion {
-    Clip,
-    Tanh,
-    Fold,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinaryOp {
     Multiply,
     Add,
+    Subtract,
+    Divide,
+    Power,
     GreaterThan,
     LessThan,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum InputKind {
     In,
     Gate,
@@ -44,7 +34,7 @@ pub enum InputKind {
     Feedback,
     Damp,
     Room,
-    Mod,
+    Mix,
     Diff,
     Drive,
     Asym,
@@ -63,31 +53,10 @@ pub enum InputKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
-pub struct Drive(f32);
-
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct Gain(f32);
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct CompressorRatio(f32);
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AdsrShape {
-    pub(crate) attack: Duration,
-    pub(crate) decay: Duration,
-    pub(crate) sustain: Unit,
-    pub(crate) release: Duration,
-}
-
-impl Drive {
-    pub fn new(value: f32) -> Option<Self> {
-        (value.is_finite() && value >= 0.0).then_some(Self(value))
-    }
-
-    pub(crate) fn value(self) -> f32 {
-        self.0
-    }
-}
 
 impl Gain {
     pub fn new(value: f32) -> Option<Self> {
@@ -109,19 +78,12 @@ impl CompressorRatio {
     }
 }
 
-impl AdsrShape {
-    pub fn new(attack: Duration, decay: Duration, sustain: Unit, release: Duration) -> Self {
-        Self {
-            attack,
-            decay,
-            sustain,
-            release,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub enum Module {
+    Input {
+        kind: InputKind,
+        default: Sample,
+    },
     Freq,
     Gate,
     Degree,
@@ -129,15 +91,11 @@ pub enum Module {
         target: i32,
     },
     Constant(Sample),
+    Absolute,
     Pass,
-    Transpose {
-        semitones: Sample,
-    },
     Osc {
         wave: Wave,
         frequency: Hertz,
-        gain: Unit,
-        unipolar: bool,
     },
     Rise {
         time: Duration,
@@ -148,10 +106,6 @@ pub enum Module {
     Ramp {
         value: Sample,
         time: Duration,
-    },
-    Adsr {
-        attack_ratio: Unit,
-        sustain: Unit,
     },
     Envelope {
         points: Arc<Vec<EnvPoint>>,
@@ -175,30 +129,13 @@ pub enum Module {
         time: Duration,
         feedback: Unit,
     },
-    DelayTap {
-        gain: Unit,
+    VariableDelay {
+        max_time: Duration,
     },
-    Reverb {
-        room: Unit,
-        damp: Unit,
-        mod_depth: Unit,
-        diffusion: Unit,
-    },
-    Distortion {
-        kind: Distortion,
-        drive: Drive,
-    },
-    Compressor {
-        threshold: Unit,
-        ratio: CompressorRatio,
-        attack: Duration,
-        release: Duration,
-        makeup: Gain,
-    },
-    Flanger {
-        rate: Hertz,
-        depth: Unit,
-        feedback: Unit,
+    Waveshaper(Distortion),
+    Slew {
+        rise: Seconds,
+        fall: Seconds,
     },
     Binary {
         op: BinaryOp,
@@ -214,17 +151,18 @@ pub enum Module {
         samples: Arc<Vec<Sample>>,
     },
     Probe,
+    Composition(Box<Composition>),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EnvPoint {
     pub time: Unit,
-    pub value: Unit,
+    pub value: Sample,
     pub curve: bool,
 }
 
 impl EnvPoint {
-    pub fn new(time: Unit, value: Unit, curve: bool) -> Self {
+    pub fn new(time: Unit, value: Sample, curve: bool) -> Self {
         Self { time, value, curve }
     }
 }
@@ -242,6 +180,32 @@ pub enum ConnectError {
     ClosedInput,
     InputOccupied,
     MissingModule,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Composition {
+    name: String,
+    patch: Patch,
+    inputs: Vec<CompositionInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompositionInput {
+    label: String,
+    kind: InputKind,
+    module: ModuleId,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompositionError {
+    Cycle,
+    DuplicateLabel,
+    DuplicateInput,
+    EmptyLabel,
+    EmptyName,
+    InputKindMismatch,
+    MissingInput,
+    MissingOutput,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -272,7 +236,7 @@ impl Patch {
             from,
             InputPort {
                 module: to,
-                input: module.inputs()[0],
+                input: module.input_kinds()[0],
             },
         )
     }
@@ -313,6 +277,20 @@ impl Patch {
         Ok(())
     }
 
+    pub fn module_entries(&self) -> impl Iterator<Item = (ModuleId, &Module)> {
+        self.modules.iter().map(|(id, module)| (*id, module))
+    }
+
+    pub fn connection_entries(&self) -> impl Iterator<Item = (ModuleId, InputPort)> + '_ {
+        self.connections
+            .iter()
+            .map(|connection| (connection.from, connection.input))
+    }
+
+    pub fn output_module(&self) -> Option<ModuleId> {
+        self.output
+    }
+
     fn module(&self, id: ModuleId) -> Option<&Module> {
         self.modules
             .iter()
@@ -332,72 +310,194 @@ impl Patch {
     }
 }
 
+impl ModuleId {
+    pub fn value(self) -> u32 {
+        self.0
+    }
+}
+
+impl InputPort {
+    pub fn module(self) -> ModuleId {
+        self.module
+    }
+
+    pub fn kind(self) -> InputKind {
+        self.input
+    }
+}
+
+impl Composition {
+    pub fn new(
+        name: impl Into<String>,
+        patch: Patch,
+        inputs: impl IntoIterator<Item = (String, InputKind, ModuleId)>,
+    ) -> Result<Self, CompositionError> {
+        if patch.output.is_none() {
+            return Err(CompositionError::MissingOutput);
+        }
+        let name = name.into();
+        if name.trim().is_empty() {
+            return Err(CompositionError::EmptyName);
+        }
+        let inputs = inputs
+            .into_iter()
+            .map(|(label, kind, module)| CompositionInput {
+                label,
+                kind,
+                module,
+            })
+            .collect::<Vec<_>>();
+        for (index, input) in inputs.iter().enumerate() {
+            if input.label.trim().is_empty() {
+                return Err(CompositionError::EmptyLabel);
+            }
+            if inputs[..index]
+                .iter()
+                .any(|candidate| candidate.label == input.label)
+            {
+                return Err(CompositionError::DuplicateLabel);
+            }
+            if inputs[..index]
+                .iter()
+                .any(|candidate| candidate.kind == input.kind)
+            {
+                return Err(CompositionError::DuplicateInput);
+            }
+            match patch.module(input.module) {
+                Some(Module::Input {
+                    kind: candidate, ..
+                }) if *candidate == input.kind => {}
+                Some(Module::Input { .. }) => return Err(CompositionError::InputKindMismatch),
+                Some(_) => return Err(CompositionError::InputKindMismatch),
+                None => return Err(CompositionError::MissingInput),
+            }
+        }
+        for (module, definition) in &patch.modules {
+            if matches!(definition, Module::Input { .. })
+                && !inputs.iter().any(|input| input.module == *module)
+            {
+                return Err(CompositionError::MissingInput);
+            }
+        }
+        let mut indegree = vec![0usize; patch.modules.len()];
+        let mut outgoing = vec![Vec::new(); patch.modules.len()];
+        for connection in &patch.connections {
+            let source = patch
+                .modules
+                .iter()
+                .position(|(id, _)| *id == connection.from)
+                .ok_or(CompositionError::MissingInput)?;
+            let target = patch
+                .modules
+                .iter()
+                .position(|(id, _)| *id == connection.input.module)
+                .ok_or(CompositionError::MissingInput)?;
+            outgoing[source].push(target);
+            indegree[target] += 1;
+        }
+        let mut ready = indegree
+            .iter()
+            .enumerate()
+            .filter_map(|(index, count)| (*count == 0).then_some(index))
+            .collect::<Vec<_>>();
+        let mut visited = 0;
+        while let Some(source) = ready.pop() {
+            visited += 1;
+            for target in &outgoing[source] {
+                indegree[*target] -= 1;
+                if indegree[*target] == 0 {
+                    ready.push(*target);
+                }
+            }
+        }
+        if visited != patch.modules.len() {
+            return Err(CompositionError::Cycle);
+        }
+        Ok(Self {
+            name,
+            patch,
+            inputs,
+        })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn patch(&self) -> &Patch {
+        &self.patch
+    }
+
+    pub(crate) fn input_index(&self, module: ModuleId) -> Option<usize> {
+        self.inputs.iter().position(|input| input.module == module)
+    }
+
+    pub fn inputs(&self) -> &[CompositionInput] {
+        &self.inputs
+    }
+}
+
+impl CompositionInput {
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub fn kind(&self) -> InputKind {
+        self.kind
+    }
+
+    pub fn module(&self) -> ModuleId {
+        self.module
+    }
+}
+
 impl Module {
-    pub fn inputs(&self) -> &'static [InputKind] {
+    pub fn input_kinds(&self) -> Vec<InputKind> {
         match self {
+            Module::Input { .. } => vec![],
             Module::Freq
             | Module::Gate
             | Module::Degree
             | Module::DegreeGate { .. }
-            | Module::Constant(_) => &[],
-            Module::Random => &[InputKind::Gate],
-            Module::Pass | Module::DelayTap { .. } | Module::Probe => &[InputKind::In],
-            Module::Rise { .. } | Module::Fall { .. } => &[InputKind::Gate, InputKind::Time],
-            Module::Ramp { .. } => &[InputKind::Value, InputKind::Time],
-            Module::Adsr { .. } => &[
-                InputKind::Rise,
-                InputKind::Fall,
-                InputKind::Attack,
-                InputKind::Sustain,
-            ],
-            Module::Envelope { .. } => &[InputKind::Phase],
+            | Module::Constant(_) => vec![],
+            Module::Absolute => vec![InputKind::In],
+            Module::Random => vec![InputKind::Gate],
+            Module::Pass | Module::Probe => vec![InputKind::In],
+            Module::Rise { .. } | Module::Fall { .. } => vec![InputKind::Gate, InputKind::Time],
+            Module::Ramp { .. } => vec![InputKind::Value, InputKind::Time],
+            Module::Envelope { .. } => vec![InputKind::Phase],
             Module::Lowpass { .. } | Module::Highpass { .. } => {
-                &[InputKind::In, InputKind::Freq, InputKind::Q]
+                vec![InputKind::In, InputKind::Freq, InputKind::Q]
             }
-            Module::Comb { .. } => &[
+            Module::Comb { .. } => vec![
                 InputKind::In,
                 InputKind::Time,
                 InputKind::Feedback,
                 InputKind::Damp,
             ],
-            Module::Allpass { .. } => &[InputKind::In, InputKind::Time, InputKind::Feedback],
-            Module::Delay { .. } => &[InputKind::In, InputKind::Time],
-            Module::Reverb { .. } => &[
-                InputKind::In,
-                InputKind::Room,
-                InputKind::Damp,
-                InputKind::Mod,
-                InputKind::Diff,
-            ],
-            Module::Distortion { .. } => &[InputKind::In, InputKind::Drive, InputKind::Asym],
-            Module::Compressor { .. } => &[
-                InputKind::In,
-                InputKind::Thresh,
-                InputKind::Ratio,
-                InputKind::Attack,
-                InputKind::Release,
-                InputKind::Gain,
-            ],
-            Module::Flanger { .. } => &[
-                InputKind::In,
-                InputKind::Rate,
-                InputKind::Depth,
-                InputKind::Feedback,
-            ],
-            Module::Sample { .. } => &[InputKind::Position],
-            Module::Binary { .. } => &[InputKind::A, InputKind::B],
-            Module::Transpose { .. } => &[InputKind::In, InputKind::Semitones],
-            Module::Osc { .. } => &[InputKind::Freq, InputKind::Gain],
-            Module::Switch { .. } => &[InputKind::Select, InputKind::A, InputKind::B],
+            Module::Allpass { .. } => vec![InputKind::In, InputKind::Time, InputKind::Feedback],
+            Module::Delay { .. } => vec![InputKind::In, InputKind::Time],
+            Module::VariableDelay { .. } => {
+                vec![InputKind::In, InputKind::Time, InputKind::Feedback]
+            }
+            Module::Waveshaper(_) => vec![InputKind::In],
+            Module::Slew { .. } => vec![InputKind::In, InputKind::Rise, InputKind::Fall],
+            Module::Sample { .. } => vec![InputKind::Position],
+            Module::Binary { .. } => vec![InputKind::A, InputKind::B],
+            Module::Osc { .. } => vec![InputKind::Freq],
+            Module::Switch { .. } => vec![InputKind::Select, InputKind::A, InputKind::B],
+            Module::Composition(composition) => {
+                composition.inputs.iter().map(|input| input.kind).collect()
+            }
         }
     }
 
     pub(crate) fn input_count(&self) -> usize {
-        self.inputs().len()
+        self.input_kinds().len()
     }
 
     pub(crate) fn input_index(&self, input: InputKind) -> Option<usize> {
-        self.inputs()
+        self.input_kinds()
             .iter()
             .position(|candidate| *candidate == input)
     }
@@ -439,12 +539,12 @@ mod tests {
     fn connect_rejects_multi_input_targets() {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Gate);
-        let target = patch.insert(Module::Osc {
-            wave: Wave::Sine,
-            frequency: Hertz::new(440.0).unwrap(),
-            gain: Unit::ONE,
-            unipolar: false,
-        });
+        let target = patch.insert(crate::preset::oscillator(
+            Wave::Sine,
+            Hertz::new(440.0).unwrap(),
+            Unit::ONE,
+            false,
+        ));
 
         assert_eq!(
             patch.connect(source, target),
@@ -457,12 +557,12 @@ mod tests {
     fn checked_input_port_stores_target_slot() {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Gate);
-        let target = patch.insert(Module::Osc {
-            wave: Wave::Sine,
-            frequency: Hertz::new(440.0).unwrap(),
-            gain: Unit::ONE,
-            unipolar: false,
-        });
+        let target = patch.insert(crate::preset::oscillator(
+            Wave::Sine,
+            Hertz::new(440.0).unwrap(),
+            Unit::ONE,
+            false,
+        ));
         let port = patch.input_port(target, InputKind::Gain).unwrap();
 
         patch.connect_input(source, port).unwrap();
@@ -485,7 +585,7 @@ mod tests {
             Module::Lowpass {
                 cutoff: Hertz::new(1000.0).unwrap()
             }
-            .inputs(),
+            .input_kinds(),
             &[InputKind::In, InputKind::Freq, InputKind::Q]
         );
         assert_eq!(
@@ -494,7 +594,7 @@ mod tests {
                 a: Sample::ZERO,
                 b: Sample::ZERO
             }
-            .inputs(),
+            .input_kinds(),
             &[InputKind::A, InputKind::B]
         );
     }
@@ -508,9 +608,9 @@ mod tests {
         assert!(CompressorRatio::new(0.5).is_none());
         assert!(Unit::new(1.1).is_none());
 
-        let point = EnvPoint::new(unit(0.25), unit(0.75), true);
+        let point = EnvPoint::new(unit(0.25), Sample::new(-0.75).unwrap(), true);
 
         assert_eq!(point.time.value(), 0.25);
-        assert_eq!(point.value.value(), 0.75);
+        assert_eq!(point.value.value(), -0.75);
     }
 }

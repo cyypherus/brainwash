@@ -525,7 +525,9 @@ dependencies = [
  "cpal",
  "haven-ui",
  "rfd",
+ "ron",
  "rtrb",
+ "serde",
 ]
 
 [[package]]

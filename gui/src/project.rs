@@ -16,11 +16,11 @@ pub struct Project {
     #[serde(default)]
     pub track: Option<String>,
     #[serde(default)]
-    pub subpatches: Vec<SubpatchDef>,
+    pub compositions: Vec<CompositionDef>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SubpatchDef {
+pub struct CompositionDef {
     pub id: u32,
     pub name: String,
     pub color: (u8, u8, u8),
@@ -42,7 +42,7 @@ pub struct ModuleDef {
 pub struct ModuleId(pub u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct SubpatchId(pub u32);
+pub struct CompositionId(pub u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Orientation {
@@ -83,14 +83,15 @@ pub enum RoutingModule {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SubpatchModule {
-    SubIn,
-    SubOut,
-    SubPatch(SubpatchId),
+pub enum CompositionModule {
+    Input,
+    Output,
+    Composition(CompositionId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StandardModule {
+    Primitive,
     Freq,
     Gate,
     Degree,
@@ -127,7 +128,7 @@ pub enum StandardModule {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ModuleKind {
     Routing(RoutingModule),
-    Subpatch(SubpatchModule),
+    Composition(CompositionModule),
     Standard(StandardModule),
 }
 
@@ -159,6 +160,9 @@ pub struct EnvPoint {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ModuleParams {
     None,
+    Primitive {
+        source: String,
+    },
     DegreeGate {
         degree: i32,
     },
@@ -172,8 +176,6 @@ pub enum ModuleParams {
     Osc {
         wave: WaveType,
         frequency: f32,
-        gain: f32,
-        uni: bool,
         connected: u8,
     },
     Rise {
@@ -221,7 +223,7 @@ pub enum ModuleParams {
     Reverb {
         room: f32,
         damp: f32,
-        mod_depth: f32,
+        mix: f32,
         diffusion: f32,
         connected: u8,
     },
@@ -284,7 +286,15 @@ pub enum ModuleParams {
         gain: f32,
         connected: u8,
     },
-    SubPatch {
+    CompositionInput {
+        label: String,
+        value: f32,
+        connected: bool,
+    },
+    CompositionOutput {
+        label: String,
+    },
+    Composition {
         inputs: u8,
         outputs: u8,
         color: (u8, u8, u8),

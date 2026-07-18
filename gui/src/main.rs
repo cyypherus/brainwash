@@ -3,7 +3,8 @@ use brainwash_gui::model::{GuiState, Mode};
 use brainwash_gui::view::main_view;
 use haven::winit::WinitApp;
 use haven::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn main() {
     let mut audio = match AudioRuntime::start() {
@@ -15,6 +16,9 @@ fn main() {
         }
     };
     let mut state = GuiState::default();
+    if let Some(path) = user_modules_dir() {
+        state.set_user_compositions(load_modules(&path));
+    }
     match &mut audio {
         Some(audio) => match audio.take_handle() {
             Some(handle) => state.set_audio(handle),
@@ -70,6 +74,15 @@ fn frame(state: &mut GuiState, app: &mut PaneState) {
         app.redraw();
         return;
     }
+    if state.take_open_modules_request() {
+        if let Some(path) = user_modules_dir() {
+            match std::fs::create_dir_all(&path).and_then(|()| reveal(&path)) {
+                Ok(()) => state.set_user_compositions(load_modules(&path)),
+                Err(error) => eprintln!("Could not open modules folder: {error}"),
+            }
+        }
+        return;
+    }
     if let Some(module) = state.take_relink_sample_request() {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("WAV audio", &["wav", "wave"])
@@ -92,4 +105,62 @@ fn frame(state: &mut GuiState, app: &mut PaneState) {
     };
     let _ = state.load_project(&path);
     app.redraw();
+}
+
+fn load_modules(path: &Path) -> Vec<brainwash::patch::Composition> {
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return Vec::new();
+    };
+    let mut paths = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("bwm"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|path| match brainwash::persist::load_composition(&path) {
+            Ok(composition) => Some(composition),
+            Err(_) => {
+                eprintln!("Could not load module {}", path.display());
+                None
+            }
+        })
+        .collect()
+}
+
+fn user_modules_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        return std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .map(|home| home.join("Library/Application Support/Brainwash/Modules"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        return std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .map(|data| data.join("Brainwash/Modules"));
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .map(|home| home.join(".local/share"))
+            })
+            .map(|data| data.join("brainwash/modules"))
+    }
+}
+
+fn reveal(path: &Path) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = Command::new("explorer");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = Command::new("xdg-open");
+    command.arg(path).spawn().map(|_| ())
 }

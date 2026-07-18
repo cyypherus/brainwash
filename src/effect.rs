@@ -21,8 +21,8 @@ impl Drive {
 }
 
 impl Distortion {
-    pub fn process(self, input: Sample, drive: Drive) -> Sample {
-        let driven = input.value() * drive.value();
+    pub fn process(self, input: Sample) -> Sample {
+        let driven = input.value();
         let value = match self {
             Distortion::Clip => driven.clamp(-1.0, 1.0),
             Distortion::Tanh => driven.tanh(),

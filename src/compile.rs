@@ -1,6 +1,6 @@
 use crate::delay::Delay;
-use crate::effect::{Distortion, Drive};
-use crate::osc::{Oscillator, Wave};
+use crate::effect::Distortion;
+use crate::osc::Oscillator;
 use crate::patch::{BinaryOp, EnvPoint, Module, Patch};
 use crate::sample::{Frame, Sample, Unit};
 use crate::time::{Duration, Hertz, SampleRate};
@@ -11,6 +11,7 @@ use std::sync::Arc;
 pub struct CompiledPatch {
     nodes: Vec<Node>,
     inputs: Vec<Vec<Option<usize>>>,
+    input_values: Vec<Vec<Option<Sample>>>,
     values: Vec<Sample>,
     output: usize,
     probes: Vec<(crate::patch::ModuleId, usize)>,
@@ -48,6 +49,10 @@ pub enum UpdateRejected<T = CompiledPatch> {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Node {
+    Input {
+        index: usize,
+        default: Sample,
+    },
     Silence,
     Freq,
     Gate,
@@ -56,20 +61,15 @@ enum Node {
         target: i32,
     },
     Constant(Sample),
+    Absolute,
     Pass,
-    Transpose {
-        semitones: f32,
-    },
     Osc {
         osc: Oscillator,
         frequency: Hertz,
-        gain: Unit,
-        unipolar: bool,
     },
     Rise(GateRamp),
     Fall(GateRamp),
     Ramp(Ramp),
-    Adsr(Adsr),
     Envelope {
         points: Arc<Vec<EnvPoint>>,
     },
@@ -78,16 +78,9 @@ enum Node {
     Comb(Comb),
     Allpass(Allpass),
     Delay(Delay),
-    DelayTap {
-        gain: Unit,
-    },
-    Reverb(Reverb),
-    Distortion {
-        kind: Distortion,
-        drive: Drive,
-    },
-    Compressor(Compressor),
-    Flanger(Flanger),
+    VariableDelay(VariableDelay),
+    Waveshaper(Distortion),
+    Slew(Slew),
     Binary {
         op: BinaryOp,
         a: f32,
@@ -106,6 +99,7 @@ enum Node {
         samples: Arc<Vec<Sample>>,
     },
     Probe,
+    Composition(Box<CompiledPatch>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -140,15 +134,6 @@ struct Ramp {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Adsr {
-    attack_ratio: Unit,
-    sustain: Unit,
-    release_start: f32,
-    last_rise: f32,
-    last_fall: f32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
 struct OnePole {
     rate: SampleRate,
     cutoff: Hertz,
@@ -171,41 +156,22 @@ struct Allpass {
     feedback: Unit,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-struct Reverb {
-    delays: Vec<Vec<f32>>,
-    indices: Vec<usize>,
-    room: Unit,
-    damp: Unit,
-    mod_depth: Unit,
-    diffusion: Unit,
-    store: Vec<f32>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Compressor {
-    threshold: Unit,
-    ratio: f32,
-    attack: Duration,
-    release: Duration,
-    makeup: f32,
-    envelope: f32,
+struct Slew {
+    rate: SampleRate,
+    rise: crate::time::Seconds,
+    fall: crate::time::Seconds,
+    value: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct Flanger {
+struct VariableDelay {
     buffer: Vec<f32>,
     index: usize,
-    phase: f32,
-    rate: Hertz,
-    depth: Unit,
-    feedback: Unit,
-    last: f32,
+    rate: SampleRate,
 }
 
 const UPDATE_FADE_FRAMES: usize = 128;
-const MAX_INPUTS: usize = 6;
-
 impl Default for PatchControls {
     fn default() -> Self {
         Self {
@@ -221,6 +187,7 @@ impl CompiledPatch {
         Self {
             nodes: vec![Node::Silence],
             inputs: vec![Vec::new()],
+            input_values: vec![Vec::new()],
             values: vec![Sample::ZERO],
             output: 0,
             probes: Vec::new(),
@@ -229,6 +196,14 @@ impl CompiledPatch {
     }
 
     pub fn new(patch: &Patch, rate: SampleRate) -> Result<Self, CompileError> {
+        Self::compile(patch, rate, None)
+    }
+
+    fn compile(
+        patch: &Patch,
+        rate: SampleRate,
+        composition: Option<&crate::patch::Composition>,
+    ) -> Result<Self, CompileError> {
         let order = compile_order(patch)?;
         let mut rank_by_module = Vec::with_capacity(order.len());
         for (rank, module_index) in order.iter().copied().enumerate() {
@@ -285,7 +260,12 @@ impl CompiledPatch {
 
         let mut nodes = Vec::with_capacity(order.len());
         for module_index in order.iter().copied() {
-            nodes.push(create_node(&patch.modules()[module_index].1, rate)?);
+            nodes.push(create_node(
+                &patch.modules()[module_index].1,
+                rate,
+                composition,
+                patch.modules()[module_index].0,
+            )?);
         }
         let output = patch
             .output_id()
@@ -297,6 +277,10 @@ impl CompiledPatch {
             .ok_or(CompileError::MissingOutput)?;
         Ok(Self {
             nodes,
+            input_values: inputs
+                .iter()
+                .map(|inputs| vec![None; inputs.len()])
+                .collect(),
             inputs,
             values: vec![Sample::ZERO; patch.modules().len()],
             output,
@@ -310,9 +294,18 @@ impl CompiledPatch {
     }
 
     pub fn next_with_controls(&mut self, controls: PatchControls) -> Frame {
+        self.next_with_inputs(controls, &[])
+    }
+
+    fn next_with_inputs(&mut self, controls: PatchControls, external: &[Option<Sample>]) -> Frame {
         for idx in 0..self.nodes.len() {
-            let inputs = input_values(&self.inputs[idx], &self.values);
-            self.values[idx] = self.nodes[idx].process(&inputs, controls);
+            for (value, source) in self.input_values[idx]
+                .iter_mut()
+                .zip(self.inputs[idx].iter().copied())
+            {
+                *value = source.and_then(|source| self.values.get(source).copied());
+            }
+            self.values[idx] = self.nodes[idx].process(&self.input_values[idx], external, controls);
         }
         Frame::mono(self.values[self.output].clipped())
     }
@@ -400,10 +393,17 @@ impl PatchEngine {
 }
 
 impl Node {
-    fn process(&mut self, inputs: &[Option<Sample>], controls: PatchControls) -> Sample {
+    fn process(
+        &mut self,
+        inputs: &[Option<Sample>],
+        external: &[Option<Sample>],
+        controls: PatchControls,
+    ) -> Sample {
         let in0 = sample(inputs, 0);
-        let in1 = sample(inputs, 1);
         match self {
+            Node::Input { index, default } => {
+                external.get(*index).copied().flatten().unwrap_or(*default)
+            }
             Node::Silence => Sample::ZERO,
             Node::Freq => Sample::new(
                 controls
@@ -422,58 +422,20 @@ impl Node {
                 }
             }
             Node::Constant(value) => *value,
+            Node::Absolute => Sample::raw(in0.value().abs()),
             Node::Pass => Sample::raw(inputs.iter().flatten().map(|input| input.value()).sum()),
-            Node::Transpose { semitones } => Sample::raw(
-                in0.value()
-                    * 2.0_f32.powf(
-                        inputs
-                            .get(1)
-                            .copied()
-                            .flatten()
-                            .map_or(*semitones, |input| input.value())
-                            / 12.0,
-                    ),
-            ),
-            Node::Osc {
-                osc,
-                frequency,
-                gain,
-                unipolar,
-            } => {
+            Node::Osc { osc, frequency } => {
                 let frequency = inputs
                     .first()
                     .and_then(|input| input.and_then(|input| Hertz::new(input.value())))
                     .unwrap_or(*frequency);
-                let gain = inputs
-                    .get(1)
-                    .and_then(|input| input.and_then(|input| Unit::new(input.value())))
-                    .unwrap_or(*gain);
                 if let Some(frequency) = Hertz::new(frequency.value()) {
                     osc.set_frequency(frequency);
                 }
-                let mut value = osc.next().value();
-                if *unipolar {
-                    value = (value + 1.0) * 0.5;
-                }
-                Sample::raw(value * gain.value())
+                osc.next()
             }
             Node::Rise(ramp) | Node::Fall(ramp) => Sample::raw(ramp.next(in0.value())),
             Node::Ramp(ramp) => Sample::raw(ramp.next(in0.value())),
-            Node::Adsr(adsr) => {
-                if let Some(attack) = inputs
-                    .get(2)
-                    .and_then(|input| input.and_then(|input| Unit::new(input.value())))
-                {
-                    adsr.attack_ratio = attack;
-                }
-                if let Some(sustain) = inputs
-                    .get(3)
-                    .and_then(|input| input.and_then(|input| Unit::new(input.value())))
-                {
-                    adsr.sustain = sustain;
-                }
-                Sample::raw(adsr.next(in0.value(), in1.value()))
-            }
             Node::Envelope { points } => Sample::raw(envelope_value(points, in0.value())),
             Node::Lowpass(filter) => {
                 if let Some(cutoff) = inputs
@@ -496,11 +458,23 @@ impl Node {
             Node::Comb(comb) => Sample::raw(comb.next(in0.value())),
             Node::Allpass(allpass) => Sample::raw(allpass.next(in0.value())),
             Node::Delay(delay) => delay.process(in0),
-            Node::DelayTap { gain } => in0.attenuate(*gain),
-            Node::Reverb(reverb) => Sample::raw(reverb.next(in0.value())),
-            Node::Distortion { kind, drive } => kind.process(in0, *drive),
-            Node::Compressor(compressor) => Sample::raw(compressor.next(in0.value())),
-            Node::Flanger(flanger) => Sample::raw(flanger.next(in0.value())),
+            Node::VariableDelay(delay) => Sample::raw(delay.next(
+                in0.value(),
+                inputs.get(1).copied().flatten().map_or(0.0, Sample::value),
+                inputs.get(2).copied().flatten().map_or(0.0, Sample::value),
+            )),
+            Node::Waveshaper(kind) => kind.process(in0),
+            Node::Slew(slew) => {
+                if let Some(rise) = inputs.get(1).copied().flatten() {
+                    slew.rise = crate::time::Seconds::new(rise.value())
+                        .unwrap_or_else(|| crate::time::Seconds::new(0.0).unwrap());
+                }
+                if let Some(fall) = inputs.get(2).copied().flatten() {
+                    slew.fall = crate::time::Seconds::new(fall.value())
+                        .unwrap_or_else(|| crate::time::Seconds::new(0.0).unwrap());
+                }
+                Sample::raw(slew.next(in0.value()))
+            }
             Node::Binary { op, a, b } => {
                 let a = inputs
                     .first()
@@ -513,6 +487,15 @@ impl Node {
                 Sample::raw(match op {
                     BinaryOp::Multiply => a * b,
                     BinaryOp::Add => a + b,
+                    BinaryOp::Subtract => a - b,
+                    BinaryOp::Divide => {
+                        if b == 0.0 {
+                            0.0
+                        } else {
+                            a / b
+                        }
+                    }
+                    BinaryOp::Power => a.max(0.0).powf(b),
                     BinaryOp::GreaterThan => {
                         if a > b {
                             1.0
@@ -558,6 +541,7 @@ impl Node {
             }
             Node::Sample { samples } => Sample::raw(sample_value(samples, in0.value())),
             Node::Probe => in0,
+            Node::Composition(composition) => composition.next_with_inputs(controls, inputs).left(),
         }
     }
 }
@@ -636,38 +620,6 @@ impl Ramp {
     }
 }
 
-impl Adsr {
-    fn next(&mut self, rise: f32, fall: f32) -> f32 {
-        let rise = rise.clamp(0.0, 1.0);
-        let fall = fall.clamp(0.0, 1.0);
-        if fall < self.last_fall {
-            self.release_start = self.ads(rise);
-        }
-        self.last_rise = rise;
-        self.last_fall = fall;
-        if fall > 0.0 {
-            self.release_start * (1.0 - fall)
-        } else {
-            self.ads(rise)
-        }
-    }
-
-    fn ads(self, rise: f32) -> f32 {
-        let attack = self.attack_ratio.value();
-        let sustain = self.sustain.value();
-        if attack <= 0.0 {
-            sustain
-        } else if rise < attack {
-            rise / attack
-        } else if attack >= 1.0 {
-            1.0
-        } else {
-            let decay = (rise - attack) / (1.0 - attack);
-            1.0 + (sustain - 1.0) * decay
-        }
-    }
-}
-
 impl OnePole {
     fn lowpass(&mut self, input: Sample) -> Sample {
         let alpha = (self.cutoff.value() / self.rate.value() as f32).clamp(0.0, 1.0);
@@ -718,88 +670,41 @@ impl Allpass {
     }
 }
 
-impl Reverb {
-    fn new(rate: SampleRate, room: Unit, damp: Unit, mod_depth: Unit, diffusion: Unit) -> Self {
-        let scale = rate.value() as f32 / 44_100.0;
-        let sizes = [149, 211, 263, 293]
-            .iter()
-            .map(|size| ((*size as f32 * scale).round() as usize).max(1))
-            .collect::<Vec<_>>();
-        Self {
-            delays: sizes.iter().map(|size| vec![0.0; *size]).collect(),
-            indices: vec![0; sizes.len()],
-            room,
-            damp,
-            mod_depth,
-            diffusion,
-            store: vec![0.0; sizes.len()],
-        }
-    }
-
+impl Slew {
     fn next(&mut self, input: f32) -> f32 {
-        let mut sum = 0.0;
-        for idx in 0..self.delays.len() {
-            let position = self.indices[idx];
-            let delayed = self.delays[idx][position];
-            self.store[idx] =
-                delayed * (1.0 - self.damp.value()) + self.store[idx] * self.damp.value();
-            self.delays[idx][position] =
-                input * self.diffusion.value() + self.store[idx] * self.room.value();
-            self.indices[idx] = (position + 1) % self.delays[idx].len();
-            sum += delayed;
-        }
-        input * (1.0 - self.mod_depth.value() * 0.5) + sum * 0.25 * self.mod_depth.value()
-    }
-}
-
-impl Compressor {
-    fn next(&mut self, input: f32) -> f32 {
-        let level = input.abs();
-        let attack = duration_seconds(self.attack).max(0.0001);
-        let release = duration_seconds(self.release).max(0.0001);
-        let coeff = if level > self.envelope {
-            (-1.0 / (attack * 44_100.0)).exp()
+        let duration = if input > self.value {
+            self.rise
         } else {
-            (-1.0 / (release * 44_100.0)).exp()
+            self.fall
         };
-        self.envelope = coeff * self.envelope + (1.0 - coeff) * level;
-        if self.envelope <= self.threshold.value() {
-            return input * self.makeup;
-        }
-        let over = self.envelope / self.threshold.value().max(0.0001);
-        let gain = over.powf((1.0 / self.ratio.max(1.0)) - 1.0);
-        input * gain * self.makeup
+        let samples = Duration::Seconds(duration)
+            .samples(self.rate)
+            .value()
+            .max(1) as f32;
+        let coefficient = (-1.0 / samples).exp();
+        self.value = coefficient * self.value + (1.0 - coefficient) * input;
+        self.value
     }
 }
 
-impl Flanger {
-    fn new(rate: SampleRate, frequency: Hertz, depth: Unit, feedback: Unit) -> Self {
+impl VariableDelay {
+    fn new(rate: SampleRate, max_time: Duration) -> Self {
         Self {
-            buffer: vec![0.0; (rate.value() / 40).max(2) as usize],
+            buffer: vec![0.0; max_time.samples(rate).value().max(2) as usize],
             index: 0,
-            phase: 0.0,
-            rate: frequency,
-            depth,
-            feedback,
-            last: 0.0,
+            rate,
         }
     }
 
-    fn next(&mut self, input: f32) -> f32 {
-        self.phase += self.rate.value() / 44_100.0;
-        self.phase -= self.phase.floor();
-        let depth = self.depth.value();
-        let delay = 2.0
-            + (self.buffer.len() as f32 - 3.0)
-                * depth
-                * (self.phase * std::f32::consts::TAU).sin().mul_add(0.5, 0.5);
-        let read = (self.index + self.buffer.len() - delay as usize % self.buffer.len())
-            % self.buffer.len();
+    fn next(&mut self, input: f32, seconds: f32, feedback: f32) -> f32 {
+        let delay = (seconds.max(0.0) * self.rate.value() as f32)
+            .round()
+            .clamp(1.0, (self.buffer.len() - 1) as f32) as usize;
+        let read = (self.index + self.buffer.len() - delay) % self.buffer.len();
         let delayed = self.buffer[read];
-        self.buffer[self.index] = input + self.last * self.feedback.value();
+        self.buffer[self.index] = input + delayed * feedback.clamp(-0.999, 0.999);
         self.index = (self.index + 1) % self.buffer.len();
-        self.last = delayed;
-        input + delayed
+        delayed
     }
 }
 
@@ -856,41 +761,33 @@ fn module_index(patch: &Patch, id: crate::patch::ModuleId) -> Result<usize, Comp
         .ok_or(CompileError::MissingModule)
 }
 
-fn create_node(module: &Module, rate: SampleRate) -> Result<Node, CompileError> {
+fn create_node(
+    module: &Module,
+    rate: SampleRate,
+    composition: Option<&crate::patch::Composition>,
+    module_id: crate::patch::ModuleId,
+) -> Result<Node, CompileError> {
     Ok(match module {
+        Module::Input { default, .. } => Node::Input {
+            index: composition
+                .and_then(|composition| composition.input_index(module_id))
+                .ok_or(CompileError::InvalidInput)?,
+            default: *default,
+        },
         Module::Freq => Node::Freq,
         Module::Gate => Node::Gate,
         Module::Degree => Node::Degree,
         Module::DegreeGate { target } => Node::DegreeGate { target: *target },
         Module::Constant(value) => Node::Constant(*value),
+        Module::Absolute => Node::Absolute,
         Module::Pass => Node::Pass,
-        Module::Transpose { semitones } => Node::Transpose {
-            semitones: semitones.value(),
-        },
-        Module::Osc {
-            wave,
-            frequency,
-            gain,
-            unipolar,
-        } => Node::Osc {
-            osc: Oscillator::new(audio_wave(*wave), rate, *frequency),
+        Module::Osc { wave, frequency } => Node::Osc {
+            osc: Oscillator::new(*wave, rate, *frequency),
             frequency: *frequency,
-            gain: *gain,
-            unipolar: *unipolar,
         },
         Module::Rise { time } => Node::Rise(GateRamp::new(GateRampMode::Rise, *time, rate)),
         Module::Fall { time } => Node::Fall(GateRamp::new(GateRampMode::Fall, *time, rate)),
         Module::Ramp { value, time } => Node::Ramp(Ramp::new(value.value(), *time, rate)),
-        Module::Adsr {
-            attack_ratio,
-            sustain,
-        } => Node::Adsr(Adsr {
-            attack_ratio: *attack_ratio,
-            sustain: *sustain,
-            release_start: 0.0,
-            last_rise: 0.0,
-            last_fall: 1.0,
-        }),
         Module::Envelope { points } => Node::Envelope {
             points: Arc::clone(points),
         },
@@ -913,40 +810,16 @@ fn create_node(module: &Module, rate: SampleRate) -> Result<Node, CompileError> 
         Module::Delay { time, feedback } => {
             Node::Delay(Delay::new(rate, *time, *feedback).ok_or(CompileError::InvalidDelay)?)
         }
-        Module::DelayTap { gain } => Node::DelayTap { gain: *gain },
-        Module::Reverb {
-            room,
-            damp,
-            mod_depth,
-            diffusion,
-        } => Node::Reverb(Reverb::new(rate, *room, *damp, *mod_depth, *diffusion)),
-        Module::Distortion { kind, drive } => Node::Distortion {
-            kind: match kind {
-                crate::patch::Distortion::Clip => Distortion::Clip,
-                crate::patch::Distortion::Tanh => Distortion::Tanh,
-                crate::patch::Distortion::Fold => Distortion::Fold,
-            },
-            drive: Drive::new(drive.value()).unwrap(),
-        },
-        Module::Compressor {
-            threshold,
-            ratio,
-            attack,
-            release,
-            makeup,
-        } => Node::Compressor(Compressor {
-            threshold: *threshold,
-            ratio: ratio.value(),
-            attack: *attack,
-            release: *release,
-            makeup: makeup.value(),
-            envelope: 0.0,
+        Module::VariableDelay { max_time } => {
+            Node::VariableDelay(VariableDelay::new(rate, *max_time))
+        }
+        Module::Waveshaper(kind) => Node::Waveshaper(*kind),
+        Module::Slew { rise, fall } => Node::Slew(Slew {
+            rate,
+            rise: *rise,
+            fall: *fall,
+            value: 0.0,
         }),
-        Module::Flanger {
-            rate: frequency,
-            depth,
-            feedback,
-        } => Node::Flanger(Flanger::new(rate, *frequency, *depth, *feedback)),
         Module::Binary { op, a, b } => Node::Binary {
             op: *op,
             a: a.value(),
@@ -965,15 +838,12 @@ fn create_node(module: &Module, rate: SampleRate) -> Result<Node, CompileError> 
             samples: Arc::clone(samples),
         },
         Module::Probe => Node::Probe,
+        Module::Composition(composition) => Node::Composition(Box::new(CompiledPatch::compile(
+            composition.patch(),
+            rate,
+            Some(composition),
+        )?)),
     })
-}
-
-fn input_values(input_slots: &[Option<usize>], values: &[Sample]) -> [Option<Sample>; MAX_INPUTS] {
-    let mut inputs = [None; MAX_INPUTS];
-    for (index, source) in input_slots.iter().copied().take(inputs.len()).enumerate() {
-        inputs[index] = source.and_then(|source| values.get(source).copied());
-    }
-    inputs
 }
 
 fn sample(inputs: &[Option<Sample>], index: usize) -> Sample {
@@ -982,23 +852,6 @@ fn sample(inputs: &[Option<Sample>], index: usize) -> Sample {
 
 fn filter_cutoff(value: f32) -> Option<Hertz> {
     Hertz::new(20.0 * 1000.0_f32.powf(value.clamp(0.0, 1.0)))
-}
-
-fn audio_wave(wave: crate::patch::Wave) -> Wave {
-    match wave {
-        crate::patch::Wave::Sine => Wave::Sine,
-        crate::patch::Wave::Square => Wave::Square,
-        crate::patch::Wave::Triangle => Wave::Triangle,
-        crate::patch::Wave::Saw => Wave::Saw,
-        crate::patch::Wave::Noise => Wave::Noise,
-    }
-}
-
-fn duration_seconds(duration: Duration) -> f32 {
-    match duration {
-        Duration::Seconds(seconds) => seconds.value(),
-        Duration::Samples(samples) => samples.value() as f32 / 44_100.0,
-    }
 }
 
 fn envelope_value(points: &[EnvPoint], time: f32) -> f32 {
@@ -1053,6 +906,7 @@ fn sample_value(samples: &[Sample], position: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::osc::Wave;
     use crate::patch::InputKind;
     use crate::patch::{Module, Patch};
     use crate::time::Hertz;
@@ -1060,10 +914,8 @@ mod tests {
     fn patch(rate: f32) -> Patch {
         let mut patch = Patch::new();
         let osc = patch.insert(Module::Osc {
-            wave: crate::patch::Wave::Sine,
+            wave: Wave::Sine,
             frequency: Hertz::new(rate).unwrap(),
-            gain: Unit::ONE,
-            unipolar: false,
         });
         patch.output(osc).unwrap();
         patch
@@ -1073,10 +925,8 @@ mod tests {
     fn compile_requires_output() {
         let mut patch = Patch::new();
         patch.insert(Module::Osc {
-            wave: crate::patch::Wave::Sine,
+            wave: Wave::Sine,
             frequency: Hertz::new(440.0).unwrap(),
-            gain: Unit::ONE,
-            unipolar: false,
         });
         let rate = SampleRate::new(44_100).unwrap();
 
@@ -1143,9 +993,7 @@ mod tests {
     fn transpose_converts_semitones_to_a_frequency_ratio() {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Constant(Sample::new(0.25).unwrap()));
-        let transpose = patch.insert(Module::Transpose {
-            semitones: Sample::new(12.0).unwrap(),
-        });
+        let transpose = patch.insert(crate::preset::transpose(Sample::new(12.0).unwrap()));
         let input = patch.input_port(transpose, InputKind::In).unwrap();
         patch.connect_input(source, input).unwrap();
         patch.output(transpose).unwrap();
@@ -1158,13 +1006,13 @@ mod tests {
     fn input_values_include_high_numbered_semantic_ports() {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Constant(Sample::new(0.5).unwrap()));
-        let compressor = patch.insert(Module::Compressor {
-            threshold: Unit::new(0.5).unwrap(),
-            ratio: crate::patch::CompressorRatio::new(2.0).unwrap(),
-            attack: Duration::Samples(crate::time::Samples::new(1)),
-            release: Duration::Samples(crate::time::Samples::new(1)),
-            makeup: crate::patch::Gain::new(1.0).unwrap(),
-        });
+        let compressor = patch.insert(crate::preset::compressor(
+            Unit::new(0.5).unwrap(),
+            crate::patch::CompressorRatio::new(2.0).unwrap(),
+            crate::time::Seconds::new(0.001).unwrap(),
+            crate::time::Seconds::new(0.001).unwrap(),
+            crate::patch::Gain::new(1.0).unwrap(),
+        ));
         let port = patch.input_port(compressor, InputKind::Gain).unwrap();
         patch.connect_input(source, port).unwrap();
         patch.output(compressor).unwrap();
@@ -1177,6 +1025,43 @@ mod tests {
         });
 
         assert!(values.contains(&(compressor, 5, 0.5)));
+    }
+
+    #[test]
+    fn compositions_are_not_limited_to_six_inputs() {
+        let mut inner = Patch::new();
+        let inputs = [
+            InputKind::In,
+            InputKind::Freq,
+            InputKind::Gain,
+            InputKind::Attack,
+            InputKind::Release,
+            InputKind::Feedback,
+            InputKind::Q,
+        ]
+        .map(|kind| {
+            (
+                format!("{kind:?}"),
+                kind,
+                inner.insert(Module::Input {
+                    kind,
+                    default: Sample::ZERO,
+                }),
+            )
+        });
+        inner.output(inputs[6].2).unwrap();
+        let composition = Module::Composition(Box::new(
+            crate::patch::Composition::new("Wide", inner, inputs).unwrap(),
+        ));
+        let mut patch = Patch::new();
+        let source = patch.insert(Module::Constant(Sample::new(0.75).unwrap()));
+        let target = patch.insert(composition);
+        let port = patch.input_port(target, InputKind::Q).unwrap();
+        patch.connect_input(source, port).unwrap();
+        patch.output(target).unwrap();
+        let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+
+        assert_eq!(compiled.next().left(), Sample::new(0.75).unwrap());
     }
 
     #[test]

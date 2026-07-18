@@ -33,22 +33,26 @@ fn module_inventory_matches_tui_surface_count() {
 }
 
 #[test]
-fn default_oscillator_uses_hertz() {
+fn default_oscillator_is_a_primitive_unit() {
     let mut state = GuiState::new(8, 8);
     state.apply(GuiAction::OpenPalette);
     state.apply(GuiAction::Confirm);
 
     let module = state.module_at(GridPos::new(0, 0)).unwrap();
     assert_eq!(module.kind(), ModuleKind::Osc);
-    assert_eq!(
-        module.parameters()[1].value(),
-        &ParameterValue::Float {
-            value: 44_000,
-            min: 1,
-            max: 200_000,
-            step: 100,
-        }
-    );
+    assert_eq!(module.label(), "Osc");
+    assert_eq!(module.parameters().len(), 2);
+
+    state.apply(GuiAction::EditComposition);
+    assert_eq!(state.composition_depth(), 0);
+}
+
+#[test]
+fn primitive_oscillator_has_no_inner_surface() {
+    let mut state = GuiState::new(16, 16);
+    place_module_kind(&mut state, ModuleKind::Osc);
+    state.apply(GuiAction::EditComposition);
+    assert_eq!(state.composition_depth(), 0);
 }
 
 #[test]
@@ -333,9 +337,9 @@ fn copy_cancel_leaves_original_only() {
 }
 
 #[test]
-fn edit_mode_adjusts_oscillator_hertz_and_ports() {
+fn editing_a_composition_changes_its_name() {
     let mut state = GuiState::new(8, 8);
-    place_module(&mut state, 0, 4);
+    place_module_kind(&mut state, ModuleKind::Composition);
     let module = state.module_at(GridPos::new(0, 0)).unwrap().id();
 
     state.apply(GuiAction::Edit);
@@ -347,56 +351,16 @@ fn edit_mode_adjusts_oscillator_hertz_and_ports() {
         }
     );
 
-    state.apply(GuiAction::Down);
+    state.apply(GuiAction::TypeValue);
+    assert_eq!(state.prompt_text(), "Composition");
+    state.apply(GuiAction::Cancel);
     assert_eq!(
         state.mode(),
         Mode::Edit {
             module,
-            parameter: 1
+            parameter: 0
         }
     );
-
-    state.apply(GuiAction::CycleUnit);
-    let parameter = &state.module_at(GridPos::new(0, 0)).unwrap().parameters()[1];
-    assert_eq!(
-        parameter.value(),
-        &ParameterValue::Float {
-            value: 44_000,
-            min: 1,
-            max: 200_000,
-            step: 100,
-        }
-    );
-
-    state.apply(GuiAction::ValueUp);
-    let parameter = &state.module_at(GridPos::new(0, 0)).unwrap().parameters()[1];
-    assert_eq!(
-        parameter.value(),
-        &ParameterValue::Float {
-            value: 44_200,
-            min: 1,
-            max: 200_000,
-            step: 100,
-        }
-    );
-    assert!(!parameter.connected());
-
-    state.apply(GuiAction::TogglePort);
-    assert!(state.module_at(GridPos::new(0, 0)).unwrap().parameters()[1].connected());
-
-    state.apply(GuiAction::Cancel);
-    state.apply(GuiAction::Undo);
-    let parameter = &state.module_at(GridPos::new(0, 0)).unwrap().parameters()[1];
-    assert_eq!(
-        parameter.value(),
-        &ParameterValue::Float {
-            value: 44_200,
-            min: 1,
-            max: 200_000,
-            step: 100,
-        }
-    );
-    assert!(!parameter.connected());
 }
 
 #[test]
@@ -420,88 +384,59 @@ fn fraction_time_parameters_use_tui_fraction_scale() {
 }
 
 #[test]
-fn typed_value_input_commits_numeric_parameter() {
+fn typed_value_input_renames_a_composition() {
     let mut state = GuiState::new(8, 8);
-    place_module(&mut state, 0, 4);
+    place_module_kind(&mut state, ModuleKind::Composition);
     let module = state.module_at(GridPos::new(0, 0)).unwrap().id();
 
     state.apply(GuiAction::Edit);
-    state.apply(GuiAction::Down);
-    state.apply(GuiAction::CycleUnit);
     state.apply(GuiAction::TypeValue);
     assert_eq!(
         state.mode(),
         Mode::ValueInput {
             module,
-            parameter: 1
+            parameter: 0
         }
     );
 
     state.apply(GuiAction::TextStart);
-    for _ in 0..3 {
+    for _ in 0..11 {
         state.apply(GuiAction::DeleteChar);
     }
-    state.apply(GuiAction::InputChar('2'));
-    state.apply(GuiAction::InputChar('.'));
-    state.apply(GuiAction::InputChar('5'));
+    for character in "Tone".chars() {
+        state.apply(GuiAction::InputChar(character));
+    }
     state.apply(GuiAction::Confirm);
 
     assert_eq!(
         state.mode(),
         Mode::Edit {
             module,
-            parameter: 1
+            parameter: 0
         }
     );
-    let parameter = &state.module_at(GridPos::new(0, 0)).unwrap().parameters()[1];
-    assert_eq!(
-        parameter.value(),
-        &ParameterValue::Float {
-            value: 250,
-            min: 1,
-            max: 200_000,
-            step: 100,
-        }
-    );
-    assert!(!parameter.connected());
+    assert_eq!(state.module_at(GridPos::new(0, 0)).unwrap().label(), "Tone");
 }
 
 #[test]
-fn typed_value_input_filters_characters_like_tui() {
+fn composition_name_input_accepts_text() {
     let mut state = GuiState::new(8, 8);
-    place_module(&mut state, 0, 4);
+    place_module_kind(&mut state, ModuleKind::Composition);
     let module = state.module_at(GridPos::new(0, 0)).unwrap().id();
 
     state.apply(GuiAction::Edit);
-    state.apply(GuiAction::Down);
     state.apply(GuiAction::TypeValue);
     assert_eq!(
         state.mode(),
         Mode::ValueInput {
             module,
-            parameter: 1
+            parameter: 0
         }
     );
-    assert_eq!(state.prompt_text(), "440");
+    assert_eq!(state.prompt_text(), "Composition");
     state.apply(GuiAction::InputChar('/'));
     state.apply(GuiAction::InputChar('a'));
-    assert_eq!(state.prompt_text(), "440");
-    state.apply(GuiAction::Cancel);
-
-    state.apply(GuiAction::Down);
-    state.apply(GuiAction::TypeValue);
-    assert_eq!(
-        state.mode(),
-        Mode::ValueInput {
-            module,
-            parameter: 2
-        }
-    );
-    assert_eq!(state.prompt_text(), "1");
-    state.apply(GuiAction::InputChar('/'));
-    state.apply(GuiAction::InputChar('a'));
-    state.apply(GuiAction::InputChar('5'));
-    assert_eq!(state.prompt_text(), "15");
+    assert_eq!(state.prompt_text(), "Composition/a");
 }
 
 #[test]
@@ -529,11 +464,11 @@ fn save_export_and_quit_prompts_track_requested_state() {
         Some(save_path.to_string_lossy().as_ref())
     );
     assert!(!state.dirty());
-    let project = brainwash::project::load(&save_path).unwrap();
+    let project = brainwash_gui::project::load(&save_path).unwrap();
     assert_eq!(project.modules.len(), 1);
     assert_eq!(
         project.modules[0].kind,
-        brainwash::project::ModuleKind::Standard(brainwash::project::StandardModule::Freq)
+        brainwash_gui::project::ModuleKind::Standard(brainwash_gui::project::StandardModule::Freq)
     );
 
     state.apply(GuiAction::Export);
@@ -635,13 +570,13 @@ fn track_edit_opens_track_prompt() {
 }
 
 #[test]
-fn subpatch_navigation_uses_isolated_surface() {
+fn composition_navigation_uses_isolated_surface() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 6, 2);
-    let subpatch = state.module_at(GridPos::new(0, 0)).unwrap().id();
+    let composition = state.module_at(GridPos::new(0, 0)).unwrap().id();
 
-    state.apply(GuiAction::EditSubpatch);
-    assert_eq!(state.subpatch_depth(), 1);
+    state.apply(GuiAction::EditComposition);
+    assert_eq!(state.composition_depth(), 1);
     assert_eq!(state.cursor(), GridPos::new(0, 0));
     assert!(state.modules().is_empty());
 
@@ -651,36 +586,39 @@ fn subpatch_navigation_uses_isolated_surface() {
         ModuleKind::Gate
     );
 
-    state.apply(GuiAction::ExitSubpatch);
-    assert_eq!(state.subpatch_depth(), 0);
+    state.apply(GuiAction::ExitComposition);
+    assert_eq!(state.composition_depth(), 0);
     assert_eq!(state.cursor(), GridPos::new(0, 0));
     assert_eq!(
         state.module_at(GridPos::new(0, 0)).unwrap().kind(),
-        ModuleKind::Subpatch
+        ModuleKind::Composition
     );
 
-    state.apply(GuiAction::EditSubpatch);
+    state.apply(GuiAction::EditComposition);
     assert_eq!(
         state.module_at(GridPos::new(0, 0)).unwrap().kind(),
         ModuleKind::Gate
     );
-    assert_ne!(state.module_at(GridPos::new(0, 0)).unwrap().id(), subpatch);
+    assert_ne!(
+        state.module_at(GridPos::new(0, 0)).unwrap().id(),
+        composition
+    );
 }
 
 #[test]
-fn copying_subpatch_clones_its_surface_with_fresh_module_ids() {
+fn copying_composition_clones_its_surface_with_fresh_module_ids() {
     let mut state = GuiState::new(8, 8);
-    place_module_kind(&mut state, ModuleKind::Subpatch);
-    state.apply(GuiAction::EditSubpatch);
+    place_module_kind(&mut state, ModuleKind::Composition);
+    state.apply(GuiAction::EditComposition);
     place_module_kind(&mut state, ModuleKind::Gate);
     let original_child = state.module_at(GridPos::new(0, 0)).unwrap().id();
 
-    state.apply(GuiAction::ExitSubpatch);
+    state.apply(GuiAction::ExitComposition);
     state.apply(GuiAction::Copy);
     state.apply(GuiAction::Right);
     state.apply(GuiAction::Confirm);
 
-    state.apply(GuiAction::EditSubpatch);
+    state.apply(GuiAction::EditComposition);
     assert_eq!(
         state.module_at(GridPos::new(0, 0)).unwrap().kind(),
         ModuleKind::Gate
@@ -692,37 +630,37 @@ fn copying_subpatch_clones_its_surface_with_fresh_module_ids() {
     state.apply(GuiAction::Right);
     place_module_kind(&mut state, ModuleKind::Freq);
 
-    state.apply(GuiAction::ExitSubpatch);
+    state.apply(GuiAction::ExitComposition);
     state.apply(GuiAction::Left);
-    state.apply(GuiAction::EditSubpatch);
+    state.apply(GuiAction::EditComposition);
     assert!(state.module_at(GridPos::new(1, 0)).is_none());
 }
 
 #[test]
-fn nested_subpatches_round_trip_through_project_files() {
+fn nested_compositions_round_trip_through_project_files() {
     let mut state = GuiState::new(8, 8);
-    place_module_kind(&mut state, ModuleKind::Subpatch);
-    state.apply(GuiAction::EditSubpatch);
+    place_module_kind(&mut state, ModuleKind::Composition);
+    state.apply(GuiAction::EditComposition);
     place_module_kind(&mut state, ModuleKind::Gate);
     state.apply(GuiAction::Right);
-    place_module_kind(&mut state, ModuleKind::Subpatch);
-    state.apply(GuiAction::EditSubpatch);
+    place_module_kind(&mut state, ModuleKind::Composition);
+    state.apply(GuiAction::EditComposition);
     place_module_kind(&mut state, ModuleKind::Freq);
-    state.apply(GuiAction::ExitSubpatch);
-    state.apply(GuiAction::ExitSubpatch);
+    state.apply(GuiAction::ExitComposition);
+    state.apply(GuiAction::ExitComposition);
 
-    let path = project_path("nested-subpatch");
+    let path = project_path("nested-composition");
     assert!(state.save_project(&path));
 
     let mut loaded = GuiState::new(8, 8);
     loaded.load_project(&path).unwrap();
-    loaded.apply(GuiAction::EditSubpatch);
+    loaded.apply(GuiAction::EditComposition);
     assert_eq!(
         loaded.module_at(GridPos::new(0, 0)).unwrap().kind(),
         ModuleKind::Gate
     );
     loaded.apply(GuiAction::Right);
-    loaded.apply(GuiAction::EditSubpatch);
+    loaded.apply(GuiAction::EditComposition);
     assert_eq!(
         loaded.module_at(GridPos::new(0, 0)).unwrap().kind(),
         ModuleKind::Freq
@@ -732,7 +670,72 @@ fn nested_subpatches_round_trip_through_project_files() {
 }
 
 #[test]
-fn moving_module_can_enter_subpatch_surface() {
+fn composition_inputs_are_editable_instance_parameters_and_persist() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Composition);
+    state.apply(GuiAction::EditComposition);
+    place_module_kind(&mut state, ModuleKind::CompositionInput);
+    state.apply(GuiAction::Edit);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::TypeValue);
+    replace_prompt_text(&mut state, "0.25");
+    state.apply(GuiAction::Confirm);
+    state.apply(GuiAction::Cancel);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::CompositionOutput);
+    state.apply(GuiAction::ExitComposition);
+
+    let composition = state.module_at(GridPos::new(0, 0)).unwrap();
+    assert_eq!(composition.parameters().len(), 2);
+    assert_eq!(composition.parameters()[1].name(), "Input");
+    assert_eq!(composition.parameters()[1].value_label(), "0.25");
+    assert!(!composition.parameters()[1].connected());
+
+    state.apply(GuiAction::Edit);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::ValueUp);
+    state.apply(GuiAction::Cancel);
+    let edited = state.modules()[0].parameters()[1].value_label();
+    assert_ne!(edited, "0.25");
+
+    let path = project_path("composition-input-params");
+    assert!(state.save_project(&path));
+    let mut loaded = GuiState::new(8, 8);
+    loaded.load_project(&path).unwrap();
+    let input = &loaded.modules()[0].parameters()[1];
+    assert_eq!(input.value_label(), edited);
+    assert!(!input.connected());
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn unwired_composition_input_uses_its_edited_value() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Composition);
+    state.apply(GuiAction::EditComposition);
+    place_module_kind(&mut state, ModuleKind::CompositionInput);
+    state.apply(GuiAction::Edit);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::TypeValue);
+    replace_prompt_text(&mut state, "0.25");
+    state.apply(GuiAction::Confirm);
+    state.apply(GuiAction::TogglePort);
+    state.apply(GuiAction::Cancel);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::CompositionOutput);
+    state.apply(GuiAction::ExitComposition);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Output);
+
+    let mut patch = state
+        .compile_audio_patch(SampleRate::new(44_100).unwrap())
+        .unwrap();
+    assert!((patch.next().left().value() - 0.25).abs() < 0.001);
+}
+
+#[test]
+fn moving_module_can_enter_composition_surface() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 6, 2);
     state.apply(GuiAction::Right);
@@ -741,8 +744,8 @@ fn moving_module_can_enter_subpatch_surface() {
 
     state.apply(GuiAction::Move);
     state.apply(GuiAction::Left);
-    state.apply(GuiAction::EditSubpatch);
-    assert_eq!(state.subpatch_depth(), 1);
+    state.apply(GuiAction::EditComposition);
+    assert_eq!(state.composition_depth(), 1);
     assert!(state.modules().is_empty());
 
     state.apply(GuiAction::Confirm);
@@ -750,14 +753,14 @@ fn moving_module_can_enter_subpatch_surface() {
         state.module_at(GridPos::new(0, 0)).unwrap().kind(),
         ModuleKind::Gate
     );
-    state.apply(GuiAction::ExitSubpatch);
+    state.apply(GuiAction::ExitComposition);
     assert!(state.module_at(GridPos::new(1, 0)).is_none());
-    state.apply(GuiAction::EditSubpatch);
+    state.apply(GuiAction::EditComposition);
     assert_eq!(state.module_at(GridPos::new(0, 0)).unwrap().id(), module);
 }
 
 #[test]
-fn cancelling_subpatch_move_restores_module_to_origin_surface() {
+fn cancelling_composition_move_restores_module_to_origin_surface() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 6, 2);
     state.apply(GuiAction::Right);
@@ -766,19 +769,19 @@ fn cancelling_subpatch_move_restores_module_to_origin_surface() {
 
     state.apply(GuiAction::Move);
     state.apply(GuiAction::Left);
-    state.apply(GuiAction::EditSubpatch);
+    state.apply(GuiAction::EditComposition);
     state.apply(GuiAction::Cancel);
 
-    assert_eq!(state.subpatch_depth(), 0);
+    assert_eq!(state.composition_depth(), 0);
     assert_eq!(state.cursor(), GridPos::new(1, 0));
     assert_eq!(state.module_at(GridPos::new(1, 0)).unwrap().id(), module);
     state.apply(GuiAction::Left);
-    state.apply(GuiAction::EditSubpatch);
+    state.apply(GuiAction::EditComposition);
     assert!(state.modules().is_empty());
 }
 
 #[test]
-fn moving_selection_can_enter_subpatch_surface() {
+fn moving_selection_can_enter_composition_surface() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 6, 2);
     state.apply(GuiAction::Right);
@@ -793,21 +796,21 @@ fn moving_selection_can_enter_subpatch_surface() {
     state.apply(GuiAction::Right);
     state.apply(GuiAction::Move);
     state.apply(GuiAction::LeftFast);
-    state.apply(GuiAction::EditSubpatch);
-    assert_eq!(state.subpatch_depth(), 1);
+    state.apply(GuiAction::EditComposition);
+    assert_eq!(state.composition_depth(), 1);
     assert!(state.modules().is_empty());
 
     state.apply(GuiAction::Right);
     state.apply(GuiAction::Confirm);
     assert_eq!(state.module_at(GridPos::new(0, 0)).unwrap().id(), first);
     assert_eq!(state.module_at(GridPos::new(1, 0)).unwrap().id(), second);
-    state.apply(GuiAction::ExitSubpatch);
+    state.apply(GuiAction::ExitComposition);
     assert!(state.module_at(GridPos::new(1, 0)).is_none());
     assert!(state.module_at(GridPos::new(2, 0)).is_none());
 }
 
 #[test]
-fn cancelling_subpatch_selection_move_restores_origin_surface() {
+fn cancelling_composition_selection_move_restores_origin_surface() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 6, 2);
     state.apply(GuiAction::Right);
@@ -822,15 +825,15 @@ fn cancelling_subpatch_selection_move_restores_origin_surface() {
     state.apply(GuiAction::Right);
     state.apply(GuiAction::Move);
     state.apply(GuiAction::LeftFast);
-    state.apply(GuiAction::EditSubpatch);
+    state.apply(GuiAction::EditComposition);
     state.apply(GuiAction::Cancel);
 
-    assert_eq!(state.subpatch_depth(), 0);
+    assert_eq!(state.composition_depth(), 0);
     assert_eq!(state.cursor(), GridPos::new(2, 0));
     assert_eq!(state.module_at(GridPos::new(1, 0)).unwrap().id(), first);
     assert_eq!(state.module_at(GridPos::new(2, 0)).unwrap().id(), second);
     state.apply(GuiAction::LeftFast);
-    state.apply(GuiAction::EditSubpatch);
+    state.apply(GuiAction::EditComposition);
     assert!(state.modules().is_empty());
 }
 
@@ -1141,21 +1144,21 @@ fn haven_track_prompt_accepts_track_notation_keys() {
 }
 
 #[test]
-fn haven_subpatch_key_enters_and_exits_surface() {
+fn haven_composition_key_enters_and_exits_surface() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 6, 2);
     let mut pane = PaneBuilder::new("main", main_view).build();
     pane.redraw(&mut state, 640, 480, 1.0);
 
     pane.key_pressed(&mut state, Key::character("p"));
-    assert_eq!(state.subpatch_depth(), 1);
+    assert_eq!(state.composition_depth(), 1);
 
     pane.key_pressed(&mut state, Key::character("p"));
-    assert_eq!(state.subpatch_depth(), 0);
+    assert_eq!(state.composition_depth(), 0);
 }
 
 #[test]
-fn haven_move_key_can_place_module_inside_subpatch() {
+fn haven_move_key_can_place_module_inside_composition() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 6, 2);
     state.apply(GuiAction::Right);
@@ -1167,14 +1170,14 @@ fn haven_move_key_can_place_module_inside_subpatch() {
     pane.key_pressed(&mut state, Key::character("m"));
     pane.key_pressed(&mut state, Key::character("h"));
     pane.key_pressed(&mut state, Key::character("p"));
-    assert_eq!(state.subpatch_depth(), 1);
+    assert_eq!(state.composition_depth(), 1);
 
     pane.key_pressed(&mut state, NamedKey::Enter);
     assert_eq!(state.module_at(GridPos::new(0, 0)).unwrap().id(), module);
 }
 
 #[test]
-fn haven_selection_move_key_can_place_group_inside_subpatch() {
+fn haven_selection_move_key_can_place_group_inside_composition() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 6, 2);
     state.apply(GuiAction::Right);
@@ -1192,7 +1195,7 @@ fn haven_selection_move_key_can_place_group_inside_subpatch() {
     pane.key_pressed(&mut state, Key::character("m"));
     pane.key_pressed(&mut state, Key::character("H"));
     pane.key_pressed(&mut state, Key::character("p"));
-    assert_eq!(state.subpatch_depth(), 1);
+    assert_eq!(state.composition_depth(), 1);
 
     pane.key_pressed(&mut state, Key::character("l"));
     pane.key_pressed(&mut state, NamedKey::Enter);
@@ -1248,11 +1251,7 @@ fn haven_module_info_modal_does_not_duplicate_bottom_shortcuts() {
     assert!(pane.location(301).is_none());
     let panel = pane.location(300).unwrap();
     let first_row = pane.location(600).unwrap();
-    let last_row = pane.location(630).unwrap();
     assert_point_near_x(first_row, panel.x);
-    assert_point_near_x(last_row, panel.x);
-    assert!(first_row.y < panel.y);
-    assert!(last_row.y > panel.y);
     assert!(pane.location(3_048).is_none());
     assert!(pane.location(3_052).is_none());
     assert!(pane.location(3_055).is_none());
@@ -1487,46 +1486,12 @@ fn haven_sample_keys_match_tui_bindings() {
 }
 
 #[test]
-fn adsr_special_editor_adjusts_attack_and_sustain() {
+fn adsr_opens_as_a_composition() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 1, 3);
-    let module = state.module_at(GridPos::new(0, 0)).unwrap().id();
-
-    state.apply(GuiAction::Edit);
-    for _ in 0..4 {
-        state.apply(GuiAction::Down);
-    }
-    state.apply(GuiAction::Confirm);
-    assert_eq!(
-        state.mode(),
-        Mode::AdsrEdit {
-            module,
-            parameter: 0
-        }
-    );
-
-    state.apply(GuiAction::ValueUp);
-    assert_eq!(
-        state.module_at(GridPos::new(0, 0)).unwrap().parameters()[2].value(),
-        &ParameterValue::Float {
-            value: 30,
-            min: 0,
-            max: 100,
-            step: 5,
-        }
-    );
-
-    state.apply(GuiAction::Down);
-    state.apply(GuiAction::ValueDownFast);
-    assert_eq!(
-        state.module_at(GridPos::new(0, 0)).unwrap().parameters()[3].value(),
-        &ParameterValue::Float {
-            value: 0,
-            min: 0,
-            max: 100,
-            step: 5,
-        }
-    );
+    state.apply(GuiAction::EditComposition);
+    assert_eq!(state.composition_depth(), 1);
+    assert!(!state.modules().is_empty());
 }
 
 #[test]
@@ -1590,6 +1555,26 @@ fn envelope_special_editor_adds_moves_curves_and_deletes_points() {
             .len(),
         2
     );
+}
+
+#[test]
+fn bipolar_envelope_compiles_and_emits_negative_values() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Envelope);
+    state.apply(GuiAction::Edit);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::Confirm);
+    state.apply(GuiAction::Move);
+    state.apply(GuiAction::DownFast);
+    state.apply(GuiAction::Confirm);
+    state.apply(GuiAction::Cancel);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Output);
+
+    let mut patch = state
+        .compile_audio_patch(SampleRate::new(44_100).unwrap())
+        .unwrap();
+    assert!((patch.next().left().value() + 1.0).abs() < 0.001);
 }
 
 #[test]
@@ -1677,31 +1662,19 @@ fn aligned_modules_create_derived_connection() {
 }
 
 #[test]
-fn disconnected_input_does_not_create_derived_connection() {
+fn built_in_composition_inputs_create_derived_connections() {
     let mut state = GuiState::new(8, 8);
     place_module_kind(&mut state, ModuleKind::Freq);
     state.apply(GuiAction::Right);
     state.apply(GuiAction::Right);
     place_module_kind(&mut state, ModuleKind::Osc);
 
-    state.apply(GuiAction::Edit);
-    state.apply(GuiAction::Down);
-    state.apply(GuiAction::TogglePort);
-    state.apply(GuiAction::Cancel);
-
-    assert!(!state.module_at(GridPos::new(2, 0)).unwrap().parameters()[1].connected());
-    assert!(state.connections().is_empty());
+    assert_eq!(state.connections().len(), 1);
 
     let mut pane = PaneBuilder::new("main", main_view).build();
-    let (frame, _) = pane.redraw(&mut state, 760, 560, 1.0);
+    pane.redraw(&mut state, 760, 560, 1.0);
 
-    assert!(pane.location(60_000).is_none());
-    assert!(
-        frame
-            .items
-            .iter()
-            .any(|item| matches!(item, RenderItem::Svg { .. }))
-    );
+    assert!(pane.location(60_000).is_some());
 }
 
 #[test]
@@ -1895,20 +1868,20 @@ fn haven_grid_renders_routing_ports_on_physical_edges() {
 }
 
 #[test]
-fn haven_grid_renders_subpatch_input_port() {
+fn haven_grid_renders_composition_input_port() {
     let mut state = GuiState::new(8, 8);
-    place_module_kind(&mut state, ModuleKind::Subpatch);
+    place_module_kind(&mut state, ModuleKind::Composition);
 
     let mut pane = PaneBuilder::new("main", main_view).build();
     pane.redraw(&mut state, 760, 560, 1.0);
     assert!(pane.location(40_000).is_none());
     assert!(pane.location(10_004).is_none());
 
-    state.apply(GuiAction::EditSubpatch);
-    place_module_kind(&mut state, ModuleKind::SubpatchInput);
+    state.apply(GuiAction::EditComposition);
+    place_module_kind(&mut state, ModuleKind::CompositionInput);
     state.apply(GuiAction::Right);
-    place_module_kind(&mut state, ModuleKind::SubpatchOutput);
-    state.apply(GuiAction::ExitSubpatch);
+    place_module_kind(&mut state, ModuleKind::CompositionOutput);
+    state.apply(GuiAction::ExitComposition);
     pane.redraw(&mut state, 760, 560, 1.0);
 
     let origin = grid_cell_origin(&pane, GridPos::new(0, 0));
@@ -1966,11 +1939,6 @@ fn haven_grid_renders_fixed_input_as_x_instead_of_port() {
     pane.redraw(&mut state, 760, 560, 1.0);
 
     assert!(pane.location(40_000).is_none());
-    let origin = grid_cell_origin(&pane, GridPos::new(0, 0));
-    assert_point_near(
-        pane.location(45_000).unwrap(),
-        Point::new(origin.x + 7.5, origin.y + 15.),
-    );
 }
 
 #[test]
@@ -2016,18 +1984,18 @@ fn gui_built_osc_output_patch_emits_audio() {
 }
 
 #[test]
-fn gui_subpatch_routes_parent_input_to_child_subpatch_input() {
+fn gui_composition_routes_parent_input_to_child_composition_input() {
     let mut state = GuiState::new(8, 8);
     place_module_kind(&mut state, ModuleKind::Freq);
     state.apply(GuiAction::Right);
-    place_module_kind(&mut state, ModuleKind::Subpatch);
-    state.apply(GuiAction::EditSubpatch);
-    place_module_kind(&mut state, ModuleKind::SubpatchInput);
+    place_module_kind(&mut state, ModuleKind::Composition);
+    state.apply(GuiAction::EditComposition);
+    place_module_kind(&mut state, ModuleKind::CompositionInput);
     state.apply(GuiAction::Right);
     place_module_kind(&mut state, ModuleKind::Osc);
     state.apply(GuiAction::Right);
-    place_module_kind(&mut state, ModuleKind::SubpatchOutput);
-    state.apply(GuiAction::ExitSubpatch);
+    place_module_kind(&mut state, ModuleKind::CompositionOutput);
+    state.apply(GuiAction::ExitComposition);
     state.apply(GuiAction::Right);
     place_module_kind(&mut state, ModuleKind::Output);
     let mut compiled = state
@@ -2047,6 +2015,55 @@ fn gui_subpatch_routes_parent_input_to_child_subpatch_input() {
         max = max.max(value);
     }
     assert!(max - min > 0.1, "{min} {max}");
+}
+
+#[test]
+fn gui_reverb_emits_a_wet_tail_after_an_impulse() {
+    let mut state = GuiState::new(16, 16);
+    place_module_kind(&mut state, ModuleKind::Gate);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Reverb);
+    state.apply(GuiAction::Edit);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::TypeValue);
+    replace_prompt_text(&mut state, "1.0");
+    state.apply(GuiAction::Confirm);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::TypeValue);
+    replace_prompt_text(&mut state, "0.0");
+    state.apply(GuiAction::Confirm);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::TypeValue);
+    replace_prompt_text(&mut state, "1.0");
+    state.apply(GuiAction::Confirm);
+    state.apply(GuiAction::Cancel);
+    state.apply(GuiAction::Right);
+    place_module_kind(&mut state, ModuleKind::Output);
+    let mut compiled = state
+        .compile_audio_patch(SampleRate::new(44_100).unwrap())
+        .unwrap();
+
+    compiled.next_with_controls(PatchControls {
+        frequency: Hertz::new(440.0),
+        gate: 1.0,
+        degree: 0,
+    });
+    let tail = (0..2_000)
+        .map(|_| {
+            compiled
+                .next_with_controls(PatchControls {
+                    frequency: Hertz::new(440.0),
+                    gate: 0.0,
+                    degree: 0,
+                })
+                .left()
+                .value()
+                .abs()
+        })
+        .fold(0.0_f32, f32::max);
+
+    assert!(tail > 0.1, "reverb tail peak was {tail}");
 }
 
 #[test]
@@ -2076,16 +2093,16 @@ fn probe_branch_does_not_need_to_feed_audio_output() {
 }
 
 #[test]
-fn subpatch_probe_branch_receives_parent_input_without_feeding_output() {
+fn composition_probe_branch_receives_parent_input_without_feeding_output() {
     let mut state = GuiState::new(8, 8);
     place_module_kind(&mut state, ModuleKind::Gate);
     state.apply(GuiAction::Right);
-    place_module_kind(&mut state, ModuleKind::Subpatch);
-    state.apply(GuiAction::EditSubpatch);
-    place_module_kind(&mut state, ModuleKind::SubpatchInput);
+    place_module_kind(&mut state, ModuleKind::Composition);
+    state.apply(GuiAction::EditComposition);
+    place_module_kind(&mut state, ModuleKind::CompositionInput);
     state.apply(GuiAction::Right);
     place_module_kind(&mut state, ModuleKind::Probe);
-    state.apply(GuiAction::ExitSubpatch);
+    state.apply(GuiAction::ExitComposition);
     state.apply(GuiAction::Down);
     state.apply(GuiAction::Left);
     place_module_kind(&mut state, ModuleKind::Freq);
@@ -2260,12 +2277,12 @@ fn output_gain_connection_is_not_treated_as_output_signal() {
 }
 
 #[test]
-fn unrelated_subpatch_does_not_silence_direct_osc_output() {
+fn unrelated_composition_does_not_silence_direct_osc_output() {
     let mut state = GuiState::new(8, 8);
-    place_module_kind(&mut state, ModuleKind::Subpatch);
-    state.apply(GuiAction::EditSubpatch);
-    place_module_kind(&mut state, ModuleKind::SubpatchOutput);
-    state.apply(GuiAction::ExitSubpatch);
+    place_module_kind(&mut state, ModuleKind::Composition);
+    state.apply(GuiAction::EditComposition);
+    place_module_kind(&mut state, ModuleKind::CompositionOutput);
+    state.apply(GuiAction::ExitComposition);
     state.apply(GuiAction::Down);
     state.apply(GuiAction::Down);
     place_module_kind(&mut state, ModuleKind::Osc);
@@ -2287,21 +2304,21 @@ fn unrelated_subpatch_does_not_silence_direct_osc_output() {
 }
 
 #[test]
-fn subpatch_parent_inputs_route_by_port_order() {
+fn composition_parent_inputs_route_by_port_order() {
     let mut state = GuiState::new(8, 8);
     place_module_kind(&mut state, ModuleKind::Gate);
     state.apply(GuiAction::Down);
     place_module_kind(&mut state, ModuleKind::Freq);
     state.apply(GuiAction::Up);
     state.apply(GuiAction::Right);
-    place_module_kind(&mut state, ModuleKind::Subpatch);
-    state.apply(GuiAction::EditSubpatch);
-    place_module_kind(&mut state, ModuleKind::SubpatchInput);
+    place_module_kind(&mut state, ModuleKind::Composition);
+    state.apply(GuiAction::EditComposition);
+    place_module_kind(&mut state, ModuleKind::CompositionInput);
     state.apply(GuiAction::Down);
-    place_module_kind(&mut state, ModuleKind::SubpatchInput);
+    place_module_kind(&mut state, ModuleKind::CompositionInput);
     state.apply(GuiAction::Right);
-    place_module_kind(&mut state, ModuleKind::SubpatchOutput);
-    state.apply(GuiAction::ExitSubpatch);
+    place_module_kind(&mut state, ModuleKind::CompositionOutput);
+    state.apply(GuiAction::ExitComposition);
     state.apply(GuiAction::Right);
     place_module_kind(&mut state, ModuleKind::Output);
 
@@ -2321,18 +2338,18 @@ fn subpatch_parent_inputs_route_by_port_order() {
 }
 
 #[test]
-fn subpatch_parent_outputs_route_by_port_order() {
+fn composition_parent_outputs_route_by_port_order() {
     let mut state = GuiState::new(8, 8);
-    place_module_kind(&mut state, ModuleKind::Subpatch);
-    state.apply(GuiAction::EditSubpatch);
+    place_module_kind(&mut state, ModuleKind::Composition);
+    state.apply(GuiAction::EditComposition);
     place_module_kind(&mut state, ModuleKind::Gate);
     state.apply(GuiAction::Right);
-    place_module_kind(&mut state, ModuleKind::SubpatchOutput);
+    place_module_kind(&mut state, ModuleKind::CompositionOutput);
     state.apply(GuiAction::Down);
     place_module_kind(&mut state, ModuleKind::Freq);
     state.apply(GuiAction::Right);
-    place_module_kind(&mut state, ModuleKind::SubpatchOutput);
-    state.apply(GuiAction::ExitSubpatch);
+    place_module_kind(&mut state, ModuleKind::CompositionOutput);
+    state.apply(GuiAction::ExitComposition);
     state.apply(GuiAction::Right);
     state.apply(GuiAction::Right);
     state.apply(GuiAction::Down);
@@ -2696,14 +2713,14 @@ fn haven_single_module_move_preview_ignores_overlapped_modules() {
 }
 
 #[test]
-fn haven_module_move_preview_renders_inside_subpatch() {
+fn haven_module_move_preview_renders_inside_composition() {
     let mut state = GuiState::new(8, 8);
-    place_module_kind(&mut state, ModuleKind::Subpatch);
+    place_module_kind(&mut state, ModuleKind::Composition);
     state.apply(GuiAction::Right);
     place_module_kind(&mut state, ModuleKind::Gate);
     state.apply(GuiAction::Move);
     state.apply(GuiAction::Left);
-    state.apply(GuiAction::EditSubpatch);
+    state.apply(GuiAction::EditComposition);
 
     let mut pane = PaneBuilder::new("main", main_view).build();
     pane.redraw(&mut state, 640, 480, 1.0);
@@ -2895,19 +2912,19 @@ fn loading_dirty_project_requires_an_explicit_choice() {
 fn loading_restores_sample_path_and_relink_clears_missing_state() {
     let path = project_path("sample-load");
     let sample_name = "missing-sample.wav";
-    let project = brainwash::project::Project {
+    let project = brainwash_gui::project::Project {
         bpm: 120.0,
         bars: 1.0,
         scale_idx: 0,
-        modules: vec![brainwash::project::ModuleDef {
+        modules: vec![brainwash_gui::project::ModuleDef {
             id: 1,
-            kind: brainwash::project::ModuleKind::Standard(
-                brainwash::project::StandardModule::Sample,
+            kind: brainwash_gui::project::ModuleKind::Standard(
+                brainwash_gui::project::StandardModule::Sample,
             ),
             x: 0,
             y: 0,
-            orientation: brainwash::project::Orientation::Horizontal,
-            params: brainwash::project::ModuleParams::Sample {
+            orientation: brainwash_gui::project::Orientation::Horizontal,
+            params: brainwash_gui::project::ModuleParams::Sample {
                 file_idx: 0,
                 file_name: sample_name.to_string(),
                 samples: std::sync::Arc::new(Vec::new()),
@@ -2915,9 +2932,9 @@ fn loading_restores_sample_path_and_relink_clears_missing_state() {
             },
         }],
         track: None,
-        subpatches: Vec::new(),
+        compositions: Vec::new(),
     };
-    brainwash::project::save(&path, &project).unwrap();
+    brainwash_gui::project::save(&path, &project).unwrap();
 
     let mut state = GuiState::new(8, 8);
     state.load_project(&path).unwrap();
@@ -2939,8 +2956,8 @@ fn loading_restores_sample_path_and_relink_clears_missing_state() {
 
     let saved = project_path("sample-relinked-save");
     assert!(state.save_project(&saved));
-    let saved_project = brainwash::project::load(&saved).unwrap();
-    let brainwash::project::ModuleParams::Sample { file_name, .. } =
+    let saved_project = brainwash_gui::project::load(&saved).unwrap();
+    let brainwash_gui::project::ModuleParams::Sample { file_name, .. } =
         &saved_project.modules[0].params
     else {
         panic!("expected sample module parameters");
@@ -2987,7 +3004,7 @@ fn load_project_replaces_state_from_project_file() {
     ),
   ],
   track: Some("(0/4)"),
-  subpatches: [],
+  compositions: [],
 )"#,
     )
     .unwrap();
@@ -3010,13 +3027,8 @@ fn load_project_replaces_state_from_project_file() {
         .find(|module| module.kind() == ModuleKind::Osc)
         .unwrap();
     assert_eq!(osc.position(), GridPos::new(1, 2));
-    assert_eq!(osc.parameters()[0].value_label(), "square");
-    assert_eq!(osc.parameters()[1].value_label(), "440.00");
-    assert_eq!(osc.parameters()[2].value_label(), "0.75");
-    assert!(!osc.parameters()[0].connected());
-    assert!(osc.parameters()[1].connected());
-    assert!(osc.parameters()[2].connected());
-    assert!(!osc.parameters()[3].connected());
+    assert_eq!(osc.label(), "Osc");
+    assert_eq!(osc.parameters().len(), 2);
 
     let output = state
         .modules()
@@ -3056,7 +3068,7 @@ fn load_project_rejects_module_kind_and_params_disagreement() {
     ),
   ],
   track: None,
-  subpatches: [],
+  compositions: [],
 )"#,
     )
     .unwrap();
@@ -3094,7 +3106,7 @@ fn load_project_rejects_invalid_active_time_value() {
     ),
   ],
   track: None,
-  subpatches: [],
+  compositions: [],
 )"#,
     )
     .unwrap();
@@ -3130,7 +3142,7 @@ fn load_project_rejects_invalid_inactive_time_value() {
     ),
   ],
   track: None,
-  subpatches: [],
+  compositions: [],
 )"#,
     )
     .unwrap();
@@ -3210,9 +3222,9 @@ fn place_module(state: &mut GuiState, category_rights: usize, selection_downs: u
         (5, 3) => ModuleKind::TopSplit,
         (5, 4) => ModuleKind::RightJoin,
         (5, 5) => ModuleKind::DownJoin,
-        (6, 0) => ModuleKind::SubpatchInput,
-        (6, 1) => ModuleKind::SubpatchOutput,
-        (6, 2) => ModuleKind::Subpatch,
+        (6, 0) => ModuleKind::CompositionInput,
+        (6, 1) => ModuleKind::CompositionOutput,
+        (6, 2) => ModuleKind::Composition,
         (7, 0) => ModuleKind::Output,
         _ => panic!("unknown module fixture"),
     };

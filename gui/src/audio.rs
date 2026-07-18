@@ -89,6 +89,7 @@ const PLAY_COMMAND_LIMIT: usize = 2;
 const VOICES: usize = 6;
 const PROBE_SLOTS: usize = 8;
 const PROBE_HISTORY: usize = 88_200;
+const PROBE_WRITE_BIT: u32 = 1 << 31;
 const METER_SLOTS: usize = 128;
 const METER_INPUTS: usize = 8;
 
@@ -485,6 +486,7 @@ impl ProbeBus {
     fn write(&self, slot: usize, voice: usize, cursor: usize, value: f32) {
         let index = probe_value_index(voice, slot, cursor);
         let generation = self.generations[slot].load(Ordering::Acquire);
+        self.sample_generations[index].store(generation | PROBE_WRITE_BIT, Ordering::Release);
         self.values[index].store(value.to_bits(), Ordering::Release);
         self.sample_generations[index].store(generation, Ordering::Release);
     }
@@ -512,12 +514,18 @@ impl ProbeBus {
         for offset in 0..count {
             let index = (start + offset) % PROBE_HISTORY;
             let value_index = probe_value_index(voice, slot, index);
-            let value =
-                if self.sample_generations[value_index].load(Ordering::Acquire) == generation {
-                    f32::from_bits(self.values[value_index].load(Ordering::Acquire))
+            let sample_generation = self.sample_generations[value_index].load(Ordering::Acquire);
+            let value = if sample_generation == generation {
+                let bits = self.values[value_index].load(Ordering::Acquire);
+                if self.sample_generations[value_index].load(Ordering::Acquire) == sample_generation
+                {
+                    f32::from_bits(bits)
                 } else {
                     0.0
-                };
+                }
+            } else {
+                0.0
+            };
             values.push(value);
         }
         values
@@ -842,13 +850,11 @@ fn record_probe_values(
     voice: usize,
     engine: &PatchEngine,
 ) {
-    engine.visit_input_values(|module, input, value| {
-        if input == 0
-            && let Some(route) = probes.iter().find(|route| route.source == module)
-        {
+    for (module, value) in engine.probe_values() {
+        if let Some(route) = probes.iter().find(|route| route.source == module) {
             bus.write(route.slot, voice, cursor, value.value());
         }
-    });
+    }
 }
 
 fn record_meter_values(bus: &MeterBus, meters: &MeterRoutes, voice: usize, engine: &PatchEngine) {
@@ -989,7 +995,8 @@ mod tests {
     use super::*;
     use crate::model::{GuiAction, GuiState, ModuleCategory};
     use assert_no_alloc::assert_no_alloc;
-    use brainwash::patch::{InputKind, Module, Patch, Wave};
+    use brainwash::osc::Wave;
+    use brainwash::patch::{InputKind, Module, Patch};
     use brainwash::sample::{Sample as AudioSample, Unit};
     use brainwash::scale::cmin;
 
@@ -1116,12 +1123,12 @@ mod tests {
         let rate = SampleRate::new(44_100).unwrap();
         let mut patch = Patch::new();
         let freq = patch.insert(Module::Freq);
-        let osc = patch.insert(Module::Osc {
-            wave: Wave::Saw,
-            frequency: Hertz::new(110.0).unwrap(),
-            gain: Unit::ONE,
-            unipolar: false,
-        });
+        let osc = patch.insert(brainwash::preset::oscillator(
+            Wave::Saw,
+            Hertz::new(110.0).unwrap(),
+            Unit::ONE,
+            false,
+        ));
         let port = patch.input_port(osc, InputKind::Freq).unwrap();
         patch.connect_input(freq, port).unwrap();
         patch.output(osc).unwrap();
@@ -1813,12 +1820,12 @@ mod tests {
     fn compiled_saw_patch(frequency: f32, rate: SampleRate) -> CompiledPatch {
         let mut patch = Patch::new();
         let freq = patch.insert(Module::Freq);
-        let osc = patch.insert(Module::Osc {
-            wave: Wave::Saw,
-            frequency: Hertz::new(frequency).unwrap(),
-            gain: Unit::ONE,
-            unipolar: false,
-        });
+        let osc = patch.insert(brainwash::preset::oscillator(
+            Wave::Saw,
+            Hertz::new(frequency).unwrap(),
+            Unit::ONE,
+            false,
+        ));
         let port = patch.input_port(osc, InputKind::Freq).unwrap();
         patch.connect_input(freq, port).unwrap();
         patch.output(osc).unwrap();
@@ -1834,12 +1841,12 @@ mod tests {
 
     fn unmodulated_osc_patch(rate: SampleRate) -> CompiledPatch {
         let mut patch = Patch::new();
-        let osc = patch.insert(Module::Osc {
-            wave: Wave::Saw,
-            frequency: Hertz::new(440.0).unwrap(),
-            gain: Unit::ONE,
-            unipolar: false,
-        });
+        let osc = patch.insert(brainwash::preset::oscillator(
+            Wave::Saw,
+            Hertz::new(440.0).unwrap(),
+            Unit::ONE,
+            false,
+        ));
         patch.output(osc).unwrap();
         CompiledPatch::new(&patch, rate).unwrap()
     }
@@ -1847,12 +1854,12 @@ mod tests {
     fn gated_osc_patch(rate: SampleRate) -> CompiledPatch {
         let mut patch = Patch::new();
         let gate = patch.insert(Module::Gate);
-        let osc = patch.insert(Module::Osc {
-            wave: Wave::Saw,
-            frequency: Hertz::new(440.0).unwrap(),
-            gain: Unit::ONE,
-            unipolar: false,
-        });
+        let osc = patch.insert(brainwash::preset::oscillator(
+            Wave::Saw,
+            Hertz::new(440.0).unwrap(),
+            Unit::ONE,
+            false,
+        ));
         let port = patch.input_port(osc, InputKind::Gain).unwrap();
         patch.connect_input(gate, port).unwrap();
         patch.output(osc).unwrap();

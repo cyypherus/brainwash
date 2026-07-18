@@ -10,7 +10,7 @@ pub mod live;
 pub mod osc;
 pub mod patch;
 pub mod persist;
-pub mod project;
+pub mod preset;
 pub mod sample;
 pub mod scale;
 pub mod time;

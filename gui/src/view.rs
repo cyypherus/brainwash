@@ -1,6 +1,7 @@
 use crate::model::{
     EnvPointerPhase, GridPointerPhase, GridPos, GridRenderModule, GridViewSize, GuiAction,
-    GuiState, Mode, ModuleCategory, ModuleId, ModuleKind, Orientation, ParameterValue,
+    GuiState, Mode, ModuleCategory, ModuleId, ModuleKind, Orientation, PaletteModule,
+    ParameterValue,
 };
 use haven::*;
 
@@ -147,6 +148,13 @@ fn toolbar<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
                 app,
             ),
             action_button(
+                binding!(state.modules_button),
+                "Modules",
+                GuiAction::OpenModules,
+                false,
+                app,
+            ),
+            action_button(
                 binding!(state.track_button),
                 "Track",
                 GuiAction::TrackEdit,
@@ -206,11 +214,11 @@ fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
             .filtered_palette_modules()
             .iter()
             .enumerate()
-            .map(|(index, kind)| {
+            .map(|(index, module)| {
                 filtered_module_choice(
                     index,
-                    *kind,
-                    Some(*kind) == state.selected_filtered_palette_module(),
+                    module,
+                    Some(module.kind()) == state.selected_filtered_palette_module(),
                     content_width,
                     app,
                 )
@@ -244,10 +252,10 @@ fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
             .palette_modules()
             .iter()
             .enumerate()
-            .map(|(index, kind)| {
-                let selected =
-                    state.mode() == Mode::Palette && *kind == state.selected_palette_module();
-                module_choice(index, *kind, selected, content_width, app)
+            .map(|(index, module)| {
+                let selected = state.mode() == Mode::Palette
+                    && module.kind() == state.selected_palette_module();
+                module_choice(index, module, selected, content_width, app)
             })
             .collect::<Vec<_>>();
         vec![row_spaced(6., categories), column_spaced(6., modules)]
@@ -833,7 +841,7 @@ fn edit_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState
     let expand_panel = matches!(state.mode(), Mode::EnvEdit { .. } | Mode::ProbeEdit { .. });
     match (state.mode(), module) {
         (Mode::Edit { parameter, .. }, Some(module)) => {
-            rows.push(editor_header(500, module.kind().label(), "Parameters", app));
+            rows.push(editor_header(500, module.label(), "Parameters", app));
             for (index, parameter_row_value) in module.parameters().into_iter().enumerate() {
                 rows.push(parameter_row(
                     index,
@@ -880,43 +888,23 @@ fn edit_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState
             }
         }
         (Mode::AdsrEdit { parameter, .. }, Some(module)) => {
-            rows.push(editor_header(
-                500,
-                module.kind().label(),
-                "Envelope shape",
-                app,
-            ));
+            rows.push(editor_header(500, module.label(), "Envelope shape", app));
             rows.push(adsr_editor(module, parameter, app));
         }
         (Mode::EnvEdit { point, editing, .. }, Some(module)) => {
-            rows.push(editor_header(
-                500,
-                module.kind().label(),
-                "Envelope points",
-                app,
-            ));
+            rows.push(editor_header(500, module.label(), "Envelope points", app));
             rows.push(
                 envelope_editor(module.id(), module.env_points(), point, editing, app).expand_y(),
             );
         }
         (Mode::ProbeEdit { .. }, Some(module)) => {
-            rows.push(editor_header(
-                500,
-                module.kind().label(),
-                "Signal probe",
-                app,
-            ));
+            rows.push(editor_header(500, module.label(), "Signal probe", app));
             rows.push(
                 probe_editor(state.probe_history(module.id()), state.probe_len(), app).expand_y(),
             );
         }
         (Mode::SampleView { zoom, offset, .. }, Some(module)) => {
-            rows.push(editor_header(
-                500,
-                module.kind().label(),
-                "Sample window",
-                app,
-            ));
+            rows.push(editor_header(500, module.label(), "Sample window", app));
             rows.push(sample_editor(zoom, offset, app));
         }
         _ => {
@@ -953,7 +941,7 @@ fn edit_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState
 
 fn editor_header<'a>(
     id: u64,
-    module: &'static str,
+    module: &'a str,
     label: &'static str,
     app: &mut PaneState,
 ) -> View<'a, GuiState> {
@@ -1681,7 +1669,7 @@ fn parameter_fill(value: &ParameterValue) -> f32 {
                 *index as f32 / (options.len() - 1) as f32
             }
         }
-        ParameterValue::Toggle(value) => f32::from(*value),
+        ParameterValue::Text(_) => 1.,
     }
 }
 
@@ -1735,7 +1723,7 @@ fn module_tile<'a>(
 ) -> View<'a, GuiState> {
     let alpha = alpha.clamp(0., 1.);
     let kind = module.module.kind();
-    let mut code = kind.label().chars().take(3).collect::<String>();
+    let mut code = module.module.label().chars().take(3).collect::<String>();
     code.make_ascii_uppercase();
     let input_count = module.input_count;
     let output_count = module.output_count;
@@ -2289,13 +2277,13 @@ fn category_button<'a>(
 
 fn module_choice<'a>(
     index: usize,
-    kind: ModuleKind,
+    module: &PaletteModule,
     selected: bool,
     width: f32,
     app: &mut PaneState,
 ) -> View<'a, GuiState> {
     let id = 2_000 + index as u64;
-    let color = module_color(kind.category());
+    let color = module_color(module.category());
     stack(vec![
         rect(id)
             .fill(if selected {
@@ -2316,7 +2304,7 @@ fn module_choice<'a>(
             .build(app)
             .width(width)
             .height(PALETTE_ROW_HEIGHT),
-        text(id + 200, kind.label())
+        text(id + 200, module.label())
             .font_size(13)
             .fill(fg())
             .view()
@@ -2328,13 +2316,13 @@ fn module_choice<'a>(
 
 fn filtered_module_choice<'a>(
     index: usize,
-    kind: ModuleKind,
+    module: &PaletteModule,
     selected: bool,
     width: f32,
     app: &mut PaneState,
 ) -> View<'a, GuiState> {
     let id = 2_500 + index as u64;
-    let color = module_color(kind.category());
+    let color = module_color(module.category());
     stack(vec![
         rect(id)
             .fill(if selected {
@@ -2356,7 +2344,7 @@ fn filtered_module_choice<'a>(
             .build(app)
             .width(width)
             .height(PALETTE_ROW_HEIGHT),
-        text(id + 200, kind.label())
+        text(id + 200, module.label())
             .font_size(13)
             .fill(fg())
             .view()
@@ -2598,10 +2586,14 @@ fn binding_group(binding: &KeyBinding) -> u8 {
             | GuiAction::SaveAs
             | GuiAction::Load
             | GuiAction::Export
+            | GuiAction::OpenModules
             | GuiAction::Quit,
         ) => 3,
         BindingEffect::Action(
-            GuiAction::Undo | GuiAction::Redo | GuiAction::EditSubpatch | GuiAction::ExitSubpatch,
+            GuiAction::Undo
+            | GuiAction::Redo
+            | GuiAction::EditComposition
+            | GuiAction::ExitComposition,
         ) => 4,
     }
 }
@@ -2725,7 +2717,7 @@ const NORMAL_BINDINGS: &[KeyBinding] = &[
     ),
     KeyBinding::action(
         BindingInput::Character('&'),
-        GuiAction::Palette(ModuleCategory::Subpatch),
+        GuiAction::Palette(ModuleCategory::Composition),
         "! ... *",
         "category",
     ),
@@ -2764,9 +2756,9 @@ const NORMAL_BINDINGS: &[KeyBinding] = &[
     ),
     KeyBinding::action(
         BindingInput::Character('p'),
-        GuiAction::EditSubpatch,
+        GuiAction::EditComposition,
         "p",
-        "subpatch",
+        "composition",
     ),
     KeyBinding::action(
         BindingInput::Named(NamedKey::Space),
@@ -2938,7 +2930,7 @@ const PALETTE_BINDINGS: &[KeyBinding] = &[
     ),
     KeyBinding::action(
         BindingInput::Character('&'),
-        GuiAction::Palette(ModuleCategory::Subpatch),
+        GuiAction::Palette(ModuleCategory::Composition),
         "! ... *",
         "category",
     ),
@@ -3119,9 +3111,9 @@ const MOVE_BINDINGS: &[KeyBinding] = &[
     ),
     KeyBinding::action(
         BindingInput::Character('p'),
-        GuiAction::EditSubpatch,
+        GuiAction::EditComposition,
         "p",
-        "subpatch",
+        "composition",
     ),
     KeyBinding::action(
         BindingInput::Named(NamedKey::Escape),
@@ -3964,9 +3956,9 @@ const SELECT_MOVE_BINDINGS: &[KeyBinding] = &[
     ),
     KeyBinding::action(
         BindingInput::Character('p'),
-        GuiAction::EditSubpatch,
+        GuiAction::EditComposition,
         "p",
-        "subpatch",
+        "composition",
     ),
     KeyBinding::action(
         BindingInput::Named(NamedKey::Escape),
@@ -4480,11 +4472,12 @@ fn action_id(action: GuiAction) -> u64 {
         GuiAction::Save => 60,
         GuiAction::SaveAs => 61,
         GuiAction::Export => 62,
+        GuiAction::OpenModules => 72,
         GuiAction::TrackSettings => 67,
         GuiAction::TrackEdit => 68,
         GuiAction::Search => 69,
-        GuiAction::EditSubpatch => 70,
-        GuiAction::ExitSubpatch => 71,
+        GuiAction::EditComposition => 70,
+        GuiAction::ExitComposition => 71,
         GuiAction::Palette(category) => 1_100 + category_index(category) as u64,
         GuiAction::PaletteLeft => 21,
         GuiAction::PaletteRight => 22,
@@ -4538,7 +4531,7 @@ fn mode_text(state: &GuiState) -> String {
                 format!(
                     "{} / {}",
                     state.palette_category().label(),
-                    state.selected_palette_module().label()
+                    state.selected_palette_label()
                 )
             }
         }
@@ -4596,7 +4589,7 @@ fn module_color(category: ModuleCategory) -> Color {
         ModuleCategory::Effect => Color::from_rgb8(154, 86, 178),
         ModuleCategory::Logic => Color::from_rgb8(190, 76, 91),
         ModuleCategory::Routing => Color::from_rgb8(110, 128, 84),
-        ModuleCategory::Subpatch => Color::from_rgb8(96, 112, 140),
+        ModuleCategory::Composition => Color::from_rgb8(96, 112, 140),
         ModuleCategory::Output => Color::from_rgb8(214, 171, 68),
     }
 }

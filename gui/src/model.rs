@@ -1,18 +1,20 @@
 use crate::audio::{AudioHandle, MeterRoute, ProbeRoute, VoiceMode};
-use brainwash::compile::{CompileError, CompiledPatch};
-use brainwash::patch::{
-    BinaryOp, CompressorRatio, ConnectError, Distortion as AudioDistortion, Drive,
-    EnvPoint as AudioEnvPoint, Gain, InputKind as AudioInputKind, Module as AudioModule,
-    ModuleId as AudioModuleId, Patch, Wave,
-};
-use brainwash::project::{
-    self, DistType as ProjectDistType, ModuleDef as ProjectModuleDef, ModuleId as ProjectModuleId,
-    ModuleKind as ProjectModuleKind, ModuleParams as ProjectModuleParams,
-    Orientation as ProjectOrientation, Project, RoutingModule as ProjectRoutingModule,
-    StandardModule as ProjectStandardModule, SubpatchDef as ProjectSubpatchDef,
-    SubpatchId as ProjectSubpatchId, SubpatchModule as ProjectSubpatchModule,
+use crate::project::{
+    self, CompositionDef as ProjectCompositionDef, CompositionId as ProjectCompositionId,
+    CompositionModule as ProjectCompositionModule, DistType as ProjectDistType,
+    ModuleDef as ProjectModuleDef, ModuleId as ProjectModuleId, ModuleKind as ProjectModuleKind,
+    ModuleParams as ProjectModuleParams, Orientation as ProjectOrientation, Project,
+    RoutingModule as ProjectRoutingModule, StandardModule as ProjectStandardModule,
     TimeUnit as ProjectTimeUnit, TimeValue as ProjectTimeValue, WaveType as ProjectWaveType,
 };
+use brainwash::compile::{CompileError, CompiledPatch};
+use brainwash::effect::{Distortion as AudioDistortion, Drive};
+use brainwash::osc::Wave;
+use brainwash::patch::{
+    BinaryOp, CompressorRatio, ConnectError, EnvPoint as AudioEnvPoint, Gain,
+    InputKind as AudioInputKind, Module as AudioModule, ModuleId as AudioModuleId, Patch,
+};
+use brainwash::sample::Sample;
 use brainwash::sample::{Sample as AudioSample, Unit};
 use brainwash::scale::{
     amaj, amin, asharpmaj, asharpmin, bmaj, bmin, chromatic, cmaj, cmin, csharpmaj, csharpmin,
@@ -94,11 +96,12 @@ pub enum GuiAction {
     SaveAs,
     Load,
     Export,
+    OpenModules,
     TrackSettings,
     TrackEdit,
     Search,
-    EditSubpatch,
-    ExitSubpatch,
+    EditComposition,
+    ExitComposition,
     Palette(ModuleCategory),
     PaletteLeft,
     PaletteRight,
@@ -224,7 +227,7 @@ struct GuiAudioPatch {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AudioKey {
     Root(ModuleId),
-    Subpatch { owner: ModuleId, module: ModuleId },
+    Composition { owner: ModuleId, module: ModuleId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -235,6 +238,7 @@ struct AudioNode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModuleKind {
+    Primitive,
     Freq,
     Gate,
     Degree,
@@ -272,9 +276,9 @@ pub enum ModuleKind {
     TopSplit,
     RightJoin,
     DownJoin,
-    SubpatchInput,
-    SubpatchOutput,
-    Subpatch,
+    CompositionInput,
+    CompositionOutput,
+    Composition,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -285,11 +289,32 @@ pub enum ModuleCategory {
     Effect,
     Logic,
     Routing,
-    Subpatch,
+    Composition,
     Output,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaletteModule {
+    kind: ModuleKind,
+    name: String,
+    user: Option<usize>,
+}
+
+impl PaletteModule {
+    pub fn kind(&self) -> ModuleKind {
+        self.kind
+    }
+
+    pub fn label(&self) -> &str {
+        &self.name
+    }
+
+    pub fn category(&self) -> ModuleCategory {
+        self.kind.category()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Module {
     id: ModuleId,
     position: GridPos,
@@ -298,8 +323,9 @@ pub struct Module {
     disabled: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 enum ModuleBody {
+    Primitive(AudioModule),
     Freq,
     Gate,
     Degree,
@@ -316,8 +342,6 @@ enum ModuleBody {
     Osc {
         wave: EnumParam,
         frequency: FloatParam,
-        gain: FloatParam,
-        unipolar: bool,
     },
     Rise {
         gate: InputParam,
@@ -374,7 +398,7 @@ enum ModuleBody {
         input: FloatParam,
         room: FloatParam,
         damp: FloatParam,
-        mod_depth: FloatParam,
+        mix: FloatParam,
         diffusion: FloatParam,
     },
     Distortion {
@@ -433,7 +457,8 @@ enum ModuleBody {
         input: InputParam,
         gain: FloatParam,
     },
-    SubpatchOutput {
+    CompositionOutput {
+        label: String,
         input: InputParam,
     },
     TurnRightDown,
@@ -442,8 +467,14 @@ enum ModuleBody {
     TopSplit,
     RightJoin,
     DownJoin,
-    SubpatchInput,
-    Subpatch(PatchSurface),
+    CompositionInput {
+        label: String,
+        value: FloatParam,
+    },
+    Composition {
+        name: String,
+        surface: PatchSurface,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -489,7 +520,7 @@ pub enum Orientation {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModuleParameter {
-    name: &'static str,
+    name: String,
     value: ParameterValue,
     connected: bool,
 }
@@ -524,7 +555,7 @@ pub enum ParameterValue {
         index: usize,
         options: &'static [&'static str],
     },
-    Toggle(bool),
+    Text(String),
 }
 
 pub(crate) struct GridRenderModule<'a> {
@@ -592,9 +623,9 @@ const SCALE_NAMES: &[&str] = &[
 
 const NUM_VOICES: usize = 6;
 
-fn float_parameter(name: &'static str, param: FloatParam) -> ModuleParameter {
+fn float_parameter(name: impl Into<String>, param: FloatParam) -> ModuleParameter {
     ModuleParameter {
-        name,
+        name: name.into(),
         value: ParameterValue::Float {
             value: param.value,
             min: param.min,
@@ -607,7 +638,7 @@ fn float_parameter(name: &'static str, param: FloatParam) -> ModuleParameter {
 
 fn int_parameter(name: &'static str, param: IntParam) -> ModuleParameter {
     ModuleParameter {
-        name,
+        name: name.to_string(),
         value: ParameterValue::Int {
             value: param.value,
             min: param.min,
@@ -630,7 +661,7 @@ fn time_parameter(name: &'static str, param: TimeParam) -> ModuleParameter {
         }
     };
     ModuleParameter {
-        name,
+        name: name.to_string(),
         value,
         connected: param.connected,
     }
@@ -638,7 +669,7 @@ fn time_parameter(name: &'static str, param: TimeParam) -> ModuleParameter {
 
 fn input_parameter(name: &'static str, param: InputParam) -> ModuleParameter {
     ModuleParameter {
-        name,
+        name: name.to_string(),
         value: ParameterValue::Input,
         connected: param.connected,
     }
@@ -646,7 +677,7 @@ fn input_parameter(name: &'static str, param: InputParam) -> ModuleParameter {
 
 fn file_parameter(name: &'static str, path: &str, missing: bool) -> ModuleParameter {
     ModuleParameter {
-        name,
+        name: name.to_string(),
         value: ParameterValue::File {
             path: path.to_string(),
             missing,
@@ -684,27 +715,19 @@ fn mark_missing_samples_in_surface(
 ) {
     for module in &mut surface.modules {
         mark_missing_sample(module, base, missing);
-        if let Some(subpatch) = module.subpatch_surface_mut() {
-            mark_missing_samples_in_surface(subpatch, base, missing);
+        if let Some(composition) = module.composition_surface_mut() {
+            mark_missing_samples_in_surface(composition, base, missing);
         }
     }
 }
 
 fn enum_parameter(name: &'static str, param: EnumParam) -> ModuleParameter {
     ModuleParameter {
-        name,
+        name: name.to_string(),
         value: ParameterValue::Enum {
             index: param.index,
             options: param.options,
         },
-        connected: false,
-    }
-}
-
-fn toggle_parameter(name: &'static str, value: bool) -> ModuleParameter {
-    ModuleParameter {
-        name,
-        value: ParameterValue::Toggle(value),
         connected: false,
     }
 }
@@ -775,6 +798,8 @@ pub struct GuiState {
     load_after_save: bool,
     relink_sample_request: Option<ModuleId>,
     export_loops: u16,
+    open_modules_requested: bool,
+    user_compositions: Vec<brainwash::patch::Composition>,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     pub(crate) play_button: ButtonState,
@@ -782,6 +807,7 @@ pub struct GuiState {
     pub(crate) load_button: ButtonState,
     pub(crate) save_button: ButtonState,
     pub(crate) export_button: ButtonState,
+    pub(crate) modules_button: ButtonState,
     pub(crate) track_button: ButtonState,
     pub(crate) cancel_button: ButtonState,
     pub(crate) confirm_button: ButtonState,
@@ -795,28 +821,28 @@ pub struct GuiState {
     document_status: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Instrument {
     root: PatchSurface,
     track_text: String,
-    editing_subpatch: Option<ModuleId>,
-    subpatch_stack: Vec<(Option<ModuleId>, GridPos)>,
+    editing_composition: Option<ModuleId>,
+    composition_stack: Vec<(Option<ModuleId>, GridPos)>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 struct PatchSurface {
     cursor: GridPos,
     modules: Vec<Module>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Snapshot {
     instruments: Vec<Instrument>,
     active_instrument: usize,
     next_module_id: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 struct HeldMove {
     module: Module,
     origin_surface: Option<ModuleId>,
@@ -825,7 +851,7 @@ struct HeldMove {
     before: Snapshot,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 struct HeldSelection {
     modules: Vec<Module>,
     origin_surface: Option<ModuleId>,
@@ -903,6 +929,7 @@ impl Connection {
 impl ModuleKind {
     pub fn category(self) -> ModuleCategory {
         match self {
+            ModuleKind::Primitive => ModuleCategory::Routing,
             ModuleKind::Freq
             | ModuleKind::Gate
             | ModuleKind::Degree
@@ -938,15 +965,16 @@ impl ModuleKind {
             | ModuleKind::TopSplit
             | ModuleKind::RightJoin
             | ModuleKind::DownJoin => ModuleCategory::Routing,
-            ModuleKind::SubpatchInput | ModuleKind::SubpatchOutput | ModuleKind::Subpatch => {
-                ModuleCategory::Subpatch
-            }
+            ModuleKind::CompositionInput
+            | ModuleKind::CompositionOutput
+            | ModuleKind::Composition => ModuleCategory::Composition,
             ModuleKind::Output => ModuleCategory::Output,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
+            ModuleKind::Primitive => "Unit",
             ModuleKind::Freq => "Freq",
             ModuleKind::Gate => "Gate",
             ModuleKind::Degree => "Degree",
@@ -984,9 +1012,9 @@ impl ModuleKind {
             ModuleKind::TopSplit => "T Split",
             ModuleKind::RightJoin => "R Join",
             ModuleKind::DownJoin => "D Join",
-            ModuleKind::SubpatchInput => "Sub In",
-            ModuleKind::SubpatchOutput => "Sub Out",
-            ModuleKind::Subpatch => "Subpatch",
+            ModuleKind::CompositionInput => "Sub In",
+            ModuleKind::CompositionOutput => "Sub Out",
+            ModuleKind::Composition => "Composition",
         }
     }
 
@@ -996,6 +1024,7 @@ impl ModuleKind {
 
     fn default_body(self) -> ModuleBody {
         match self {
+            ModuleKind::Primitive => ModuleBody::Primitive(AudioModule::Pass),
             ModuleKind::Freq => ModuleBody::Freq,
             ModuleKind::Gate => ModuleBody::Gate,
             ModuleKind::Degree => ModuleBody::Degree,
@@ -1012,8 +1041,6 @@ impl ModuleKind {
             ModuleKind::Osc => ModuleBody::Osc {
                 wave: enum_param(&["sin", "square", "tri", "saw", "rsaw", "noise"], 0),
                 frequency: float_param(1, 200_000, 100, 44_000),
-                gain: float_param(0, 100, 5, 100),
-                unipolar: false,
             },
             ModuleKind::Rise => ModuleBody::Rise {
                 gate: input_param(),
@@ -1081,7 +1108,7 @@ impl ModuleKind {
                 input: float_param(-100, 100, 1, 0),
                 room: float_param(0, 100, 5, 50),
                 damp: float_param(0, 100, 5, 30),
-                mod_depth: float_param(0, 100, 5, 20),
+                mix: float_param(0, 100, 5, 20),
                 diffusion: float_param(0, 100, 5, 50),
             },
             ModuleKind::Distortion => ModuleBody::Distortion {
@@ -1140,7 +1167,8 @@ impl ModuleKind {
                 input: input_param(),
                 gain: float_param(0, 100, 1, 100),
             },
-            ModuleKind::SubpatchOutput => ModuleBody::SubpatchOutput {
+            ModuleKind::CompositionOutput => ModuleBody::CompositionOutput {
+                label: "Output".to_string(),
                 input: input_param(),
             },
             ModuleKind::TurnRightDown => ModuleBody::TurnRightDown,
@@ -1149,13 +1177,20 @@ impl ModuleKind {
             ModuleKind::TopSplit => ModuleBody::TopSplit,
             ModuleKind::RightJoin => ModuleBody::RightJoin,
             ModuleKind::DownJoin => ModuleBody::DownJoin,
-            ModuleKind::SubpatchInput => ModuleBody::SubpatchInput,
-            ModuleKind::Subpatch => ModuleBody::Subpatch(PatchSurface::new()),
+            ModuleKind::CompositionInput => ModuleBody::CompositionInput {
+                label: "Input".to_string(),
+                value: float_param(-100_000, 100_000, 1, 0),
+            },
+            ModuleKind::Composition => ModuleBody::Composition {
+                name: "Composition".to_string(),
+                surface: PatchSurface::new(),
+            },
         }
     }
 
     fn special_editor(self) -> Option<SpecialEditor> {
         match self {
+            ModuleKind::Primitive => None,
             ModuleKind::Adsr => Some(SpecialEditor::Adsr),
             ModuleKind::Envelope => Some(SpecialEditor::Envelope),
             ModuleKind::Probe => Some(SpecialEditor::Probe),
@@ -1193,9 +1228,9 @@ impl ModuleKind {
             | ModuleKind::TopSplit
             | ModuleKind::RightJoin
             | ModuleKind::DownJoin
-            | ModuleKind::SubpatchInput
-            | ModuleKind::SubpatchOutput
-            | ModuleKind::Subpatch => None,
+            | ModuleKind::CompositionInput
+            | ModuleKind::CompositionOutput
+            | ModuleKind::Composition => None,
         }
     }
 }
@@ -1211,20 +1246,25 @@ enum SpecialEditor {
 impl ModuleBody {
     fn duplicate(&self, next_module_id: &mut u32) -> Self {
         match self {
-            Self::Subpatch(surface) => Self::Subpatch(PatchSurface {
-                cursor: surface.cursor,
-                modules: surface
-                    .modules
-                    .iter()
-                    .map(|module| module.duplicate(module.position, next_module_id))
-                    .collect(),
-            }),
+            ModuleBody::Primitive(_) => self.clone(),
+            Self::Composition { name, surface } => Self::Composition {
+                name: name.clone(),
+                surface: PatchSurface {
+                    cursor: surface.cursor,
+                    modules: surface
+                        .modules
+                        .iter()
+                        .map(|module| module.duplicate(module.position, next_module_id))
+                        .collect(),
+                },
+            },
             _ => self.clone(),
         }
     }
 
     fn kind(&self) -> ModuleKind {
         match self {
+            ModuleBody::Primitive(_) => ModuleKind::Primitive,
             ModuleBody::Freq => ModuleKind::Freq,
             ModuleBody::Gate => ModuleKind::Gate,
             ModuleBody::Degree => ModuleKind::Degree,
@@ -1256,20 +1296,21 @@ impl ModuleBody {
             ModuleBody::Sample { .. } => ModuleKind::Sample,
             ModuleBody::Probe { .. } => ModuleKind::Probe,
             ModuleBody::Output { .. } => ModuleKind::Output,
-            ModuleBody::SubpatchOutput { .. } => ModuleKind::SubpatchOutput,
+            ModuleBody::CompositionOutput { .. } => ModuleKind::CompositionOutput,
             ModuleBody::TurnRightDown => ModuleKind::TurnRightDown,
             ModuleBody::TurnDownRight => ModuleKind::TurnDownRight,
             ModuleBody::LeftSplit => ModuleKind::LeftSplit,
             ModuleBody::TopSplit => ModuleKind::TopSplit,
             ModuleBody::RightJoin => ModuleKind::RightJoin,
             ModuleBody::DownJoin => ModuleKind::DownJoin,
-            ModuleBody::SubpatchInput => ModuleKind::SubpatchInput,
-            ModuleBody::Subpatch(_) => ModuleKind::Subpatch,
+            ModuleBody::CompositionInput { .. } => ModuleKind::CompositionInput,
+            ModuleBody::Composition { .. } => ModuleKind::Composition,
         }
     }
 
     fn parameters(&self) -> Vec<ModuleParameter> {
         match self {
+            ModuleBody::Primitive(_) => Vec::new(),
             ModuleBody::Freq | ModuleBody::Gate | ModuleBody::Degree => Vec::new(),
             ModuleBody::DegreeGate { degree } => vec![int_parameter("Deg", *degree)],
             ModuleBody::Rate { time } => vec![time_parameter("Time", *time)],
@@ -1277,16 +1318,9 @@ impl ModuleBody {
                 input_parameter("In", *input),
                 float_parameter("St", *semitones),
             ],
-            ModuleBody::Osc {
-                wave,
-                frequency,
-                gain,
-                unipolar,
-            } => vec![
+            ModuleBody::Osc { wave, frequency } => vec![
                 enum_parameter("Wave", *wave),
                 float_parameter("Hz", *frequency),
-                float_parameter("Gain", *gain),
-                toggle_parameter("Uni", *unipolar),
             ],
             ModuleBody::Rise { gate, time } | ModuleBody::Fall { gate, time } => {
                 vec![
@@ -1359,13 +1393,13 @@ impl ModuleBody {
                 input,
                 room,
                 damp,
-                mod_depth,
+                mix,
                 diffusion,
             } => vec![
                 float_parameter("In", *input),
                 float_parameter("Room", *room),
                 float_parameter("Damp", *damp),
-                float_parameter("Mod", *mod_depth),
+                float_parameter("Mix", *mix),
                 float_parameter("Diff", *diffusion),
             ],
             ModuleBody::Distortion {
@@ -1436,15 +1470,43 @@ impl ModuleBody {
                     float_parameter("Gain", *gain),
                 ]
             }
-            ModuleBody::SubpatchOutput { input } => vec![input_parameter("In", *input)],
+            ModuleBody::CompositionOutput { label, input } => vec![
+                ModuleParameter {
+                    name: "Label".to_string(),
+                    value: ParameterValue::Text(label.clone()),
+                    connected: false,
+                },
+                input_parameter("In", *input),
+            ],
             ModuleBody::TurnRightDown
             | ModuleBody::TurnDownRight
             | ModuleBody::LeftSplit
             | ModuleBody::TopSplit
             | ModuleBody::RightJoin
-            | ModuleBody::DownJoin
-            | ModuleBody::SubpatchInput
-            | ModuleBody::Subpatch(_) => Vec::new(),
+            | ModuleBody::DownJoin => Vec::new(),
+            ModuleBody::Composition { name, surface } => {
+                let mut parameters = vec![ModuleParameter {
+                    name: "Name".to_string(),
+                    value: ParameterValue::Text(name.clone()),
+                    connected: false,
+                }];
+                parameters.extend(composition_inputs(surface).into_iter().filter_map(|id| {
+                    let module = surface.modules.iter().find(|module| module.id == id)?;
+                    let ModuleBody::CompositionInput { label, value } = &module.body else {
+                        return None;
+                    };
+                    Some(float_parameter(label.clone(), *value))
+                }));
+                parameters
+            }
+            ModuleBody::CompositionInput { label, value } => vec![
+                ModuleParameter {
+                    name: "Label".to_string(),
+                    value: ParameterValue::Text(label.clone()),
+                    connected: false,
+                },
+                float_parameter("Value", *value),
+            ],
         }
     }
 
@@ -1457,6 +1519,9 @@ impl ModuleBody {
     }
 
     fn input_count(&self) -> u16 {
+        if let ModuleBody::Primitive(module) = self {
+            return module.input_kinds().len() as u16;
+        }
         self.audio_inputs().len() as u16
     }
 
@@ -1471,13 +1536,14 @@ impl ModuleBody {
 
     fn audio_inputs(&self) -> &'static [AudioInputKind] {
         match self {
+            ModuleBody::Primitive(_) => &[],
             ModuleBody::Freq
             | ModuleBody::Gate
             | ModuleBody::Degree
             | ModuleBody::DegreeGate { .. } => &[],
             ModuleBody::Rate { .. } => &[],
             ModuleBody::Transpose { .. } => &[AudioInputKind::In, AudioInputKind::Semitones],
-            ModuleBody::Osc { .. } => &[AudioInputKind::Freq, AudioInputKind::Gain],
+            ModuleBody::Osc { .. } => &[AudioInputKind::Freq],
             ModuleBody::Rise { .. } | ModuleBody::Fall { .. } => {
                 &[AudioInputKind::Gate, AudioInputKind::Time]
             }
@@ -1509,7 +1575,7 @@ impl ModuleBody {
                 AudioInputKind::In,
                 AudioInputKind::Room,
                 AudioInputKind::Damp,
-                AudioInputKind::Mod,
+                AudioInputKind::Mix,
                 AudioInputKind::Diff,
             ],
             ModuleBody::Distortion { .. } => &[
@@ -1542,12 +1608,12 @@ impl ModuleBody {
             ModuleBody::Sample { .. } => &[AudioInputKind::Position],
             ModuleBody::Probe { .. } => &[AudioInputKind::In],
             ModuleBody::Output { .. } => &[AudioInputKind::A, AudioInputKind::B],
-            ModuleBody::SubpatchOutput { .. } => &[AudioInputKind::In],
+            ModuleBody::CompositionOutput { .. } => &[AudioInputKind::In],
             ModuleBody::TurnRightDown
             | ModuleBody::TurnDownRight
             | ModuleBody::LeftSplit
             | ModuleBody::TopSplit => &[AudioInputKind::In],
-            ModuleBody::SubpatchInput | ModuleBody::Subpatch(_) => &[],
+            ModuleBody::CompositionInput { .. } | ModuleBody::Composition { .. } => &[],
             ModuleBody::RightJoin | ModuleBody::DownJoin => &[AudioInputKind::A, AudioInputKind::B],
         }
     }
@@ -1568,22 +1634,16 @@ impl ModuleBody {
 
     fn set_parameter(&mut self, index: usize, parameter: ModuleParameter) -> bool {
         match self {
+            ModuleBody::Primitive(_) => false,
             ModuleBody::DegreeGate { degree } => set_int_param(degree, index, 0, &parameter),
             ModuleBody::Rate { time } => set_time_param(time, index, 0, &parameter),
             ModuleBody::Transpose { input, semitones } => {
                 set_input_param(input, index, 0, &parameter)
                     || set_float_param(semitones, index, 1, &parameter)
             }
-            ModuleBody::Osc {
-                wave,
-                frequency,
-                gain,
-                unipolar,
-            } => {
+            ModuleBody::Osc { wave, frequency } => {
                 set_enum_param(wave, index, 0, &parameter)
                     || set_float_param(frequency, index, 1, &parameter)
-                    || set_float_param(gain, index, 2, &parameter)
-                    || set_toggle_param(unipolar, index, 3, &parameter)
             }
             ModuleBody::Rise { gate, time } | ModuleBody::Fall { gate, time } => {
                 set_input_param(gate, index, 0, &parameter)
@@ -1651,13 +1711,13 @@ impl ModuleBody {
                 input,
                 room,
                 damp,
-                mod_depth,
+                mix,
                 diffusion,
             } => {
                 set_float_param(input, index, 0, &parameter)
                     || set_float_param(room, index, 1, &parameter)
                     || set_float_param(damp, index, 2, &parameter)
-                    || set_float_param(mod_depth, index, 3, &parameter)
+                    || set_float_param(mix, index, 3, &parameter)
                     || set_float_param(diffusion, index, 4, &parameter)
             }
             ModuleBody::Distortion {
@@ -1715,7 +1775,11 @@ impl ModuleBody {
                 set_input_param(input, index, 0, &parameter)
                     || set_float_param(gain, index, 1, &parameter)
             }
-            ModuleBody::SubpatchOutput { input } => set_input_param(input, index, 0, &parameter),
+            ModuleBody::CompositionOutput { label, input } => match index {
+                0 => set_text_param(label, &parameter),
+                1 => set_input_param(input, index, 1, &parameter),
+                _ => false,
+            },
             ModuleBody::Freq
             | ModuleBody::Gate
             | ModuleBody::Degree
@@ -1724,9 +1788,27 @@ impl ModuleBody {
             | ModuleBody::LeftSplit
             | ModuleBody::TopSplit
             | ModuleBody::RightJoin
-            | ModuleBody::DownJoin
-            | ModuleBody::SubpatchInput
-            | ModuleBody::Subpatch(_) => false,
+            | ModuleBody::DownJoin => false,
+            ModuleBody::Composition { name, surface } => {
+                if index == 0 {
+                    return set_text_param(name, &parameter);
+                }
+                let Some(id) = composition_inputs(surface).get(index - 1).copied() else {
+                    return false;
+                };
+                let Some(module) = surface.modules.iter_mut().find(|module| module.id == id) else {
+                    return false;
+                };
+                let ModuleBody::CompositionInput { value, .. } = &mut module.body else {
+                    return false;
+                };
+                set_float_param(value, 0, 0, &parameter)
+            }
+            ModuleBody::CompositionInput { label, value } => match index {
+                0 => set_text_param(label, &parameter),
+                1 => set_float_param(value, index, 1, &parameter),
+                _ => false,
+            },
         }
     }
 }
@@ -1819,6 +1901,17 @@ fn set_input_param(
     true
 }
 
+fn set_text_param(value: &mut String, parameter: &ModuleParameter) -> bool {
+    let ParameterValue::Text(next) = &parameter.value else {
+        return false;
+    };
+    if next.trim().is_empty() || *value == *next {
+        return false;
+    }
+    *value = next.clone();
+    true
+}
+
 fn set_enum_param(
     target: &mut EnumParam,
     index: usize,
@@ -1839,22 +1932,6 @@ fn set_enum_param(
     }
 }
 
-fn set_toggle_param(
-    target: &mut bool,
-    index: usize,
-    expected: usize,
-    parameter: &ModuleParameter,
-) -> bool {
-    if index != expected {
-        return false;
-    }
-    let ParameterValue::Toggle(value) = &parameter.value else {
-        return false;
-    };
-    *target = *value;
-    true
-}
-
 impl ModuleCategory {
     pub const ALL: [Self; 8] = [
         Self::Source,
@@ -1864,7 +1941,7 @@ impl ModuleCategory {
         Self::Effect,
         Self::Logic,
         Self::Routing,
-        Self::Subpatch,
+        Self::Composition,
     ];
 
     pub fn label(self) -> &'static str {
@@ -1875,7 +1952,7 @@ impl ModuleCategory {
             ModuleCategory::Effect => "Effect",
             ModuleCategory::Logic => "Logic",
             ModuleCategory::Routing => "Routing",
-            ModuleCategory::Subpatch => "Subpatch",
+            ModuleCategory::Composition => "Composition",
             ModuleCategory::Output => "Output",
         }
     }
@@ -1914,18 +1991,30 @@ impl Module {
         self.body.parameters()
     }
 
-    fn subpatch_surface(&self) -> Option<&PatchSurface> {
-        let ModuleBody::Subpatch(surface) = &self.body else {
+    pub fn label(&self) -> &str {
+        match &self.body {
+            ModuleBody::Primitive(module) => graph_node_label(module),
+            ModuleBody::Composition { name, .. } => name,
+            _ => self.kind().label(),
+        }
+    }
+
+    fn composition_surface(&self) -> Option<&PatchSurface> {
+        let ModuleBody::Composition { surface, .. } = &self.body else {
             return None;
         };
         Some(surface)
     }
 
-    fn subpatch_surface_mut(&mut self) -> Option<&mut PatchSurface> {
-        let ModuleBody::Subpatch(surface) = &mut self.body else {
+    fn composition_surface_mut(&mut self) -> Option<&mut PatchSurface> {
+        let ModuleBody::Composition { surface, .. } = &mut self.body else {
             return None;
         };
         Some(surface)
+    }
+
+    fn is_composition(&self) -> bool {
+        matches!(self.body, ModuleBody::Composition { .. })
     }
 
     pub fn env_points(&self) -> &[EnvPoint] {
@@ -2025,8 +2114,8 @@ impl Module {
 }
 
 impl ModuleParameter {
-    pub fn name(&self) -> &'static str {
-        self.name
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     pub fn value(&self) -> &ParameterValue {
@@ -2068,13 +2157,7 @@ impl ParameterValue {
             ParameterValue::Enum { index, options } => {
                 options.get(*index).copied().unwrap_or_default().to_string()
             }
-            ParameterValue::Toggle(value) => {
-                if *value {
-                    "on".to_string()
-                } else {
-                    "off".to_string()
-                }
-            }
+            ParameterValue::Text(value) => value.clone(),
         }
     }
 
@@ -2084,6 +2167,7 @@ impl ParameterValue {
             ParameterValue::Float { .. }
                 | ParameterValue::Time { .. }
                 | ParameterValue::Bars { .. }
+                | ParameterValue::Text(_)
         )
     }
 
@@ -2115,13 +2199,7 @@ impl ParameterValue {
             ParameterValue::Enum { index, options } => {
                 options.get(*index).copied().unwrap_or_default().to_string()
             }
-            ParameterValue::Toggle(value) => {
-                if *value {
-                    "on".to_string()
-                } else {
-                    "off".to_string()
-                }
-            }
+            ParameterValue::Text(value) => value.clone(),
         }
     }
 
@@ -2186,7 +2264,7 @@ impl ParameterValue {
                 }
                 before != (*numerator, *denominator)
             }
-            ParameterValue::Input | ParameterValue::File { .. } => false,
+            ParameterValue::Input | ParameterValue::File { .. } | ParameterValue::Text(_) => false,
             ParameterValue::Enum { index, options } => {
                 if options.is_empty() {
                     return false;
@@ -2198,10 +2276,6 @@ impl ParameterValue {
                 } else {
                     *index - 1
                 };
-                true
-            }
-            ParameterValue::Toggle(value) => {
-                *value = !*value;
                 true
             }
         }
@@ -2241,36 +2315,36 @@ impl Instrument {
         Self {
             root: PatchSurface::new(),
             track_text: "(0/2/4/7)".to_string(),
-            editing_subpatch: None,
-            subpatch_stack: Vec::new(),
+            editing_composition: None,
+            composition_stack: Vec::new(),
         }
     }
 
     fn surface(&self) -> &PatchSurface {
-        self.editing_subpatch
-            .and_then(|owner| subpatch_surface(&self.root, owner))
+        self.editing_composition
+            .and_then(|owner| composition_surface(&self.root, owner))
             .unwrap_or(&self.root)
     }
 
     fn surface_mut(&mut self) -> &mut PatchSurface {
-        let Some(owner) = self.editing_subpatch else {
+        let Some(owner) = self.editing_composition else {
             return &mut self.root;
         };
-        if subpatch_surface(&self.root, owner).is_none() {
-            self.editing_subpatch = None;
+        if composition_surface(&self.root, owner).is_none() {
+            self.editing_composition = None;
             return &mut self.root;
         }
-        subpatch_surface_mut(&mut self.root, owner).unwrap()
+        composition_surface_mut(&mut self.root, owner).unwrap()
     }
 }
 
-fn subpatch_surface(surface: &PatchSurface, owner: ModuleId) -> Option<&PatchSurface> {
+fn composition_surface(surface: &PatchSurface, owner: ModuleId) -> Option<&PatchSurface> {
     for module in &surface.modules {
         if module.id == owner {
-            return module.subpatch_surface();
+            return module.composition_surface();
         }
-        if let Some(child) = module.subpatch_surface()
-            && let Some(found) = subpatch_surface(child, owner)
+        if let Some(child) = module.composition_surface()
+            && let Some(found) = composition_surface(child, owner)
         {
             return Some(found);
         }
@@ -2278,13 +2352,16 @@ fn subpatch_surface(surface: &PatchSurface, owner: ModuleId) -> Option<&PatchSur
     None
 }
 
-fn subpatch_surface_mut(surface: &mut PatchSurface, owner: ModuleId) -> Option<&mut PatchSurface> {
+fn composition_surface_mut(
+    surface: &mut PatchSurface,
+    owner: ModuleId,
+) -> Option<&mut PatchSurface> {
     for module in &mut surface.modules {
         if module.id == owner {
-            return module.subpatch_surface_mut();
+            return module.composition_surface_mut();
         }
-        if let Some(child) = module.subpatch_surface_mut()
-            && let Some(found) = subpatch_surface_mut(child, owner)
+        if let Some(child) = module.composition_surface_mut()
+            && let Some(found) = composition_surface_mut(child, owner)
         {
             return Some(found);
         }
@@ -2331,15 +2408,15 @@ fn update_disabled_states_for_surface(surface: &mut PatchSurface) {
         .modules
         .iter()
         .map(|module| {
-            let ports = module.subpatch_surface().map(subpatch_ports);
+            let ports = module.composition_surface().map(composition_ports);
             let (width, height) = module_footprint(module, ports);
             (module.id, width, height)
         })
         .collect::<Vec<_>>();
     update_surface_disabled_states(surface, &footprints);
     for module in &mut surface.modules {
-        if let Some(subpatch) = module.subpatch_surface_mut() {
-            update_disabled_states_for_surface(subpatch);
+        if let Some(composition) = module.composition_surface_mut() {
+            update_disabled_states_for_surface(composition);
         }
     }
 }
@@ -2350,35 +2427,56 @@ fn max_module_id(surface: &PatchSurface) -> Option<u32> {
         .iter()
         .map(|module| {
             module
-                .subpatch_surface()
+                .composition_surface()
                 .and_then(max_module_id)
                 .map_or(module.id.0, |child| child.max(module.id.0))
         })
         .max()
 }
 
-fn module_footprint(module: &Module, subpatch_ports: Option<(u16, u16)>) -> (u16, u16) {
+fn surface_extent(surface: &PatchSurface) -> (u16, u16) {
+    surface.modules.iter().fold((1, 1), |extent, module| {
+        let own = (
+            module.position.x.saturating_add(2),
+            module
+                .position
+                .y
+                .saturating_add(module.input_count().max(1))
+                .saturating_add(1),
+        );
+        let nested = module
+            .composition_surface()
+            .map(surface_extent)
+            .unwrap_or((1, 1));
+        (
+            extent.0.max(own.0).max(nested.0),
+            extent.1.max(own.1).max(nested.1),
+        )
+    })
+}
+
+fn module_footprint(module: &Module, composition_ports: Option<(u16, u16)>) -> (u16, u16) {
     if module.kind().is_routing() {
         return (1, 1);
     }
     let (inputs, outputs) =
-        subpatch_ports.unwrap_or_else(|| (module.input_count(), module.output_count()));
+        composition_ports.unwrap_or_else(|| (module.input_count(), module.output_count()));
     match module.orientation {
         Orientation::Right => (outputs.max(1), inputs.max(1)),
         Orientation::Down => (inputs.max(1), outputs.max(1)),
     }
 }
 
-fn subpatch_ports(surface: &PatchSurface) -> (u16, u16) {
+fn composition_ports(surface: &PatchSurface) -> (u16, u16) {
     let inputs = surface
         .modules
         .iter()
-        .filter(|module| module.kind() == ModuleKind::SubpatchInput)
+        .filter(|module| module.kind() == ModuleKind::CompositionInput)
         .count() as u16;
     let outputs = surface
         .modules
         .iter()
-        .filter(|module| module.kind() == ModuleKind::SubpatchOutput)
+        .filter(|module| module.kind() == ModuleKind::CompositionOutput)
         .count() as u16;
     (inputs, outputs)
 }
@@ -2425,6 +2523,8 @@ impl GuiState {
             load_after_save: false,
             relink_sample_request: None,
             export_loops: 1,
+            open_modules_requested: false,
+            user_compositions: Vec::new(),
             undo: Vec::new(),
             redo: Vec::new(),
             play_button: ButtonState::default(),
@@ -2432,6 +2532,7 @@ impl GuiState {
             load_button: ButtonState::default(),
             save_button: ButtonState::default(),
             export_button: ButtonState::default(),
+            modules_button: ButtonState::default(),
             track_button: ButtonState::default(),
             cancel_button: ButtonState::default(),
             confirm_button: ButtonState::default(),
@@ -2583,11 +2684,11 @@ impl GuiState {
         self.instruments.len()
     }
 
-    pub fn subpatch_depth(&self) -> usize {
+    pub fn composition_depth(&self) -> usize {
         self.instrument()
-            .subpatch_stack
+            .composition_stack
             .len()
-            .max(usize::from(self.instrument().editing_subpatch.is_some()))
+            .max(usize::from(self.instrument().editing_composition.is_some()))
     }
 
     pub fn prompt_text(&self) -> &str {
@@ -2627,6 +2728,10 @@ impl GuiState {
         let requested = self.load_after_save;
         self.load_after_save = false;
         requested
+    }
+
+    pub fn take_open_modules_request(&mut self) -> bool {
+        std::mem::take(&mut self.open_modules_requested)
     }
 
     pub fn take_relink_sample_request(&mut self) -> Option<ModuleId> {
@@ -2673,35 +2778,71 @@ impl GuiState {
         &self.palette_filter
     }
 
-    pub fn palette_modules(&self) -> Vec<ModuleKind> {
-        all_modules()
-            .iter()
-            .copied()
-            .filter(|kind| kind.category() == self.palette_category)
-            .collect()
+    pub fn set_user_compositions(&mut self, compositions: Vec<brainwash::patch::Composition>) {
+        self.user_compositions = compositions;
     }
 
-    pub fn filtered_palette_modules(&self) -> Vec<ModuleKind> {
+    pub fn palette_modules(&self) -> Vec<PaletteModule> {
+        self.palette_modules_for(self.palette_category)
+    }
+
+    fn palette_modules_for(&self, category: ModuleCategory) -> Vec<PaletteModule> {
+        let mut modules = all_modules()
+            .iter()
+            .copied()
+            .filter(|kind| kind.category() == category)
+            .map(|kind| PaletteModule {
+                kind,
+                name: kind.label().to_string(),
+                user: None,
+            })
+            .collect::<Vec<_>>();
+        if category == ModuleCategory::Composition {
+            modules.extend(self.user_compositions.iter().enumerate().map(
+                |(index, composition)| PaletteModule {
+                    kind: ModuleKind::Composition,
+                    name: composition.name().to_string(),
+                    user: Some(index),
+                },
+            ));
+        }
+        modules
+    }
+
+    pub fn filtered_palette_modules(&self) -> Vec<PaletteModule> {
         if self.palette_filter.is_empty() {
             return Vec::new();
         }
         let filter = self.palette_filter.to_lowercase();
-        all_modules()
-            .iter()
-            .copied()
-            .filter(|kind| kind.label().to_lowercase().contains(&filter))
+        ModuleCategory::ALL
+            .into_iter()
+            .flat_map(|category| self.palette_modules_for(category))
+            .filter(|module| module.label().to_lowercase().contains(&filter))
             .collect()
     }
 
-    pub fn selected_filtered_palette_module(&self) -> Option<ModuleKind> {
+    fn selected_filtered_palette_choice(&self) -> Option<PaletteModule> {
         self.filtered_palette_modules()
             .get(self.palette_filter_index)
-            .copied()
+            .cloned()
+    }
+
+    fn selected_palette_choice(&self) -> PaletteModule {
+        let modules = self.palette_modules();
+        modules[self.palette_index.min(modules.len().saturating_sub(1))].clone()
+    }
+
+    pub fn selected_filtered_palette_module(&self) -> Option<ModuleKind> {
+        self.selected_filtered_palette_choice()
+            .map(|module| module.kind)
     }
 
     pub fn selected_palette_module(&self) -> ModuleKind {
-        let modules = self.palette_modules();
-        modules[self.palette_index.min(modules.len().saturating_sub(1))]
+        self.selected_palette_choice().kind
+    }
+
+    pub fn selected_palette_label(&self) -> String {
+        self.selected_palette_choice().name
     }
 
     pub fn module_at(&self, position: GridPos) -> Option<&Module> {
@@ -2743,13 +2884,24 @@ impl GuiState {
             .collect::<Vec<_>>();
         let input_labels = (0..input_count as usize)
             .map(|index| {
+                if let Some(surface) = module.composition_surface()
+                    && let Some(label) = composition_inputs(surface).get(index).and_then(|id| {
+                        let module = surface.modules.iter().find(|module| module.id == *id)?;
+                        let ModuleBody::CompositionInput { label, .. } = &module.body else {
+                            return None;
+                        };
+                        label.chars().next()
+                    })
+                {
+                    return label;
+                }
                 port_labels
                     .get(index)
                     .copied()
                     .unwrap_or_else(|| match (module.kind(), index) {
                         (ModuleKind::RightJoin | ModuleKind::DownJoin, 0) => 'A',
                         (ModuleKind::RightJoin | ModuleKind::DownJoin, _) => 'B',
-                        (ModuleKind::Subpatch, _) => 'I',
+                        (ModuleKind::Composition, _) => 'I',
                         (
                             ModuleKind::TurnRightDown
                             | ModuleKind::TurnDownRight
@@ -2817,10 +2969,10 @@ impl GuiState {
     }
 
     fn module_input_count(&self, module: &Module) -> u16 {
-        if module.kind() == ModuleKind::Subpatch {
+        if module.is_composition() {
             return module
-                .subpatch_surface()
-                .map(subpatch_ports)
+                .composition_surface()
+                .map(composition_ports)
                 .unwrap_or((0, 0))
                 .0;
         }
@@ -2828,10 +2980,10 @@ impl GuiState {
     }
 
     fn module_output_count(&self, module: &Module) -> u16 {
-        if module.kind() == ModuleKind::Subpatch {
+        if module.is_composition() {
             return module
-                .subpatch_surface()
-                .map(subpatch_ports)
+                .composition_surface()
+                .map(composition_ports)
                 .unwrap_or((0, 0))
                 .1;
         }
@@ -2839,14 +2991,31 @@ impl GuiState {
     }
 
     fn module_input_connected(&self, module: &Module, port: u16) -> bool {
-        if module.kind() == ModuleKind::Subpatch {
-            return true;
+        if module.is_composition() {
+            let Some(surface) = module.composition_surface() else {
+                return false;
+            };
+            let Some(id) = composition_inputs(surface).get(port as usize).copied() else {
+                return false;
+            };
+            return surface
+                .modules
+                .iter()
+                .find(|module| module.id == id)
+                .and_then(|module| match &module.body {
+                    ModuleBody::CompositionInput { value, .. } => Some(value.connected),
+                    _ => None,
+                })
+                .unwrap_or(false);
         }
         module.input_connected(port)
     }
 
     fn module_audio_input(&self, module: &Module, port: usize) -> Option<AudioInputKind> {
-        if module.kind() == ModuleKind::Subpatch {
+        if let ModuleBody::Primitive(primitive) = &module.body {
+            return primitive.input_kinds().get(port).copied();
+        }
+        if module.is_composition() {
             return (port < self.module_input_count(module) as usize).then_some(AudioInputKind::In);
         }
         module.body.audio_inputs().get(port).copied()
@@ -2856,7 +3025,7 @@ impl GuiState {
         if self.module_input_count(module) == 0 {
             return false;
         }
-        if module.kind() == ModuleKind::Subpatch {
+        if module.is_composition() {
             return module.orientation == Orientation::Down;
         }
         module.has_input_top()
@@ -2866,7 +3035,7 @@ impl GuiState {
         if self.module_input_count(module) == 0 {
             return false;
         }
-        if module.kind() == ModuleKind::Subpatch {
+        if module.is_composition() {
             return module.orientation == Orientation::Right;
         }
         module.has_input_left()
@@ -2876,7 +3045,7 @@ impl GuiState {
         if self.module_output_count(module) == 0 {
             return false;
         }
-        if module.kind() == ModuleKind::Subpatch {
+        if module.is_composition() {
             return module.orientation == Orientation::Down;
         }
         module.has_output_bottom()
@@ -2886,7 +3055,7 @@ impl GuiState {
         if self.module_output_count(module) == 0 {
             return false;
         }
-        if module.kind() == ModuleKind::Subpatch {
+        if module.is_composition() {
             return module.orientation == Orientation::Right;
         }
         module.has_output_right()
@@ -3118,12 +3287,6 @@ impl GuiState {
         )
     }
 
-    fn kind_fits(&self, kind: ModuleKind, orientation: Orientation, position: GridPos) -> bool {
-        let width = kind.width(orientation);
-        let height = kind.height(orientation);
-        self.area_fits(width, height, position, &[])
-    }
-
     fn area_fits(&self, width: u16, height: u16, position: GridPos, ignored: &[ModuleId]) -> bool {
         if position.x + width > self.width || position.y + height > self.height {
             return false;
@@ -3179,9 +3342,9 @@ impl GuiState {
         }
         for owner in root_modules
             .iter()
-            .filter(|module| !module.disabled && module.kind() == ModuleKind::Subpatch)
+            .filter(|module| !module.disabled && module.is_composition())
         {
-            if owner.subpatch_surface().is_some_and(|surface| {
+            if owner.composition_surface().is_some_and(|surface| {
                 surface
                     .modules
                     .iter()
@@ -3199,7 +3362,7 @@ impl GuiState {
                     root_modules
                         .iter()
                         .find(|module| module.id == *id)
-                        .and_then(Module::subpatch_surface)
+                        .and_then(Module::composition_surface)
                 })
                 .any(|surface| {
                     surface
@@ -3221,7 +3384,7 @@ impl GuiState {
                 .iter()
                 .find(|module| !module.disabled && module.id == id)
                 .ok_or(AudioPatchError::Compile(CompileError::MissingModule))?;
-            if module.kind() == ModuleKind::Subpatch {
+            if module.is_composition() {
                 continue;
             }
             let audio = audio_module(module, rate, self.bpm)?;
@@ -3244,20 +3407,23 @@ impl GuiState {
             });
         }
 
-        for (owner_id, subpatch) in needed
+        for (owner_id, composition) in needed
             .iter()
             .filter_map(|id| {
                 root_modules
                     .iter()
-                    .find(|module| module.id == *id && module.kind() == ModuleKind::Subpatch)
+                    .find(|module| module.id == *id && module.is_composition())
             })
             .filter_map(|module| {
                 module
-                    .subpatch_surface()
+                    .composition_surface()
                     .map(|surface| (module.id, surface))
             })
         {
-            for module in subpatch.modules.iter().filter(|module| !module.disabled) {
+            for module in composition.modules.iter().filter(|module| !module.disabled) {
+                if module.is_composition() {
+                    continue;
+                }
                 let audio = audio_module(module, rate, self.bpm)?;
                 let audio_id = patch.insert(audio);
                 if module.kind() == ModuleKind::Probe {
@@ -3274,7 +3440,7 @@ impl GuiState {
                     }
                 }
                 ids.push(AudioNode {
-                    key: AudioKey::Subpatch {
+                    key: AudioKey::Composition {
                         owner: owner_id,
                         module: module.id,
                     },
@@ -3327,20 +3493,20 @@ impl GuiState {
             if !self.module_input_connected(target, input as u16) {
                 continue;
             }
-            if target.kind() == ModuleKind::Subpatch {
+            if target.is_composition() {
                 let Some(from) = from else {
                     continue;
                 };
-                let Some(subpatch) = target.subpatch_surface() else {
+                let Some(composition) = target.composition_surface() else {
                     continue;
                 };
-                let inputs = subpatch_inputs(subpatch);
+                let inputs = composition_inputs(composition);
                 let Some(input_id) = inputs.get(input).copied() else {
                     continue;
                 };
                 let Some(to) = audio_id(
                     &ids,
-                    AudioKey::Subpatch {
+                    AudioKey::Composition {
                         owner: target.id,
                         module: input_id,
                     },
@@ -3348,7 +3514,7 @@ impl GuiState {
                     continue;
                 };
                 let port = patch
-                    .input_port(to, AudioInputKind::In)
+                    .input_port(to, AudioInputKind::A)
                     .map_err(AudioPatchError::Connect)?;
                 patch
                     .connect_input(from, port)
@@ -3369,23 +3535,23 @@ impl GuiState {
             }
         }
 
-        for (owner, subpatch) in needed.iter().filter_map(|id| {
+        for (owner, composition) in needed.iter().filter_map(|id| {
             root_modules
                 .iter()
                 .find(|module| module.id == *id)
-                .and_then(|module| module.subpatch_surface().map(|surface| (*id, surface)))
+                .and_then(|module| module.composition_surface().map(|surface| (*id, surface)))
         }) {
-            for connection in self.surface_connections(&subpatch.modules) {
+            for connection in self.surface_connections(&composition.modules) {
                 let Some(from) = audio_id(
                     &ids,
-                    AudioKey::Subpatch {
+                    AudioKey::Composition {
                         owner,
                         module: connection.from,
                     },
                 ) else {
                     continue;
                 };
-                let Some(target) = subpatch
+                let Some(target) = composition
                     .modules
                     .iter()
                     .find(|module| module.id == connection.to)
@@ -3394,7 +3560,7 @@ impl GuiState {
                 };
                 let Some(to) = audio_id(
                     &ids,
-                    AudioKey::Subpatch {
+                    AudioKey::Composition {
                         owner,
                         module: connection.to,
                     },
@@ -3639,19 +3805,25 @@ impl GuiState {
     }
 
     fn set_project(&mut self, project: Project, path: String) -> io::Result<()> {
-        let root = instrument_surface_from_project(&project)
+        let bpm = project.bpm.round().clamp(1.0, u16::MAX as f32) as u16;
+        let mut root = instrument_surface_from_project(&project)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let (project_width, project_height) = surface_extent(&root);
+        self.width = self.width.max(project_width);
+        self.height = self.height.max(project_height);
+        let mut next_projection_id = max_module_id(&root).map(|id| id + 1).unwrap_or(0);
+        canonicalize_builtin_compositions(&mut root, &mut next_projection_id, bpm);
         let instrument = Instrument {
             root,
             track_text: project.track.unwrap_or_else(|| "(0/2/4/7)".to_string()),
-            editing_subpatch: None,
-            subpatch_stack: Vec::new(),
+            editing_composition: None,
+            composition_stack: Vec::new(),
         };
         let mut instruments = vec![instrument];
         instruments.resize_with(INSTRUMENT_COUNT, Instrument::new);
         self.instruments = instruments;
         self.active_instrument = 0;
-        self.bpm = project.bpm.round().clamp(1.0, u16::MAX as f32) as u16;
+        self.bpm = bpm;
         self.scale_index = project.scale_idx.min(SCALE_NAMES.len().saturating_sub(1));
         self.next_module_id = self
             .instruments
@@ -4120,6 +4292,7 @@ impl GuiState {
             .and_then(|module| module.parameter(parameter))
             .map(|parameter| match parameter.value {
                 ParameterValue::Time { .. } | ParameterValue::Bars { .. } => TextInputKind::Time,
+                ParameterValue::Text(_) => TextInputKind::Free,
                 _ => TextInputKind::Number,
             })
             .unwrap_or(TextInputKind::Number)
@@ -4176,6 +4349,9 @@ impl GuiState {
                     .unwrap_or_else(|| "output.wav".to_string());
                 self.open_prompt(Mode::ExportPrompt, text);
             }
+            GuiAction::OpenModules => {
+                self.open_modules_requested = true;
+            }
             GuiAction::TrackSettings => {
                 self.mode = Mode::TrackSettings { parameter: 0 };
             }
@@ -4183,8 +4359,8 @@ impl GuiState {
                 let text = self.track_text().to_string();
                 self.open_prompt(Mode::TrackPrompt, text);
             }
-            GuiAction::EditSubpatch => self.toggle_subpatch(),
-            GuiAction::ExitSubpatch => self.exit_subpatch(),
+            GuiAction::EditComposition => self.toggle_composition(),
+            GuiAction::ExitComposition => self.exit_composition(),
             GuiAction::Left => self.move_cursor(-1, 0),
             GuiAction::Down => self.move_cursor(0, 1),
             GuiAction::Up => self.move_cursor(0, -1),
@@ -4326,43 +4502,44 @@ impl GuiState {
         }
     }
 
-    fn toggle_subpatch(&mut self) {
+    fn toggle_composition(&mut self) {
         let target = self
             .module_at(self.cursor())
-            .filter(|module| module.kind() == ModuleKind::Subpatch)
+            .filter(|module| module.is_composition())
             .map(|module| module.id);
         if let Some(target) = target {
-            self.enter_subpatch_surface(target);
+            self.enter_composition_surface(target);
             self.mode = Mode::Normal;
         } else {
-            self.exit_subpatch_surface();
+            self.exit_composition_surface();
             self.mode = Mode::Normal;
         }
     }
 
-    fn enter_subpatch_surface(&mut self, owner: ModuleId) {
+    fn enter_composition_surface(&mut self, owner: ModuleId) {
         let cursor = self.cursor();
         let inst = self.instrument_mut();
-        inst.subpatch_stack.push((inst.editing_subpatch, cursor));
-        inst.editing_subpatch = Some(owner);
+        inst.composition_stack
+            .push((inst.editing_composition, cursor));
+        inst.editing_composition = Some(owner);
         inst.surface_mut().cursor = GridPos::new(0, 0);
     }
 
-    fn exit_subpatch_surface(&mut self) {
+    fn exit_composition_surface(&mut self) {
         let inst = self.instrument_mut();
-        if inst.editing_subpatch.is_none() {
+        if inst.editing_composition.is_none() {
             return;
         }
-        if let Some((parent, cursor)) = inst.subpatch_stack.pop() {
-            inst.editing_subpatch = parent;
+        if let Some((parent, cursor)) = inst.composition_stack.pop() {
+            inst.editing_composition = parent;
             inst.surface_mut().cursor = cursor;
         } else {
-            inst.editing_subpatch = None;
+            inst.editing_composition = None;
         }
     }
 
-    fn exit_subpatch(&mut self) {
-        self.exit_subpatch_surface();
+    fn exit_composition(&mut self) {
+        self.exit_composition_surface();
         self.mode = Mode::Normal;
     }
 
@@ -4379,8 +4556,8 @@ impl GuiState {
             GuiAction::PaletteUp | GuiAction::Up => self.move_palette_selection(-1),
             GuiAction::PaletteDown | GuiAction::Down => self.move_palette_selection(1),
             GuiAction::Confirm | GuiAction::OpenPalette => {
-                let kind = self.selected_palette_module();
-                self.insert_at_cursor(kind);
+                let module = self.selected_palette_choice();
+                self.insert_palette_module(module);
                 self.mode = Mode::Normal;
             }
             GuiAction::Cancel | GuiAction::Edit => self.mode = Mode::Normal,
@@ -4396,14 +4573,15 @@ impl GuiState {
             | GuiAction::TogglePlay
             | GuiAction::ToggleMeters
             | GuiAction::Quit
+            | GuiAction::OpenModules
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
             | GuiAction::Export
             | GuiAction::TrackSettings
             | GuiAction::TrackEdit
-            | GuiAction::EditSubpatch
-            | GuiAction::ExitSubpatch
+            | GuiAction::EditComposition
+            | GuiAction::ExitComposition
             | GuiAction::Delete
             | GuiAction::Move
             | GuiAction::Copy
@@ -4451,8 +4629,8 @@ impl GuiState {
                 self.palette_filter_index = self.palette_filter_index.saturating_sub(1);
             }
             GuiAction::Confirm => {
-                if let Some(kind) = self.selected_filtered_palette_module() {
-                    self.insert_at_cursor(kind);
+                if let Some(module) = self.selected_filtered_palette_choice() {
+                    self.insert_palette_module(module);
                 }
                 self.palette_searching = false;
                 self.palette_filter.clear();
@@ -4515,8 +4693,8 @@ impl GuiState {
                     let origin = held.origin;
                     held.module.position = origin;
                     let inst = self.instrument_mut();
-                    inst.editing_subpatch = held.origin_surface;
-                    inst.subpatch_stack = held.origin_stack;
+                    inst.editing_composition = held.origin_surface;
+                    inst.composition_stack = held.origin_stack;
                     inst.surface_mut().cursor = origin;
                     inst.surface_mut().modules.push(held.module);
                     self.mode = Mode::Normal;
@@ -4525,13 +4703,14 @@ impl GuiState {
                 self.instrument_mut().surface_mut().cursor = origin;
                 self.mode = Mode::Normal;
             }
-            GuiAction::EditSubpatch => self.move_across_subpatch(module, origin),
+            GuiAction::EditComposition => self.move_across_composition(module, origin),
             GuiAction::PaletteLeft
             | GuiAction::PaletteRight
             | GuiAction::PaletteUp
             | GuiAction::PaletteDown
             | GuiAction::Palette(_)
             | GuiAction::Quit
+            | GuiAction::OpenModules
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
@@ -4539,7 +4718,7 @@ impl GuiState {
             | GuiAction::TrackSettings
             | GuiAction::TrackEdit
             | GuiAction::Search
-            | GuiAction::ExitSubpatch
+            | GuiAction::ExitComposition
             | GuiAction::TogglePlay
             | GuiAction::ToggleMeters
             | GuiAction::OpenPalette
@@ -4569,20 +4748,20 @@ impl GuiState {
         }
     }
 
-    fn move_across_subpatch(&mut self, module: ModuleId, origin: GridPos) {
+    fn move_across_composition(&mut self, module: ModuleId, origin: GridPos) {
         let target = self
             .module_at(self.cursor())
-            .filter(|candidate| candidate.kind() == ModuleKind::Subpatch && candidate.id != module)
+            .filter(|candidate| candidate.is_composition() && candidate.id != module)
             .map(|candidate| candidate.id);
-        let can_exit = self.instrument().editing_subpatch.is_some();
+        let can_exit = self.instrument().editing_composition.is_some();
         if target.is_none() && !can_exit {
             return;
         }
 
         if self.held_move.is_none() {
             let before = self.snapshot();
-            let origin_surface = self.instrument().editing_subpatch;
-            let origin_stack = self.instrument().subpatch_stack.clone();
+            let origin_surface = self.instrument().editing_composition;
+            let origin_stack = self.instrument().composition_stack.clone();
             let Some(index) = self
                 .instrument()
                 .surface()
@@ -4604,9 +4783,9 @@ impl GuiState {
         }
 
         if let Some(target) = target {
-            self.enter_subpatch_surface(target);
+            self.enter_composition_surface(target);
         } else {
-            self.exit_subpatch_surface();
+            self.exit_composition_surface();
         }
         self.mode = Mode::Move { module, origin };
     }
@@ -4646,6 +4825,7 @@ impl GuiState {
             | GuiAction::PaletteDown
             | GuiAction::Palette(_)
             | GuiAction::Quit
+            | GuiAction::OpenModules
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
@@ -4653,8 +4833,8 @@ impl GuiState {
             | GuiAction::TrackSettings
             | GuiAction::TrackEdit
             | GuiAction::Search
-            | GuiAction::EditSubpatch
-            | GuiAction::ExitSubpatch
+            | GuiAction::EditComposition
+            | GuiAction::ExitComposition
             | GuiAction::TogglePlay
             | GuiAction::ToggleMeters
             | GuiAction::Delete
@@ -4869,6 +5049,7 @@ impl GuiState {
             | GuiAction::Redo
             | GuiAction::Instrument(_)
             | GuiAction::Quit
+            | GuiAction::OpenModules
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
@@ -4876,8 +5057,8 @@ impl GuiState {
             | GuiAction::TrackSettings
             | GuiAction::TrackEdit
             | GuiAction::Search
-            | GuiAction::EditSubpatch
-            | GuiAction::ExitSubpatch
+            | GuiAction::EditComposition
+            | GuiAction::ExitComposition
             | GuiAction::InputChar(_)
             | GuiAction::Backspace
             | GuiAction::DeleteChar
@@ -5013,6 +5194,7 @@ impl GuiState {
             | GuiAction::TogglePlay
             | GuiAction::ToggleMeters
             | GuiAction::Quit
+            | GuiAction::OpenModules
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
@@ -5020,8 +5202,8 @@ impl GuiState {
             | GuiAction::TrackSettings
             | GuiAction::TrackEdit
             | GuiAction::Search
-            | GuiAction::EditSubpatch
-            | GuiAction::ExitSubpatch
+            | GuiAction::EditComposition
+            | GuiAction::ExitComposition
             | GuiAction::PaletteLeft
             | GuiAction::PaletteRight
             | GuiAction::PaletteUp
@@ -5206,6 +5388,7 @@ impl GuiState {
             | GuiAction::PaletteDown
             | GuiAction::Palette(_)
             | GuiAction::Quit
+            | GuiAction::OpenModules
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
@@ -5213,8 +5396,8 @@ impl GuiState {
             | GuiAction::TrackSettings
             | GuiAction::TrackEdit
             | GuiAction::Search
-            | GuiAction::EditSubpatch
-            | GuiAction::ExitSubpatch
+            | GuiAction::EditComposition
+            | GuiAction::ExitComposition
             | GuiAction::Confirm
             | GuiAction::Delete
             | GuiAction::Move
@@ -5530,6 +5713,7 @@ impl GuiState {
             | GuiAction::PaletteDown
             | GuiAction::Palette(_)
             | GuiAction::Quit
+            | GuiAction::OpenModules
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
@@ -5537,8 +5721,8 @@ impl GuiState {
             | GuiAction::TrackSettings
             | GuiAction::TrackEdit
             | GuiAction::Search
-            | GuiAction::EditSubpatch
-            | GuiAction::ExitSubpatch
+            | GuiAction::EditComposition
+            | GuiAction::ExitComposition
             | GuiAction::TogglePlay
             | GuiAction::ToggleMeters
             | GuiAction::Edit
@@ -5645,8 +5829,8 @@ impl GuiState {
             GuiAction::Cancel => {
                 if let Some(held) = self.held_selection.take() {
                     let inst = self.instrument_mut();
-                    inst.editing_subpatch = held.origin_surface;
-                    inst.subpatch_stack = held.origin_stack;
+                    inst.editing_composition = held.origin_surface;
+                    inst.composition_stack = held.origin_stack;
                     inst.surface_mut().cursor = held.origin;
                     inst.surface_mut().modules.extend(held.modules);
                     self.mode = Mode::Normal;
@@ -5655,8 +5839,8 @@ impl GuiState {
                 self.instrument_mut().surface_mut().cursor = origin;
                 self.mode = Mode::Normal;
             }
-            GuiAction::EditSubpatch => {
-                self.move_selection_across_subpatch(anchor, extent, origin);
+            GuiAction::EditComposition => {
+                self.move_selection_across_composition(anchor, extent, origin);
             }
             GuiAction::OpenPalette
             | GuiAction::PaletteLeft
@@ -5665,6 +5849,7 @@ impl GuiState {
             | GuiAction::PaletteDown
             | GuiAction::Palette(_)
             | GuiAction::Quit
+            | GuiAction::OpenModules
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
@@ -5672,7 +5857,7 @@ impl GuiState {
             | GuiAction::TrackSettings
             | GuiAction::TrackEdit
             | GuiAction::Search
-            | GuiAction::ExitSubpatch
+            | GuiAction::ExitComposition
             | GuiAction::TogglePlay
             | GuiAction::ToggleMeters
             | GuiAction::Delete
@@ -5707,7 +5892,7 @@ impl GuiState {
         }
     }
 
-    fn move_selection_across_subpatch(
+    fn move_selection_across_composition(
         &mut self,
         anchor: GridPos,
         extent: GridPos,
@@ -5736,19 +5921,17 @@ impl GuiState {
             });
         let target = self
             .module_at(self.cursor())
-            .filter(|candidate| {
-                candidate.kind() == ModuleKind::Subpatch && !selected.contains(&candidate.id)
-            })
+            .filter(|candidate| candidate.is_composition() && !selected.contains(&candidate.id))
             .map(|candidate| candidate.id);
-        let can_exit = self.instrument().editing_subpatch.is_some();
+        let can_exit = self.instrument().editing_composition.is_some();
         if target.is_none() && !can_exit {
             return;
         }
 
         if self.held_selection.is_none() {
             let before = self.snapshot();
-            let origin_surface = self.instrument().editing_subpatch;
-            let origin_stack = self.instrument().subpatch_stack.clone();
+            let origin_surface = self.instrument().editing_composition;
+            let origin_stack = self.instrument().composition_stack.clone();
             let mut modules = Vec::new();
             let surface = self.instrument_mut().surface_mut();
             let mut index = 0;
@@ -5773,9 +5956,9 @@ impl GuiState {
         }
 
         if let Some(target) = target {
-            self.enter_subpatch_surface(target);
+            self.enter_composition_surface(target);
         } else {
-            self.exit_subpatch_surface();
+            self.exit_composition_surface();
         }
         self.mode = Mode::SelectMove {
             anchor,
@@ -5834,6 +6017,7 @@ impl GuiState {
             | GuiAction::PaletteDown
             | GuiAction::Palette(_)
             | GuiAction::Quit
+            | GuiAction::OpenModules
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
@@ -5841,8 +6025,8 @@ impl GuiState {
             | GuiAction::TrackSettings
             | GuiAction::TrackEdit
             | GuiAction::Search
-            | GuiAction::EditSubpatch
-            | GuiAction::ExitSubpatch
+            | GuiAction::EditComposition
+            | GuiAction::ExitComposition
             | GuiAction::TogglePlay
             | GuiAction::ToggleMeters
             | GuiAction::Delete
@@ -6002,23 +6186,285 @@ impl GuiState {
         self.palette_index = (self.palette_index as i16 + delta).clamp(0, max) as usize;
     }
 
-    fn insert_at_cursor(&mut self, kind: ModuleKind) {
+    fn insert_palette_module(&mut self, choice: PaletteModule) {
+        let graph = choice
+            .user
+            .and_then(|index| self.user_compositions.get(index))
+            .cloned();
+        self.insert_at_cursor(choice.kind, graph);
+    }
+
+    fn insert_at_cursor(&mut self, kind: ModuleKind, graph: Option<brainwash::patch::Composition>) {
         let cursor = self.cursor();
-        if !self.kind_fits(kind, Orientation::Right, cursor) {
-            return;
-        }
         let before = self.snapshot();
         let id = ModuleId(self.next_module_id);
+        self.next_module_id += 1;
+        let mut body = kind.default_body();
+        if let Some(graph) = graph {
+            body = composition_body(Box::new(graph), &mut self.next_module_id);
+        } else {
+            let candidate = Module {
+                id,
+                position: cursor,
+                orientation: Orientation::Right,
+                body: body.clone(),
+                disabled: false,
+            };
+            if let Ok(AudioModule::Composition(graph)) =
+                audio_module(&candidate, SampleRate::new(44_100).unwrap(), self.bpm)
+            {
+                body = composition_body(graph, &mut self.next_module_id);
+            }
+        }
         let module = Module {
             id,
             position: cursor,
             orientation: Orientation::Right,
-            body: kind.default_body(),
+            body,
             disabled: false,
         };
-        self.next_module_id += 1;
+        if let Some(surface) = module.composition_surface() {
+            self.width = self.width.max(
+                surface
+                    .modules
+                    .iter()
+                    .map(|module| module.position.x + 2)
+                    .max()
+                    .unwrap_or(1),
+            );
+            self.height = self.height.max(
+                surface
+                    .modules
+                    .iter()
+                    .map(|module| module.position.y + module.input_count().max(1) + 1)
+                    .max()
+                    .unwrap_or(1),
+            );
+        }
+        if !self.module_fits(&module, cursor, &[]) {
+            self.next_module_id = before.next_module_id;
+            return;
+        }
         self.instrument_mut().surface_mut().modules.push(module);
         self.commit(before);
+    }
+}
+
+fn canonicalize_builtin_compositions(
+    surface: &mut PatchSurface,
+    next_module_id: &mut u32,
+    bpm: u16,
+) {
+    for module in &mut surface.modules {
+        if let Some(composition) = module.composition_surface_mut() {
+            canonicalize_builtin_compositions(composition, next_module_id, bpm);
+            continue;
+        }
+        if let Ok(AudioModule::Composition(graph)) =
+            audio_module(module, SampleRate::new(44_100).unwrap(), bpm)
+        {
+            module.body = composition_body(graph, next_module_id);
+        }
+    }
+}
+
+fn composition_body(
+    graph: Box<brainwash::patch::Composition>,
+    next_module_id: &mut u32,
+) -> ModuleBody {
+    let entries = graph
+        .patch()
+        .module_entries()
+        .map(|(id, module)| (id, module.clone()))
+        .collect::<Vec<_>>();
+    let connections = graph.patch().connection_entries().collect::<Vec<_>>();
+    let mut remaining = entries.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+    let mut ordered = Vec::new();
+    while !remaining.is_empty() {
+        let index = remaining
+            .iter()
+            .position(|candidate| {
+                !connections
+                    .iter()
+                    .any(|(from, input)| input.module() == *candidate && remaining.contains(from))
+            })
+            .expect("composition is acyclic");
+        ordered.push(remaining.remove(index));
+    }
+    let mut modules = Vec::new();
+    let mut ids = Vec::new();
+    let mut y = 0u16;
+    for core_id in ordered {
+        let node = entries
+            .iter()
+            .find_map(|(id, module)| (*id == core_id).then_some(module))
+            .expect("composition module exists");
+        let projected = ModuleId(*next_module_id);
+        let body = graph
+            .inputs()
+            .iter()
+            .find(|input| input.module() == core_id)
+            .map(|input| {
+                let default = match node {
+                    AudioModule::Input { default, .. } => default.value(),
+                    _ => 0.0,
+                };
+                ModuleBody::CompositionInput {
+                    label: input.label().to_string(),
+                    value: float_param(-100_000, 100_000, 1, (default * 100.0).round() as i32),
+                }
+            })
+            .unwrap_or_else(|| match node {
+                AudioModule::Composition(composition) => {
+                    composition_body(composition.clone(), next_module_id)
+                }
+                _ => graph_node_body(node),
+            });
+        modules.push(Module {
+            id: projected,
+            position: GridPos::new(2 + ids.len() as u16 * 3, y),
+            orientation: Orientation::Right,
+            body,
+            disabled: false,
+        });
+        ids.push((core_id, projected));
+        *next_module_id += 1;
+        y += node.input_kinds().len().max(1) as u16 + 1;
+    }
+    let output = ModuleId(*next_module_id);
+    let output_position = GridPos::new(2 + ids.len() as u16 * 3, y);
+    modules.push(Module {
+        id: output,
+        position: output_position,
+        orientation: Orientation::Right,
+        body: ModuleBody::CompositionOutput {
+            label: "Output".to_string(),
+            input: input_param(),
+        },
+        disabled: false,
+    });
+    *next_module_id += 1;
+    for (core_source, projected_source) in &ids {
+        let source_y = modules
+            .iter()
+            .find(|module| module.id == *projected_source)
+            .expect("projected source exists")
+            .position
+            .y;
+        let source_x = modules
+            .iter()
+            .find(|module| module.id == *projected_source)
+            .expect("projected source exists")
+            .position
+            .x;
+        let mut rows = connections
+            .iter()
+            .filter(|(from, _)| from == core_source)
+            .filter_map(|(_, input)| {
+                let target = ids
+                    .iter()
+                    .find_map(|(id, projected)| (*id == input.module()).then_some(*projected))?;
+                let target_module = modules.iter().find(|module| module.id == target)?;
+                let core_target = entries
+                    .iter()
+                    .find_map(|(id, module)| (*id == input.module()).then_some(module))?;
+                let input_index = core_target
+                    .input_kinds()
+                    .iter()
+                    .position(|kind| *kind == input.kind())?;
+                Some(target_module.position.y + input_index as u16)
+            })
+            .collect::<Vec<_>>();
+        if Some(*core_source) == graph.patch().output_module() {
+            rows.push(output_position.y);
+        }
+        rows.sort_unstable();
+        rows.dedup();
+        if rows.len() == 1 && rows[0] == source_y {
+            continue;
+        }
+        let Some(last) = rows.last().copied() else {
+            continue;
+        };
+        let bus_x = source_x + 1;
+        let same_row = rows.first().is_some_and(|row| *row == source_y);
+        modules.push(Module {
+            id: ModuleId(*next_module_id),
+            position: GridPos::new(bus_x, source_y),
+            orientation: Orientation::Right,
+            body: if same_row {
+                ModuleBody::LeftSplit
+            } else {
+                ModuleBody::TurnRightDown
+            },
+            disabled: false,
+        });
+        *next_module_id += 1;
+        for row in rows.into_iter().filter(|row| *row > source_y) {
+            modules.push(Module {
+                id: ModuleId(*next_module_id),
+                position: GridPos::new(bus_x, row),
+                orientation: Orientation::Right,
+                body: if row == last {
+                    ModuleBody::TurnDownRight
+                } else {
+                    ModuleBody::TopSplit
+                },
+                disabled: false,
+            });
+            *next_module_id += 1;
+        }
+    }
+    ModuleBody::Composition {
+        name: graph.name().to_string(),
+        surface: PatchSurface {
+            cursor: GridPos::new(0, 0),
+            modules,
+        },
+    }
+}
+
+fn graph_node_body(module: &AudioModule) -> ModuleBody {
+    ModuleBody::Primitive(module.clone())
+}
+
+fn graph_node_label(module: &AudioModule) -> &'static str {
+    match module {
+        AudioModule::Input { .. } => "Input",
+        AudioModule::Freq => "Frequency",
+        AudioModule::Gate => "Gate",
+        AudioModule::Degree => "Degree",
+        AudioModule::DegreeGate { .. } => "Degree Gate",
+        AudioModule::Constant(_) => "Constant",
+        AudioModule::Absolute => "Absolute",
+        AudioModule::Pass => "Pass",
+        AudioModule::Osc { .. } => "Oscillator",
+        AudioModule::Rise { .. } => "Rise",
+        AudioModule::Fall { .. } => "Fall",
+        AudioModule::Ramp { .. } => "Ramp",
+        AudioModule::Envelope { .. } => "Envelope",
+        AudioModule::Lowpass { .. } => "Lowpass",
+        AudioModule::Highpass { .. } => "Highpass",
+        AudioModule::Comb { .. } => "Comb",
+        AudioModule::Allpass { .. } => "Allpass",
+        AudioModule::Delay { .. } => "Delay",
+        AudioModule::VariableDelay { .. } => "Variable Delay",
+        AudioModule::Waveshaper(_) => "Waveshaper",
+        AudioModule::Slew { .. } => "Slew",
+        AudioModule::Binary { op, .. } => match op {
+            BinaryOp::Multiply => "Multiply",
+            BinaryOp::Add => "Add",
+            BinaryOp::Subtract => "Subtract",
+            BinaryOp::Divide => "Divide",
+            BinaryOp::Power => "Power",
+            BinaryOp::GreaterThan => "Greater Than",
+            BinaryOp::LessThan => "Less Than",
+        },
+        AudioModule::Switch { .. } => "Switch",
+        AudioModule::Random => "Random",
+        AudioModule::Sample { .. } => "Sample",
+        AudioModule::Probe => "Probe",
+        AudioModule::Composition(_) => "Composition",
     }
 }
 
@@ -6027,69 +6473,114 @@ fn project_from_instrument(
     bpm: u16,
     scale_index: usize,
 ) -> Result<Project, String> {
-    let mut subpatch_ids = HashMap::new();
-    let mut subpatch_ports = HashMap::new();
-    collect_subpatch_metadata(&instrument.root, &mut subpatch_ids, &mut subpatch_ports);
+    validate_composition_labels(&instrument.root)?;
+    let mut composition_ids = HashMap::new();
+    let mut composition_ports = HashMap::new();
+    collect_composition_metadata(
+        &instrument.root,
+        &mut composition_ids,
+        &mut composition_ports,
+    );
     Ok(Project {
         bpm: bpm as f32,
         bars: 1.0,
         scale_idx: scale_index,
-        modules: project_modules_from_surface(&instrument.root, &subpatch_ids, &subpatch_ports)?,
-        track: Some(instrument.track_text.clone()),
-        subpatches: project_subpatches_from_surface(
+        modules: project_modules_from_surface(
             &instrument.root,
-            &subpatch_ids,
-            &subpatch_ports,
+            &composition_ids,
+            &composition_ports,
+        )?,
+        track: Some(instrument.track_text.clone()),
+        compositions: project_compositions_from_surface(
+            &instrument.root,
+            &composition_ids,
+            &composition_ports,
         )?,
     })
 }
 
-fn collect_subpatch_metadata(
+fn validate_composition_labels(surface: &PatchSurface) -> Result<(), String> {
+    for module in &surface.modules {
+        let Some(composition) = module.composition_surface() else {
+            continue;
+        };
+        let mut input_labels = Vec::new();
+        let mut output_labels = Vec::new();
+        for port in composition.modules.iter().filter(|module| {
+            matches!(
+                module.kind(),
+                ModuleKind::CompositionInput | ModuleKind::CompositionOutput
+            )
+        }) {
+            let (label, labels) = match &port.body {
+                ModuleBody::CompositionInput { label, .. } => (label.trim(), &mut input_labels),
+                ModuleBody::CompositionOutput { label, .. } => (label.trim(), &mut output_labels),
+                _ => unreachable!(),
+            };
+            if label.is_empty() || labels.iter().any(|candidate| *candidate == label) {
+                return Err(format!("invalid composition port label {label:?}"));
+            }
+            labels.push(label);
+        }
+        validate_composition_labels(composition)?;
+    }
+    Ok(())
+}
+
+fn collect_composition_metadata(
     surface: &PatchSurface,
     ids: &mut HashMap<ModuleId, u32>,
     ports: &mut HashMap<ModuleId, (u8, u8)>,
 ) {
     for module in &surface.modules {
-        if let Some(subpatch) = module.subpatch_surface() {
+        if module.kind() == ModuleKind::Composition
+            && let Some(composition) = module.composition_surface()
+        {
             ids.insert(module.id, module.id.value());
-            ports.insert(module.id, subpatch_port_counts(subpatch));
-            collect_subpatch_metadata(subpatch, ids, ports);
+            ports.insert(module.id, composition_port_counts(composition));
+            collect_composition_metadata(composition, ids, ports);
         }
     }
 }
 
-fn project_subpatches_from_surface(
+fn project_compositions_from_surface(
     surface: &PatchSurface,
     ids: &HashMap<ModuleId, u32>,
     ports: &HashMap<ModuleId, (u8, u8)>,
-) -> Result<Vec<ProjectSubpatchDef>, String> {
-    let mut subpatches = Vec::new();
+) -> Result<Vec<ProjectCompositionDef>, String> {
+    let mut compositions = Vec::new();
     for module in &surface.modules {
-        let Some(surface) = module.subpatch_surface() else {
+        if module.kind() != ModuleKind::Composition {
+            continue;
+        }
+        let Some(surface) = module.composition_surface() else {
             continue;
         };
-        subpatches.push(ProjectSubpatchDef {
+        let ModuleBody::Composition { name, .. } = &module.body else {
+            unreachable!();
+        };
+        compositions.push(ProjectCompositionDef {
             id: module.id.value(),
-            name: format!("Subpatch {}", module.id.value()),
+            name: name.clone(),
             color: (0, 0, 0),
             modules: project_modules_from_surface(surface, ids, ports)?,
         });
-        subpatches.extend(project_subpatches_from_surface(surface, ids, ports)?);
+        compositions.extend(project_compositions_from_surface(surface, ids, ports)?);
     }
-    Ok(subpatches)
+    Ok(compositions)
 }
 
-fn subpatch_port_counts(surface: &PatchSurface) -> (u8, u8) {
+fn composition_port_counts(surface: &PatchSurface) -> (u8, u8) {
     let inputs = surface
         .modules
         .iter()
-        .filter(|module| module.kind() == ModuleKind::SubpatchInput)
+        .filter(|module| module.kind() == ModuleKind::CompositionInput)
         .count()
         .min(u8::MAX as usize) as u8;
     let outputs = surface
         .modules
         .iter()
-        .filter(|module| module.kind() == ModuleKind::SubpatchOutput)
+        .filter(|module| module.kind() == ModuleKind::CompositionOutput)
         .count()
         .min(u8::MAX as usize) as u8;
     (inputs, outputs)
@@ -6097,8 +6588,8 @@ fn subpatch_port_counts(surface: &PatchSurface) -> (u8, u8) {
 
 fn project_modules_from_surface(
     surface: &PatchSurface,
-    subpatch_ids: &HashMap<ModuleId, u32>,
-    subpatch_ports: &HashMap<ModuleId, (u8, u8)>,
+    composition_ids: &HashMap<ModuleId, u32>,
+    composition_ports: &HashMap<ModuleId, (u8, u8)>,
 ) -> Result<Vec<ProjectModuleDef>, String> {
     surface
         .modules
@@ -6106,11 +6597,11 @@ fn project_modules_from_surface(
         .map(|module| {
             Ok(ProjectModuleDef {
                 id: module.id.value(),
-                kind: project_kind(module, &surface.modules, subpatch_ids)?,
+                kind: project_kind(module, &surface.modules, composition_ids)?,
                 x: module.position.x,
                 y: module.position.y,
                 orientation: project_orientation(module.orientation),
-                params: project_params(module, subpatch_ports)?,
+                params: project_params(module, composition_ports)?,
             })
         })
         .collect()
@@ -6119,22 +6610,29 @@ fn project_modules_from_surface(
 fn project_kind(
     module: &Module,
     modules: &[Module],
-    subpatch_ids: &HashMap<ModuleId, u32>,
+    composition_ids: &HashMap<ModuleId, u32>,
 ) -> Result<ProjectModuleKind, String> {
     Ok(match module.kind() {
+        ModuleKind::Primitive => ProjectModuleKind::Standard(ProjectStandardModule::Primitive),
         ModuleKind::TurnRightDown => ProjectModuleKind::Routing(ProjectRoutingModule::TurnRD),
         ModuleKind::TurnDownRight => ProjectModuleKind::Routing(ProjectRoutingModule::TurnDR),
         ModuleKind::LeftSplit => ProjectModuleKind::Routing(ProjectRoutingModule::LSplit),
         ModuleKind::TopSplit => ProjectModuleKind::Routing(ProjectRoutingModule::TSplit),
         ModuleKind::RightJoin => ProjectModuleKind::Routing(ProjectRoutingModule::RJoin),
         ModuleKind::DownJoin => ProjectModuleKind::Routing(ProjectRoutingModule::DJoin),
-        ModuleKind::SubpatchInput => ProjectModuleKind::Subpatch(ProjectSubpatchModule::SubIn),
-        ModuleKind::SubpatchOutput => ProjectModuleKind::Subpatch(ProjectSubpatchModule::SubOut),
-        ModuleKind::Subpatch => {
-            let id = subpatch_ids
+        ModuleKind::CompositionInput => {
+            ProjectModuleKind::Composition(ProjectCompositionModule::Input)
+        }
+        ModuleKind::CompositionOutput => {
+            ProjectModuleKind::Composition(ProjectCompositionModule::Output)
+        }
+        ModuleKind::Composition => {
+            let id = composition_ids
                 .get(&module.id)
-                .ok_or_else(|| format!("missing subpatch surface {}", module.id.value()))?;
-            ProjectModuleKind::Subpatch(ProjectSubpatchModule::SubPatch(ProjectSubpatchId(*id)))
+                .ok_or_else(|| format!("missing composition surface {}", module.id.value()))?;
+            ProjectModuleKind::Composition(ProjectCompositionModule::Composition(
+                ProjectCompositionId(*id),
+            ))
         }
         ModuleKind::DelayTap => ProjectModuleKind::Standard(ProjectStandardModule::DelayTap(
             delay_source(module, modules)?,
@@ -6193,9 +6691,13 @@ fn project_orientation(orientation: Orientation) -> ProjectOrientation {
 
 fn project_params(
     module: &Module,
-    subpatch_ports: &HashMap<ModuleId, (u8, u8)>,
+    composition_ports: &HashMap<ModuleId, (u8, u8)>,
 ) -> Result<ProjectModuleParams, String> {
     Ok(match &module.body {
+        ModuleBody::Primitive(module) => ProjectModuleParams::Primitive {
+            source: brainwash::persist::module_to_string(module)
+                .map_err(|_| format!("invalid primitive {}", graph_node_label(module)))?,
+        },
         ModuleBody::Freq
         | ModuleBody::Gate
         | ModuleBody::Degree
@@ -6204,8 +6706,12 @@ fn project_params(
         | ModuleBody::LeftSplit
         | ModuleBody::TopSplit
         | ModuleBody::RightJoin
-        | ModuleBody::DownJoin
-        | ModuleBody::SubpatchInput => ProjectModuleParams::None,
+        | ModuleBody::DownJoin => ProjectModuleParams::None,
+        ModuleBody::CompositionInput { label, value } => ProjectModuleParams::CompositionInput {
+            label: label.clone(),
+            value: project_float(*value),
+            connected: value.connected,
+        },
         ModuleBody::DegreeGate { degree } => ProjectModuleParams::DegreeGate {
             degree: degree.value,
         },
@@ -6216,17 +6722,10 @@ fn project_params(
             semitones: project_float(*semitones),
             connected: connected_mask(&[(0, input.connected), (1, semitones.connected)]),
         },
-        ModuleBody::Osc {
-            wave,
-            frequency,
-            gain,
-            unipolar,
-        } => ProjectModuleParams::Osc {
+        ModuleBody::Osc { wave, frequency } => ProjectModuleParams::Osc {
             wave: project_wave(wave.index)?,
             frequency: project_float(*frequency),
-            gain: project_float(*gain),
-            uni: *unipolar,
-            connected: connected_mask(&[(1, frequency.connected), (3, gain.connected)]),
+            connected: connected_mask(&[(1, frequency.connected)]),
         },
         ModuleBody::Rise { gate, time } => ProjectModuleParams::Rise {
             time: project_time(*time)?,
@@ -6318,18 +6817,18 @@ fn project_params(
             input,
             room,
             damp,
-            mod_depth,
+            mix,
             diffusion,
         } => ProjectModuleParams::Reverb {
             room: project_float(*room),
             damp: project_float(*damp),
-            mod_depth: project_float(*mod_depth),
+            mix: project_float(*mix),
             diffusion: project_float(*diffusion),
             connected: connected_mask(&[
                 (0, input.connected),
                 (1, room.connected),
                 (2, damp.connected),
-                (3, mod_depth.connected),
+                (3, mix.connected),
                 (4, diffusion.connected),
             ]),
         },
@@ -6437,21 +6936,23 @@ fn project_params(
             gain: project_float(*gain),
             connected: connected_mask(&[(0, input.connected), (1, gain.connected)]),
         },
-        ModuleBody::SubpatchOutput { input } => {
+        ModuleBody::CompositionOutput { label, input } => {
             if !input.connected {
                 return Err(format!(
-                    "subpatch output {} has disconnected input",
+                    "composition output {} has disconnected input",
                     module.id.value()
                 ));
             }
-            ProjectModuleParams::None
+            ProjectModuleParams::CompositionOutput {
+                label: label.clone(),
+            }
         }
-        ModuleBody::Subpatch(_) => {
-            let (inputs, outputs) = subpatch_ports
+        ModuleBody::Composition { .. } => {
+            let (inputs, outputs) = composition_ports
                 .get(&module.id)
                 .copied()
-                .ok_or_else(|| format!("missing subpatch ports {}", module.id.value()))?;
-            ProjectModuleParams::SubPatch {
+                .ok_or_else(|| format!("missing composition ports {}", module.id.value()))?;
+            ProjectModuleParams::Composition {
                 inputs,
                 outputs,
                 color: (0, 0, 0),
@@ -6499,8 +7000,8 @@ fn project_time(param: TimeParam) -> Result<ProjectTimeValue, String> {
     Ok(value)
 }
 
-fn project_env_point(point: &EnvPoint) -> brainwash::project::EnvPoint {
-    brainwash::project::EnvPoint {
+fn project_env_point(point: &EnvPoint) -> crate::project::EnvPoint {
+    crate::project::EnvPoint {
         time: point.time as f32 / 100.0,
         value: point.value as f32 / 100.0,
         curve: point.curve,
@@ -6541,30 +7042,30 @@ fn project_distortion(index: usize) -> Result<ProjectDistType, String> {
 }
 
 fn instrument_surface_from_project(project: &Project) -> Result<PatchSurface, String> {
-    let subpatches = project
-        .subpatches
+    let compositions = project
+        .compositions
         .iter()
-        .map(|subpatch| (subpatch.id, subpatch))
+        .map(|composition| (composition.id, composition))
         .collect::<HashMap<_, _>>();
-    surface_from_project_modules(&project.modules, &subpatches)
+    surface_from_project_modules(&project.modules, &compositions)
 }
 
 fn surface_from_project_modules(
     modules: &[ProjectModuleDef],
-    subpatches: &HashMap<u32, &ProjectSubpatchDef>,
+    compositions: &HashMap<u32, &ProjectCompositionDef>,
 ) -> Result<PatchSurface, String> {
     let modules = modules
         .iter()
         .map(|definition| {
-            let (mut module, subpatch_id) = module_from_project(definition)?;
-            if let Some(subpatch_id) = subpatch_id {
-                let definition = subpatches
-                    .get(&subpatch_id)
-                    .ok_or_else(|| format!("missing subpatch {}", subpatch_id))?;
-                module.body = ModuleBody::Subpatch(surface_from_project_modules(
-                    &definition.modules,
-                    subpatches,
-                )?);
+            let (mut module, composition_id) = module_from_project(definition)?;
+            if let Some(composition_id) = composition_id {
+                let definition = compositions
+                    .get(&composition_id)
+                    .ok_or_else(|| format!("missing composition {}", composition_id))?;
+                module.body = ModuleBody::Composition {
+                    name: definition.name.clone(),
+                    surface: surface_from_project_modules(&definition.modules, compositions)?,
+                };
             }
             Ok(module)
         })
@@ -6580,7 +7081,7 @@ fn module_from_project(definition: &ProjectModuleDef) -> Result<(Module, Option<
         return Err(format!("module {} has mismatched params", definition.id));
     }
     validate_project_params(&definition.params)?;
-    let (kind, subpatch_id) = kind_from_project(definition.kind);
+    let (kind, composition_id) = kind_from_project(definition.kind);
     let mut module = Module {
         id: ModuleId(definition.id),
         position: GridPos::new(definition.x, definition.y),
@@ -6588,8 +7089,14 @@ fn module_from_project(definition: &ProjectModuleDef) -> Result<(Module, Option<
         body: kind.default_body(),
         disabled: false,
     };
+    if let ProjectModuleParams::Primitive { source } = &definition.params {
+        module.body = ModuleBody::Primitive(
+            brainwash::persist::module_from_str(source)
+                .map_err(|_| format!("invalid primitive {}", definition.id))?,
+        );
+    }
     apply_project_params(&mut module, &definition.params);
-    Ok((module, subpatch_id))
+    Ok((module, composition_id))
 }
 
 fn kind_from_project(kind: ProjectModuleKind) -> (ModuleKind, Option<u32>) {
@@ -6605,13 +7112,14 @@ fn kind_from_project(kind: ProjectModuleKind) -> (ModuleKind, Option<u32>) {
             },
             None,
         ),
-        ProjectModuleKind::Subpatch(subpatch) => match subpatch {
-            ProjectSubpatchModule::SubIn => (ModuleKind::SubpatchInput, None),
-            ProjectSubpatchModule::SubOut => (ModuleKind::SubpatchOutput, None),
-            ProjectSubpatchModule::SubPatch(id) => (ModuleKind::Subpatch, Some(id.0)),
+        ProjectModuleKind::Composition(composition) => match composition {
+            ProjectCompositionModule::Input => (ModuleKind::CompositionInput, None),
+            ProjectCompositionModule::Output => (ModuleKind::CompositionOutput, None),
+            ProjectCompositionModule::Composition(id) => (ModuleKind::Composition, Some(id.0)),
         },
         ProjectModuleKind::Standard(standard) => (
             match standard {
+                ProjectStandardModule::Primitive => ModuleKind::Primitive,
                 ProjectStandardModule::Freq => ModuleKind::Freq,
                 ProjectStandardModule::Gate => ModuleKind::Gate,
                 ProjectStandardModule::Degree => ModuleKind::Degree,
@@ -6654,16 +7162,20 @@ fn project_params_match(kind: ProjectModuleKind, params: &ProjectModuleParams) -
         (kind, params),
         (ProjectModuleKind::Routing(_), ProjectModuleParams::None)
             | (
-                ProjectModuleKind::Subpatch(ProjectSubpatchModule::SubIn),
-                ProjectModuleParams::None
+                ProjectModuleKind::Standard(ProjectStandardModule::Primitive),
+                ProjectModuleParams::Primitive { .. }
             )
             | (
-                ProjectModuleKind::Subpatch(ProjectSubpatchModule::SubOut),
-                ProjectModuleParams::None
+                ProjectModuleKind::Composition(ProjectCompositionModule::Input),
+                ProjectModuleParams::CompositionInput { .. }
             )
             | (
-                ProjectModuleKind::Subpatch(ProjectSubpatchModule::SubPatch(_)),
-                ProjectModuleParams::SubPatch { .. }
+                ProjectModuleKind::Composition(ProjectCompositionModule::Output),
+                ProjectModuleParams::CompositionOutput { .. }
+            )
+            | (
+                ProjectModuleKind::Composition(ProjectCompositionModule::Composition(_)),
+                ProjectModuleParams::Composition { .. }
             )
             | (
                 ProjectModuleKind::Standard(ProjectStandardModule::Freq),
@@ -6796,12 +7308,7 @@ fn validate_project_params(params: &ProjectModuleParams) -> Result<(), String> {
     match params {
         ProjectModuleParams::Rate { time } => validate_project_time(*time),
         ProjectModuleParams::Transpose { semitones, .. } => validate_finite(*semitones),
-        ProjectModuleParams::Osc {
-            frequency, gain, ..
-        } => {
-            validate_finite(*frequency)?;
-            validate_finite(*gain)
-        }
+        ProjectModuleParams::Osc { frequency, .. } => validate_finite(*frequency),
         ProjectModuleParams::Rise { time, .. }
         | ProjectModuleParams::Fall { time, .. }
         | ProjectModuleParams::Delay { time, .. } => validate_project_time(*time),
@@ -6845,13 +7352,13 @@ fn validate_project_params(params: &ProjectModuleParams) -> Result<(), String> {
         ProjectModuleParams::Reverb {
             room,
             damp,
-            mod_depth,
+            mix,
             diffusion,
             ..
         } => {
             validate_finite(*room)?;
             validate_finite(*damp)?;
-            validate_finite(*mod_depth)?;
+            validate_finite(*mix)?;
             validate_finite(*diffusion)
         }
         ProjectModuleParams::Distortion {
@@ -6896,10 +7403,26 @@ fn validate_project_params(params: &ProjectModuleParams) -> Result<(), String> {
             validate_finite(*gain)
         }
         ProjectModuleParams::None
+        | ProjectModuleParams::Primitive { .. }
         | ProjectModuleParams::DegreeGate { .. }
         | ProjectModuleParams::Sample { .. }
         | ProjectModuleParams::Probe { .. }
-        | ProjectModuleParams::SubPatch { .. } => Ok(()),
+        | ProjectModuleParams::Composition { .. } => Ok(()),
+        ProjectModuleParams::CompositionInput { label, value, .. } => {
+            validate_finite(*value)?;
+            if label.trim().is_empty() {
+                Err("empty composition port label".to_string())
+            } else {
+                Ok(())
+            }
+        }
+        ProjectModuleParams::CompositionOutput { label } => {
+            if label.trim().is_empty() {
+                Err("empty composition port label".to_string())
+            } else {
+                Ok(())
+            }
+        }
     }
 }
 
@@ -6932,7 +7455,27 @@ fn orientation_from_project(orientation: ProjectOrientation) -> Orientation {
 fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
     let mut parameters = module.body.parameters();
     match params {
-        ProjectModuleParams::None | ProjectModuleParams::SubPatch { .. } => {}
+        ProjectModuleParams::None
+        | ProjectModuleParams::Primitive { .. }
+        | ProjectModuleParams::Composition { .. } => {}
+        ProjectModuleParams::CompositionInput {
+            label,
+            value,
+            connected,
+        } => {
+            if let Some(parameter) = parameters.get_mut(0) {
+                parameter.value = ParameterValue::Text(label.clone());
+            }
+            set_float(&mut parameters, 1, *value);
+            if let Some(parameter) = parameters.get_mut(1) {
+                parameter.connected = *connected;
+            }
+        }
+        ProjectModuleParams::CompositionOutput { label } => {
+            if let Some(parameter) = parameters.get_mut(0) {
+                parameter.value = ParameterValue::Text(label.clone());
+            }
+        }
         ProjectModuleParams::DegreeGate { degree } => set_int(&mut parameters, 0, *degree),
         ProjectModuleParams::Rate { time } => {
             set_time(&mut parameters, 0, *time);
@@ -6947,19 +7490,12 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
         ProjectModuleParams::Osc {
             wave,
             frequency,
-            gain,
-            uni,
             connected,
         } => {
             set_enum(&mut parameters, 0, wave_index(*wave));
             set_float(&mut parameters, 1, *frequency);
-            set_float(&mut parameters, 2, *gain);
-            set_toggle(&mut parameters, 3, *uni);
             if let Some(parameter) = parameters.get_mut(1) {
                 parameter.connected = connected & (1 << 1) != 0;
-            }
-            if let Some(parameter) = parameters.get_mut(2) {
-                parameter.connected = connected & (1 << 3) != 0;
             }
         }
         ProjectModuleParams::Rise { time, connected }
@@ -7023,13 +7559,13 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
         ProjectModuleParams::Reverb {
             room,
             damp,
-            mod_depth,
+            mix,
             diffusion,
             connected,
         } => {
             set_float(&mut parameters, 1, *room);
             set_float(&mut parameters, 2, *damp);
-            set_float(&mut parameters, 3, *mod_depth);
+            set_float(&mut parameters, 3, *mix);
             set_float(&mut parameters, 4, *diffusion);
             apply_connected(&mut parameters, *connected);
         }
@@ -7158,14 +7694,6 @@ fn set_enum(parameters: &mut [ModuleParameter], index: usize, value: usize) {
     }
 }
 
-fn set_toggle(parameters: &mut [ModuleParameter], index: usize, value: bool) {
-    if let Some(parameter) = parameters.get_mut(index)
-        && let ParameterValue::Toggle(target) = &mut parameter.value
-    {
-        *target = value;
-    }
-}
-
 fn apply_connected(parameters: &mut [ModuleParameter], connected: u8) {
     for (index, parameter) in parameters.iter_mut().enumerate() {
         if parameter.value.is_port() {
@@ -7195,7 +7723,7 @@ fn time_from_project(value: ProjectTimeValue) -> ParameterValue {
     }
 }
 
-fn env_point_from_project(point: &brainwash::project::EnvPoint) -> EnvPoint {
+fn env_point_from_project(point: &crate::project::EnvPoint) -> EnvPoint {
     EnvPoint {
         time: (point.time * 100.0).round().clamp(0.0, 100.0) as i32,
         value: (point.value * 100.0).round().clamp(-100.0, 100.0) as i32,
@@ -7261,20 +7789,20 @@ mod tests {
             body: ModuleKind::Osc.default_body(),
             disabled: false,
         };
-        let mut gain = module.parameter(2).unwrap();
-        gain.value = ParameterValue::Float {
-            value: 75,
-            min: 0,
-            max: 100,
-            step: 5,
+        let mut frequency = module.parameter(1).unwrap();
+        frequency.value = ParameterValue::Float {
+            value: 88_000,
+            min: 1,
+            max: 200_000,
+            step: 100,
         };
-        gain.connected = false;
+        frequency.connected = false;
 
-        assert!(module.set_parameter(2, gain));
+        assert!(module.set_parameter(1, frequency));
         match module.body {
-            ModuleBody::Osc { gain, .. } => {
-                assert_eq!(gain.value, 75);
-                assert!(!gain.connected);
+            ModuleBody::Osc { frequency, .. } => {
+                assert_eq!(frequency.value, 88_000);
+                assert!(!frequency.connected);
             }
             _ => panic!("wrong body"),
         }
@@ -7298,6 +7826,133 @@ mod tests {
         state.drag_grid_cell(GridPointerPhase::End, GridPos::new(4, 4));
 
         assert_eq!(state.modules()[0].position, GridPos::new(4, 3));
+    }
+
+    #[test]
+    fn user_composition_is_a_named_palette_module() {
+        let mut patch = Patch::new();
+        let input = patch.insert(AudioModule::Input {
+            kind: AudioInputKind::In,
+            default: AudioSample::ZERO,
+        });
+        patch.output(input).unwrap();
+        let composition = brainwash::patch::Composition::new(
+            "My Module",
+            patch,
+            [("Signal".to_string(), AudioInputKind::In, input)],
+        )
+        .unwrap();
+        let mut state = GuiState::new(16, 16);
+        state.set_user_compositions(vec![composition]);
+        state.palette_category = ModuleCategory::Composition;
+
+        let modules = state.palette_modules();
+        assert_eq!(modules.last().unwrap().label(), "My Module");
+        state.choose_palette_index(modules.len() - 1);
+        state.mode = Mode::Palette;
+        state.apply(GuiAction::Confirm);
+
+        assert_eq!(state.modules()[0].label(), "My Module");
+        assert!(state.modules()[0].composition_surface().is_some());
+    }
+
+    #[test]
+    fn complex_builtin_opens_as_an_owned_surface() {
+        let mut state = GuiState::new(16, 16);
+        state.insert_at_cursor(ModuleKind::Compressor, None);
+        let undo = state.undo.len();
+
+        state.apply(GuiAction::EditComposition);
+
+        assert_eq!(state.composition_depth(), 1);
+        assert_eq!(state.undo.len(), undo);
+        assert_eq!(
+            state.instrument().root.modules[0].kind(),
+            ModuleKind::Composition
+        );
+        assert_eq!(state.instrument().root.modules[0].label(), "Compressor");
+        let before = state.modules().len();
+        assert!(!state.connections().is_empty());
+        state.instrument_mut().surface_mut().cursor = state.modules()[0].position;
+        state.apply(GuiAction::Delete);
+        assert_eq!(state.modules().len(), before - 1);
+    }
+
+    #[test]
+    fn pointer_can_mutate_a_builtin_composition() {
+        let mut state = GuiState::new(16, 16);
+        state.insert_at_cursor(ModuleKind::Compressor, None);
+        state.apply(GuiAction::EditComposition);
+        let module = state
+            .modules()
+            .iter()
+            .find(|module| module.position == GridPos::new(2, 0))
+            .unwrap();
+        let id = module.id;
+        let position = module.position;
+
+        state.start_grid_drag(position);
+        state.update_grid_drag(GridPos::new(5, 5));
+
+        assert_ne!(
+            state
+                .modules()
+                .iter()
+                .find(|module| module.id == id)
+                .unwrap()
+                .position,
+            position
+        );
+    }
+
+    #[test]
+    fn lowered_composition_executes_from_its_surface() {
+        let mut patch = Patch::new();
+        let input = patch.insert(AudioModule::Input {
+            kind: AudioInputKind::In,
+            default: AudioSample::ZERO,
+        });
+        patch.output(input).unwrap();
+        let graph = Box::new(
+            brainwash::patch::Composition::new(
+                "Identity",
+                patch,
+                [("Signal".to_string(), AudioInputKind::In, input)],
+            )
+            .unwrap(),
+        );
+        let mut state = GuiState::new(8, 8);
+        state.next_module_id = 3;
+        let composition = composition_body(graph, &mut state.next_module_id);
+        state.instrument_mut().root.modules = vec![
+            Module {
+                id: ModuleId(0),
+                position: GridPos::new(0, 0),
+                orientation: Orientation::Right,
+                body: ModuleBody::Gate,
+                disabled: false,
+            },
+            Module {
+                id: ModuleId(1),
+                position: GridPos::new(1, 0),
+                orientation: Orientation::Right,
+                body: composition,
+                disabled: false,
+            },
+            Module {
+                id: ModuleId(2),
+                position: GridPos::new(2, 0),
+                orientation: Orientation::Right,
+                body: ModuleKind::Output.default_body(),
+                disabled: false,
+            },
+        ];
+
+        assert!(
+            state
+                .compile_audio_patch(SampleRate::new(44_100).unwrap())
+                .is_ok()
+        );
     }
 }
 
@@ -7324,13 +7979,14 @@ impl ModuleKind {
 
     fn input_count(self) -> u16 {
         match self {
+            ModuleKind::Primitive => 0,
             ModuleKind::Freq
             | ModuleKind::Gate
             | ModuleKind::Degree
             | ModuleKind::Rate
             | ModuleKind::Random
             | ModuleKind::Sample
-            | ModuleKind::SubpatchInput => 0,
+            | ModuleKind::CompositionInput => 0,
             ModuleKind::RightJoin | ModuleKind::DownJoin => 2,
             ModuleKind::TurnRightDown
             | ModuleKind::TurnDownRight
@@ -7361,14 +8017,15 @@ impl ModuleKind {
             | ModuleKind::LessThan
             | ModuleKind::Switch
             | ModuleKind::Output
-            | ModuleKind::SubpatchOutput
-            | ModuleKind::Subpatch => self.default_body().input_count(),
+            | ModuleKind::CompositionOutput
+            | ModuleKind::Composition => self.default_body().input_count(),
         }
     }
 
     fn output_count(self) -> u16 {
         match self {
-            ModuleKind::Output | ModuleKind::SubpatchOutput => 0,
+            ModuleKind::Primitive => 1,
+            ModuleKind::Output | ModuleKind::CompositionOutput => 0,
             ModuleKind::LeftSplit | ModuleKind::TopSplit => 2,
             ModuleKind::Freq
             | ModuleKind::Gate
@@ -7404,8 +8061,8 @@ impl ModuleKind {
             | ModuleKind::TurnDownRight
             | ModuleKind::RightJoin
             | ModuleKind::DownJoin
-            | ModuleKind::SubpatchInput
-            | ModuleKind::Subpatch => 1,
+            | ModuleKind::CompositionInput
+            | ModuleKind::Composition => 1,
         }
     }
 
@@ -7459,7 +8116,11 @@ fn audio_module(
     rate: SampleRate,
     bpm: u16,
 ) -> Result<AudioModule, AudioPatchError> {
+    if let ModuleBody::Primitive(module) = &module.body {
+        return Ok(module.clone());
+    }
     match module.kind() {
+        ModuleKind::Primitive => unreachable!(),
         ModuleKind::Freq => Ok(AudioModule::Freq),
         ModuleKind::Gate => Ok(AudioModule::Gate),
         ModuleKind::Degree => Ok(AudioModule::Degree),
@@ -7467,16 +8128,14 @@ fn audio_module(
             target: audio_int(module, 0)?,
         }),
         ModuleKind::Rate => Ok(AudioModule::Constant(
-            AudioSample::new(audio_rate(module, 0, rate, bpm)?).ok_or(AudioPatchError::InvalidParameter)?,
+            AudioSample::new(audio_rate(module, 0, rate, bpm)?)
+                .ok_or(AudioPatchError::InvalidParameter)?,
         )),
-        ModuleKind::Transpose => Ok(AudioModule::Transpose {
-            semitones: audio_sample(module, 1)?,
-        }),
+        ModuleKind::Transpose => Ok(brainwash::preset::transpose(audio_sample(module, 1)?)),
         ModuleKind::Osc => Ok(AudioModule::Osc {
             wave: audio_wave(module)?,
-            frequency: Hertz::new(audio_float(module, 1)?).ok_or(AudioPatchError::InvalidParameter)?,
-            gain: audio_unit(module, 2)?,
-            unipolar: audio_toggle(module, 3)?,
+            frequency: Hertz::new(audio_float(module, 1)?)
+                .ok_or(AudioPatchError::InvalidParameter)?,
         }),
         ModuleKind::Rise => Ok(AudioModule::Rise {
             time: audio_duration(module, 1, rate, bpm)?,
@@ -7488,10 +8147,10 @@ fn audio_module(
             value: audio_sample(module, 0)?,
             time: audio_duration(module, 1, rate, bpm)?,
         }),
-        ModuleKind::Adsr => Ok(AudioModule::Adsr {
-            attack_ratio: audio_unit(module, 2)?,
-            sustain: audio_unit(module, 3)?,
-        }),
+        ModuleKind::Adsr => Ok(brainwash::preset::adsr(
+            audio_unit(module, 2)?,
+            audio_unit(module, 3)?,
+        )),
         ModuleKind::Envelope => Ok(AudioModule::Envelope {
             points: Arc::new(
                 module
@@ -7501,7 +8160,7 @@ fn audio_module(
                         Ok(AudioEnvPoint {
                             time: Unit::new(point.time as f32 / 100.0)
                                 .ok_or(AudioPatchError::InvalidParameter)?,
-                            value: Unit::new(point.value as f32 / 100.0)
+                            value: AudioSample::new(point.value as f32 / 100.0)
                                 .ok_or(AudioPatchError::InvalidParameter)?,
                             curve: point.curve,
                         })
@@ -7528,32 +8187,31 @@ fn audio_module(
             time: audio_duration(module, 1, rate, bpm)?,
             feedback: Unit::ZERO,
         }),
-        ModuleKind::DelayTap => Ok(AudioModule::DelayTap {
-            gain: audio_unit(module, 1)?,
-        }),
-        ModuleKind::Reverb => Ok(AudioModule::Reverb {
-            room: audio_unit(module, 1)?,
-            damp: audio_unit(module, 2)?,
-            mod_depth: audio_unit(module, 3)?,
-            diffusion: audio_unit(module, 4)?,
-        }),
-        ModuleKind::Distortion => Ok(AudioModule::Distortion {
-            kind: audio_distortion(module)?,
-            drive: Drive::new(audio_float(module, 2)?).ok_or(AudioPatchError::InvalidParameter)?,
-        }),
-        ModuleKind::Compressor => Ok(AudioModule::Compressor {
-            threshold: audio_unit(module, 1)?,
-            ratio: CompressorRatio::new(audio_float(module, 2)?)
+        ModuleKind::DelayTap => Ok(brainwash::preset::attenuator(audio_unit(module, 1)?)),
+        ModuleKind::Reverb => Ok(brainwash::preset::reverb(
+            audio_unit(module, 1)?,
+            audio_unit(module, 2)?,
+            audio_unit(module, 3)?,
+            audio_unit(module, 4)?,
+        )),
+        ModuleKind::Distortion => Ok(brainwash::preset::distortion(
+            audio_distortion(module)?,
+            Drive::new(audio_float(module, 2)?).ok_or(AudioPatchError::InvalidParameter)?,
+            Sample::new(audio_float(module, 3)?).ok_or(AudioPatchError::InvalidParameter)?,
+        )),
+        ModuleKind::Compressor => Ok(brainwash::preset::compressor(
+            audio_unit(module, 1)?,
+            CompressorRatio::new(audio_float(module, 2)?)
                 .ok_or(AudioPatchError::InvalidParameter)?,
-            attack: seconds(audio_float(module, 3)?)?,
-            release: seconds(audio_float(module, 4)?)?,
-            makeup: Gain::new(audio_float(module, 5)?).ok_or(AudioPatchError::InvalidParameter)?,
-        }),
-        ModuleKind::Flanger => Ok(AudioModule::Flanger {
-            rate: Hertz::new(audio_float(module, 1)?).ok_or(AudioPatchError::InvalidParameter)?,
-            depth: audio_unit(module, 2)?,
-            feedback: audio_unit(module, 3)?,
-        }),
+            Seconds::new(audio_float(module, 3)?).ok_or(AudioPatchError::InvalidParameter)?,
+            Seconds::new(audio_float(module, 4)?).ok_or(AudioPatchError::InvalidParameter)?,
+            Gain::new(audio_float(module, 5)?).ok_or(AudioPatchError::InvalidParameter)?,
+        )),
+        ModuleKind::Flanger => Ok(brainwash::preset::flanger(
+            Hertz::new(audio_float(module, 1)?).ok_or(AudioPatchError::InvalidParameter)?,
+            audio_unit(module, 2)?,
+            audio_unit(module, 3)?,
+        )),
         ModuleKind::Multiply => Ok(AudioModule::Binary {
             op: BinaryOp::Multiply,
             a: audio_sample(module, 0)?,
@@ -7588,13 +8246,23 @@ fn audio_module(
             a: AudioSample::ZERO,
             b: AudioSample::ZERO,
         }),
+        ModuleKind::CompositionInput => {
+            let ModuleBody::CompositionInput { value, .. } = &module.body else {
+                unreachable!();
+            };
+            Ok(AudioModule::Binary {
+                op: BinaryOp::Add,
+                a: AudioSample::new(value.value as f32 / 100.0)
+                    .ok_or(AudioPatchError::InvalidParameter)?,
+                b: AudioSample::ZERO,
+            })
+        }
         ModuleKind::TurnRightDown
         | ModuleKind::TurnDownRight
         | ModuleKind::LeftSplit
         | ModuleKind::TopSplit
-        | ModuleKind::SubpatchInput
-        | ModuleKind::SubpatchOutput
-        | ModuleKind::Subpatch => Ok(AudioModule::Pass),
+        | ModuleKind::CompositionOutput
+        | ModuleKind::Composition => Ok(AudioModule::Pass),
         ModuleKind::Output => Ok(AudioModule::Pass),
     }
 }
@@ -7612,45 +8280,45 @@ fn root_connection_source(
     let source = root_modules
         .iter()
         .find(|module| module.id == connection.from)?;
-    if source.kind() != ModuleKind::Subpatch {
+    if !source.is_composition() {
         return audio_id(ids, AudioKey::Root(source.id));
     }
-    let outputs = subpatch_outputs(source.subpatch_surface()?);
+    let outputs = composition_outputs(source.composition_surface()?);
     let module = outputs.get(connection.output).copied()?;
     audio_id(
         ids,
-        AudioKey::Subpatch {
+        AudioKey::Composition {
             owner: source.id,
             module,
         },
     )
 }
 
-fn subpatch_input_key(module: &Module) -> u16 {
+fn composition_input_key(module: &Module) -> u16 {
     module.position.y
 }
 
-fn subpatch_output_key(module: &Module) -> u16 {
+fn composition_output_key(module: &Module) -> u16 {
     module.position.x
 }
 
-fn subpatch_inputs(surface: &PatchSurface) -> Vec<ModuleId> {
+fn composition_inputs(surface: &PatchSurface) -> Vec<ModuleId> {
     let mut modules = surface
         .modules
         .iter()
-        .filter(|module| !module.disabled && module.kind() == ModuleKind::SubpatchInput)
+        .filter(|module| !module.disabled && module.kind() == ModuleKind::CompositionInput)
         .collect::<Vec<_>>();
-    modules.sort_by_key(|module| subpatch_input_key(module));
+    modules.sort_by_key(|module| composition_input_key(module));
     modules.into_iter().map(|module| module.id).collect()
 }
 
-fn subpatch_outputs(surface: &PatchSurface) -> Vec<ModuleId> {
+fn composition_outputs(surface: &PatchSurface) -> Vec<ModuleId> {
     let mut modules = surface
         .modules
         .iter()
-        .filter(|module| !module.disabled && module.kind() == ModuleKind::SubpatchOutput)
+        .filter(|module| !module.disabled && module.kind() == ModuleKind::CompositionOutput)
         .collect::<Vec<_>>();
-    modules.sort_by_key(|module| subpatch_output_key(module));
+    modules.sort_by_key(|module| composition_output_key(module));
     modules.into_iter().map(|module| module.id).collect()
 }
 
@@ -7774,13 +8442,6 @@ fn audio_int(module: &Module, parameter: usize) -> Result<i32, AudioPatchError> 
     Ok(value)
 }
 
-fn audio_toggle(module: &Module, parameter: usize) -> Result<bool, AudioPatchError> {
-    let Some(ParameterValue::Toggle(value)) = module.parameter(parameter).map(|p| p.value) else {
-        return Err(AudioPatchError::InvalidParameter);
-    };
-    Ok(value)
-}
-
 fn audio_unit(module: &Module, parameter: usize) -> Result<Unit, AudioPatchError> {
     Unit::new(audio_float(module, parameter)?.clamp(0.0, 1.0))
         .ok_or(AudioPatchError::InvalidParameter)
@@ -7857,11 +8518,14 @@ fn typed_parameter_value(current: &ParameterValue, text: &str) -> Option<Paramet
             TimeUnit::Bars => typed_bars(text),
         },
         ParameterValue::Bars { .. } => typed_bars(text),
+        ParameterValue::Text(_) => {
+            let value = text.trim();
+            (!value.is_empty()).then(|| ParameterValue::Text(value.to_string()))
+        }
         ParameterValue::Int { .. }
         | ParameterValue::Input
         | ParameterValue::File { .. }
-        | ParameterValue::Enum { .. }
-        | ParameterValue::Toggle(_) => None,
+        | ParameterValue::Enum { .. } => None,
     }
 }
 
@@ -7951,8 +8615,8 @@ pub fn all_modules() -> &'static [ModuleKind] {
         ModuleKind::TopSplit,
         ModuleKind::RightJoin,
         ModuleKind::DownJoin,
-        ModuleKind::SubpatchInput,
-        ModuleKind::SubpatchOutput,
-        ModuleKind::Subpatch,
+        ModuleKind::CompositionInput,
+        ModuleKind::CompositionOutput,
+        ModuleKind::Composition,
     ]
 }

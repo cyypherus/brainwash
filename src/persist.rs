@@ -1,4 +1,6 @@
-use crate::patch::{self, BinaryOp, CompressorRatio, EnvPoint, Gain, Module, Patch};
+use crate::effect::Distortion;
+use crate::osc::Wave;
+use crate::patch::{self, BinaryOp, Composition, EnvPoint, InputKind, Module, Patch};
 use crate::sample::{Sample, Unit};
 use crate::time::{Duration, Hertz, Samples, Seconds};
 use serde::{Deserialize, Serialize};
@@ -41,11 +43,46 @@ pub fn save(path: &Path, patch: &Patch) -> Result<(), SaveError> {
     fs::write(path, output).map_err(SaveError::Io)
 }
 
+pub fn composition_to_string(composition: &Composition) -> Result<String, SaveError> {
+    ron::to_string(&FileComposition::from_composition(composition)?).map_err(SaveError::Ron)
+}
+
+pub fn composition_from_str(input: &str) -> Result<Composition, LoadError> {
+    let file: FileComposition = ron::from_str(input).map_err(LoadError::Ron)?;
+    file.into_composition()
+}
+
+pub fn load_composition(path: &Path) -> Result<Composition, LoadError> {
+    let input = fs::read_to_string(path).map_err(LoadError::Io)?;
+    composition_from_str(&input)
+}
+
+pub fn save_composition(path: &Path, composition: &Composition) -> Result<(), SaveError> {
+    let output = composition_to_string(composition)?;
+    fs::write(path, output).map_err(SaveError::Io)
+}
+
+pub fn module_to_string(module: &Module) -> Result<String, SaveError> {
+    ron::to_string(&FileModule::from_module(module)?).map_err(SaveError::Ron)
+}
+
+pub fn module_from_str(input: &str) -> Result<Module, LoadError> {
+    let module: FileModule = ron::from_str(input).map_err(LoadError::Ron)?;
+    module.into_module()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct FilePatch {
     modules: Vec<FileModuleEntry>,
     connections: Vec<FileConnection>,
     output: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct FileComposition {
+    name: String,
+    patch: FilePatch,
+    inputs: Vec<FileCompositionInput>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -58,10 +95,15 @@ struct FileModuleEntry {
 struct FileConnection {
     from: u32,
     to: u32,
+    input: InputKind,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum FileModule {
+    Input {
+        kind: InputKind,
+        default: f32,
+    },
     Freq,
     Gate,
     Degree,
@@ -69,15 +111,11 @@ enum FileModule {
         target: i32,
     },
     Constant(f32),
+    Absolute,
     Pass,
-    Transpose {
-        semitones: f32,
-    },
     Osc {
         wave: FileWave,
         frequency: f32,
-        gain: f32,
-        unipolar: bool,
     },
     Rise {
         time: FileDuration,
@@ -88,12 +126,6 @@ enum FileModule {
     Ramp {
         value: f32,
         time: FileDuration,
-    },
-    Adsr {
-        attack: FileDuration,
-        decay: FileDuration,
-        sustain: f32,
-        release: FileDuration,
     },
     Envelope {
         points: Vec<FileEnvPoint>,
@@ -117,30 +149,13 @@ enum FileModule {
         time: FileDuration,
         feedback: f32,
     },
-    DelayTap {
-        gain: f32,
+    VariableDelay {
+        max_time: FileDuration,
     },
-    Reverb {
-        room: f32,
-        damp: f32,
-        mod_depth: f32,
-        diffusion: f32,
-    },
-    Distortion {
-        kind: FileDistortion,
-        drive: f32,
-    },
-    Compressor {
-        threshold: f32,
-        ratio: f32,
-        attack: FileDuration,
-        release: FileDuration,
-        makeup: f32,
-    },
-    Flanger {
-        rate: f32,
-        depth: f32,
-        feedback: f32,
+    Waveshaper(FileDistortion),
+    Slew {
+        rise: f32,
+        fall: f32,
     },
     Binary {
         op: FileBinaryOp,
@@ -156,6 +171,18 @@ enum FileModule {
         samples: Vec<f32>,
     },
     Probe,
+    Composition {
+        name: String,
+        patch: Box<FilePatch>,
+        inputs: Vec<FileCompositionInput>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct FileCompositionInput {
+    label: String,
+    kind: InputKind,
+    module: u32,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -169,6 +196,9 @@ struct FileEnvPoint {
 enum FileBinaryOp {
     Multiply,
     Add,
+    Subtract,
+    Divide,
+    Power,
     GreaterThan,
     LessThan,
 }
@@ -201,17 +231,20 @@ impl FilePatch {
             modules: patch
                 .modules()
                 .iter()
-                .map(|(id, module)| FileModuleEntry {
-                    id: id.0,
-                    module: FileModule::from_module(module),
+                .map(|(id, module)| {
+                    Ok(FileModuleEntry {
+                        id: id.0,
+                        module: FileModule::from_module(module)?,
+                    })
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, SaveError>>()?,
             connections: patch
                 .connections()
                 .iter()
                 .map(|connection| FileConnection {
                     from: connection.from.0,
                     to: connection.input.module.0,
+                    input: connection.input.input,
                 })
                 .collect(),
             output: patch.output_id().ok_or(SaveError::Value)?.0,
@@ -219,46 +252,86 @@ impl FilePatch {
     }
 
     fn into_patch(self) -> Result<Patch, LoadError> {
+        self.into_patch_with_ids().map(|(patch, _)| patch)
+    }
+
+    fn into_patch_with_ids(self) -> Result<(Patch, HashMap<u32, patch::ModuleId>), LoadError> {
         let mut patch = Patch::new();
         let mut ids = HashMap::new();
         for entry in self.modules {
             let old_id = entry.id;
             let new_id = patch.insert(entry.module.into_module()?);
-            ids.insert(old_id, new_id);
+            if ids.insert(old_id, new_id).is_some() {
+                return Err(LoadError::Value);
+            }
         }
         for connection in self.connections {
             let from = *ids.get(&connection.from).ok_or(LoadError::Value)?;
             let to = *ids.get(&connection.to).ok_or(LoadError::Value)?;
-            patch.connect(from, to).map_err(|_| LoadError::Value)?;
+            let input = patch
+                .input_port(to, connection.input)
+                .map_err(|_| LoadError::Value)?;
+            patch
+                .connect_input(from, input)
+                .map_err(|_| LoadError::Value)?;
         }
         let output = *ids.get(&self.output).ok_or(LoadError::Value)?;
         patch.output(output).map_err(|_| LoadError::Value)?;
-        Ok(patch)
+        Ok((patch, ids))
+    }
+}
+
+impl FileComposition {
+    fn from_composition(composition: &Composition) -> Result<Self, SaveError> {
+        Ok(Self {
+            name: composition.name().to_string(),
+            patch: FilePatch::from_patch(composition.patch())?,
+            inputs: composition
+                .inputs()
+                .iter()
+                .map(|input| FileCompositionInput {
+                    label: input.label().to_string(),
+                    kind: input.kind(),
+                    module: input.module().0,
+                })
+                .collect(),
+        })
+    }
+
+    fn into_composition(self) -> Result<Composition, LoadError> {
+        let (patch, ids) = self.patch.into_patch_with_ids()?;
+        let inputs = self
+            .inputs
+            .into_iter()
+            .map(|input| {
+                Ok((
+                    input.label,
+                    input.kind,
+                    *ids.get(&input.module).ok_or(LoadError::Value)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, LoadError>>()?;
+        Composition::new(self.name, patch, inputs).map_err(|_| LoadError::Value)
     }
 }
 
 impl FileModule {
-    fn from_module(module: &Module) -> Self {
-        match module.clone() {
+    fn from_module(module: &Module) -> Result<Self, SaveError> {
+        Ok(match module.clone() {
+            Module::Input { kind, default } => FileModule::Input {
+                kind,
+                default: default.value(),
+            },
             Module::Freq => FileModule::Freq,
             Module::Gate => FileModule::Gate,
             Module::Degree => FileModule::Degree,
             Module::DegreeGate { target } => FileModule::DegreeGate { target },
             Module::Constant(value) => FileModule::Constant(value.value()),
+            Module::Absolute => FileModule::Absolute,
             Module::Pass => FileModule::Pass,
-            Module::Transpose { semitones } => FileModule::Transpose {
-                semitones: semitones.value(),
-            },
-            Module::Osc {
-                wave,
-                frequency,
-                gain,
-                unipolar,
-            } => FileModule::Osc {
+            Module::Osc { wave, frequency } => FileModule::Osc {
                 wave: FileWave::from_wave(wave),
                 frequency: frequency.value(),
-                gain: gain.value(),
-                unipolar,
             },
             Module::Rise { time } => FileModule::Rise {
                 time: FileDuration::from_duration(time),
@@ -269,15 +342,6 @@ impl FileModule {
             Module::Ramp { value, time } => FileModule::Ramp {
                 value: value.value(),
                 time: FileDuration::from_duration(time),
-            },
-            Module::Adsr {
-                attack_ratio,
-                sustain,
-            } => FileModule::Adsr {
-                attack: FileDuration::Seconds(attack_ratio.value()),
-                decay: FileDuration::Seconds(1.0 - attack_ratio.value()),
-                sustain: sustain.value(),
-                release: FileDuration::Seconds(1.0),
             },
             Module::Envelope { points } => FileModule::Envelope {
                 points: points
@@ -312,43 +376,15 @@ impl FileModule {
                 time: FileDuration::from_duration(time),
                 feedback: feedback.value(),
             },
-            Module::DelayTap { gain } => FileModule::DelayTap { gain: gain.value() },
-            Module::Reverb {
-                room,
-                damp,
-                mod_depth,
-                diffusion,
-            } => FileModule::Reverb {
-                room: room.value(),
-                damp: damp.value(),
-                mod_depth: mod_depth.value(),
-                diffusion: diffusion.value(),
+            Module::VariableDelay { max_time } => FileModule::VariableDelay {
+                max_time: FileDuration::from_duration(max_time),
             },
-            Module::Distortion { kind, drive } => FileModule::Distortion {
-                kind: FileDistortion::from_distortion(kind),
-                drive: drive.value(),
-            },
-            Module::Compressor {
-                threshold,
-                ratio,
-                attack,
-                release,
-                makeup,
-            } => FileModule::Compressor {
-                threshold: threshold.value(),
-                ratio: ratio.value(),
-                attack: FileDuration::from_duration(attack),
-                release: FileDuration::from_duration(release),
-                makeup: makeup.value(),
-            },
-            Module::Flanger {
-                rate,
-                depth,
-                feedback,
-            } => FileModule::Flanger {
-                rate: rate.value(),
-                depth: depth.value(),
-                feedback: feedback.value(),
+            Module::Waveshaper(kind) => {
+                FileModule::Waveshaper(FileDistortion::from_distortion(kind))
+            }
+            Module::Slew { rise, fall } => FileModule::Slew {
+                rise: rise.value(),
+                fall: fall.value(),
             },
             Module::Binary { op, a, b } => FileModule::Binary {
                 op: FileBinaryOp::from_binary_op(op),
@@ -364,11 +400,28 @@ impl FileModule {
                 samples: samples.iter().map(|sample| sample.value()).collect(),
             },
             Module::Probe => FileModule::Probe,
-        }
+            Module::Composition(composition) => FileModule::Composition {
+                name: composition.name().to_string(),
+                patch: Box::new(FilePatch::from_patch(composition.patch())?),
+                inputs: composition
+                    .inputs()
+                    .iter()
+                    .map(|input| FileCompositionInput {
+                        label: input.label().to_string(),
+                        kind: input.kind(),
+                        module: input.module().0,
+                    })
+                    .collect(),
+            },
+        })
     }
 
     fn into_module(self) -> Result<Module, LoadError> {
         Ok(match self {
+            FileModule::Input { kind, default } => Module::Input {
+                kind,
+                default: Sample::new(default).ok_or(LoadError::Value)?,
+            },
             FileModule::Freq => Module::Freq,
             FileModule::Gate => Module::Gate,
             FileModule::Degree => Module::Degree,
@@ -376,20 +429,11 @@ impl FileModule {
             FileModule::Constant(value) => {
                 Module::Constant(Sample::new(value).ok_or(LoadError::Value)?)
             }
+            FileModule::Absolute => Module::Absolute,
             FileModule::Pass => Module::Pass,
-            FileModule::Transpose { semitones } => Module::Transpose {
-                semitones: Sample::new(semitones).ok_or(LoadError::Value)?,
-            },
-            FileModule::Osc {
-                wave,
-                frequency,
-                gain,
-                unipolar,
-            } => Module::Osc {
+            FileModule::Osc { wave, frequency } => Module::Osc {
                 wave: wave.into_wave(),
                 frequency: Hertz::new(frequency).ok_or(LoadError::Value)?,
-                gain: Unit::new(gain).ok_or(LoadError::Value)?,
-                unipolar,
             },
             FileModule::Rise { time } => Module::Rise {
                 time: time.into_duration()?,
@@ -401,15 +445,6 @@ impl FileModule {
                 value: Sample::new(value).ok_or(LoadError::Value)?,
                 time: time.into_duration()?,
             },
-            FileModule::Adsr {
-                attack,
-                decay: _,
-                sustain,
-                release: _,
-            } => Module::Adsr {
-                attack_ratio: duration_unit(attack.into_duration()?),
-                sustain: Unit::new(sustain).ok_or(LoadError::Value)?,
-            },
             FileModule::Envelope { points } => Module::Envelope {
                 points: Arc::new(
                     points
@@ -417,7 +452,7 @@ impl FileModule {
                         .map(|point| {
                             Ok(EnvPoint {
                                 time: Unit::new(point.time).ok_or(LoadError::Value)?,
-                                value: Unit::new(point.value).ok_or(LoadError::Value)?,
+                                value: Sample::new(point.value).ok_or(LoadError::Value)?,
                                 curve: point.curve,
                             })
                         })
@@ -447,45 +482,13 @@ impl FileModule {
                 time: time.into_duration()?,
                 feedback: Unit::new(feedback).ok_or(LoadError::Value)?,
             },
-            FileModule::DelayTap { gain } => Module::DelayTap {
-                gain: Unit::new(gain).ok_or(LoadError::Value)?,
+            FileModule::VariableDelay { max_time } => Module::VariableDelay {
+                max_time: max_time.into_duration()?,
             },
-            FileModule::Reverb {
-                room,
-                damp,
-                mod_depth,
-                diffusion,
-            } => Module::Reverb {
-                room: Unit::new(room).ok_or(LoadError::Value)?,
-                damp: Unit::new(damp).ok_or(LoadError::Value)?,
-                mod_depth: Unit::new(mod_depth).ok_or(LoadError::Value)?,
-                diffusion: Unit::new(diffusion).ok_or(LoadError::Value)?,
-            },
-            FileModule::Distortion { kind, drive } => Module::Distortion {
-                kind: kind.into_distortion(),
-                drive: patch::Drive::new(drive).ok_or(LoadError::Value)?,
-            },
-            FileModule::Compressor {
-                threshold,
-                ratio,
-                attack,
-                release,
-                makeup,
-            } => Module::Compressor {
-                threshold: Unit::new(threshold).ok_or(LoadError::Value)?,
-                ratio: CompressorRatio::new(ratio).ok_or(LoadError::Value)?,
-                attack: attack.into_duration()?,
-                release: release.into_duration()?,
-                makeup: Gain::new(makeup).ok_or(LoadError::Value)?,
-            },
-            FileModule::Flanger {
-                rate,
-                depth,
-                feedback,
-            } => Module::Flanger {
-                rate: Hertz::new(rate).ok_or(LoadError::Value)?,
-                depth: Unit::new(depth).ok_or(LoadError::Value)?,
-                feedback: Unit::new(feedback).ok_or(LoadError::Value)?,
+            FileModule::Waveshaper(kind) => Module::Waveshaper(kind.into_distortion()),
+            FileModule::Slew { rise, fall } => Module::Slew {
+                rise: Seconds::new(rise).ok_or(LoadError::Value)?,
+                fall: Seconds::new(fall).ok_or(LoadError::Value)?,
             },
             FileModule::Binary { op, a, b } => Module::Binary {
                 op: op.into_binary_op(),
@@ -506,46 +509,66 @@ impl FileModule {
                 ),
             },
             FileModule::Probe => Module::Probe,
+            FileModule::Composition {
+                name,
+                patch,
+                inputs,
+            } => {
+                let (patch, ids) = patch.into_patch_with_ids()?;
+                let inputs = inputs
+                    .into_iter()
+                    .map(|input| {
+                        Ok((
+                            input.label,
+                            input.kind,
+                            *ids.get(&input.module).ok_or(LoadError::Value)?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, LoadError>>()?;
+                Module::Composition(Box::new(
+                    Composition::new(name, patch, inputs).map_err(|_| LoadError::Value)?,
+                ))
+            }
         })
     }
 }
 
 impl FileWave {
-    fn from_wave(wave: patch::Wave) -> Self {
+    fn from_wave(wave: Wave) -> Self {
         match wave {
-            patch::Wave::Sine => FileWave::Sine,
-            patch::Wave::Square => FileWave::Square,
-            patch::Wave::Triangle => FileWave::Triangle,
-            patch::Wave::Saw => FileWave::Saw,
-            patch::Wave::Noise => FileWave::Noise,
+            Wave::Sine => FileWave::Sine,
+            Wave::Square => FileWave::Square,
+            Wave::Triangle => FileWave::Triangle,
+            Wave::Saw => FileWave::Saw,
+            Wave::Noise => FileWave::Noise,
         }
     }
 
-    fn into_wave(self) -> patch::Wave {
+    fn into_wave(self) -> Wave {
         match self {
-            FileWave::Sine => patch::Wave::Sine,
-            FileWave::Square => patch::Wave::Square,
-            FileWave::Triangle => patch::Wave::Triangle,
-            FileWave::Saw => patch::Wave::Saw,
-            FileWave::Noise => patch::Wave::Noise,
+            FileWave::Sine => Wave::Sine,
+            FileWave::Square => Wave::Square,
+            FileWave::Triangle => Wave::Triangle,
+            FileWave::Saw => Wave::Saw,
+            FileWave::Noise => Wave::Noise,
         }
     }
 }
 
 impl FileDistortion {
-    fn from_distortion(kind: patch::Distortion) -> Self {
+    fn from_distortion(kind: Distortion) -> Self {
         match kind {
-            patch::Distortion::Clip => FileDistortion::Clip,
-            patch::Distortion::Tanh => FileDistortion::Tanh,
-            patch::Distortion::Fold => FileDistortion::Fold,
+            Distortion::Clip => FileDistortion::Clip,
+            Distortion::Tanh => FileDistortion::Tanh,
+            Distortion::Fold => FileDistortion::Fold,
         }
     }
 
-    fn into_distortion(self) -> patch::Distortion {
+    fn into_distortion(self) -> Distortion {
         match self {
-            FileDistortion::Clip => patch::Distortion::Clip,
-            FileDistortion::Tanh => patch::Distortion::Tanh,
-            FileDistortion::Fold => patch::Distortion::Fold,
+            FileDistortion::Clip => Distortion::Clip,
+            FileDistortion::Tanh => Distortion::Tanh,
+            FileDistortion::Fold => Distortion::Fold,
         }
     }
 }
@@ -555,6 +578,9 @@ impl FileBinaryOp {
         match op {
             BinaryOp::Multiply => FileBinaryOp::Multiply,
             BinaryOp::Add => FileBinaryOp::Add,
+            BinaryOp::Subtract => FileBinaryOp::Subtract,
+            BinaryOp::Divide => FileBinaryOp::Divide,
+            BinaryOp::Power => FileBinaryOp::Power,
             BinaryOp::GreaterThan => FileBinaryOp::GreaterThan,
             BinaryOp::LessThan => FileBinaryOp::LessThan,
         }
@@ -564,18 +590,13 @@ impl FileBinaryOp {
         match self {
             FileBinaryOp::Multiply => BinaryOp::Multiply,
             FileBinaryOp::Add => BinaryOp::Add,
+            FileBinaryOp::Subtract => BinaryOp::Subtract,
+            FileBinaryOp::Divide => BinaryOp::Divide,
+            FileBinaryOp::Power => BinaryOp::Power,
             FileBinaryOp::GreaterThan => BinaryOp::GreaterThan,
             FileBinaryOp::LessThan => BinaryOp::LessThan,
         }
     }
-}
-
-fn duration_unit(duration: Duration) -> Unit {
-    let value = match duration {
-        Duration::Seconds(seconds) => seconds.value(),
-        Duration::Samples(samples) => samples.value() as f32,
-    };
-    Unit::new(value.clamp(0.0, 1.0)).unwrap()
 }
 
 impl FileDuration {
@@ -593,5 +614,88 @@ impl FileDuration {
                 Duration::Seconds(Seconds::new(seconds).ok_or(LoadError::Value)?)
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compile::CompiledPatch;
+    use crate::patch::{CompressorRatio, Gain};
+    use crate::time::SampleRate;
+
+    #[test]
+    fn multi_input_composition_round_trips() {
+        let mut patch = Patch::new();
+        let source = patch.insert(Module::Constant(Sample::new(0.5).unwrap()));
+        let compressor = patch.insert(crate::preset::compressor(
+            Unit::new(0.5).unwrap(),
+            CompressorRatio::new(2.0).unwrap(),
+            Seconds::new(0.001).unwrap(),
+            Seconds::new(0.001).unwrap(),
+            Gain::new(1.0).unwrap(),
+        ));
+        let input = patch.input_port(compressor, InputKind::In).unwrap();
+        patch.connect_input(source, input).unwrap();
+        patch.output(compressor).unwrap();
+
+        let encoded = to_string(&patch).unwrap();
+        let decoded = from_str(&encoded).unwrap();
+        let mut compiled = CompiledPatch::new(&decoded, SampleRate::new(44_100).unwrap()).unwrap();
+
+        assert!(compiled.next().left().value().is_finite());
+        assert_eq!(to_string(&decoded).unwrap(), encoded);
+    }
+
+    #[test]
+    fn composition_file_preserves_name_and_labels() {
+        let mut patch = Patch::new();
+        let input = patch.insert(Module::Input {
+            kind: InputKind::In,
+            default: Sample::ZERO,
+        });
+        patch.output(input).unwrap();
+        let composition = Composition::new(
+            "User Gain",
+            patch,
+            [("Signal".to_string(), InputKind::In, input)],
+        )
+        .unwrap();
+
+        let encoded = composition_to_string(&composition).unwrap();
+        let decoded = composition_from_str(&encoded).unwrap();
+
+        assert_eq!(decoded.name(), "User Gain");
+        assert_eq!(decoded.inputs()[0].label(), "Signal");
+        assert_eq!(composition_to_string(&decoded).unwrap(), encoded);
+    }
+
+    #[test]
+    fn module_round_trips_without_a_patch_wrapper() {
+        let module = Module::Osc {
+            wave: Wave::Triangle,
+            frequency: Hertz::new(220.0).unwrap(),
+        };
+
+        let encoded = module_to_string(&module).unwrap();
+        let decoded = module_from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, module);
+    }
+
+    #[test]
+    fn bipolar_envelope_round_trips() {
+        let module = Module::Envelope {
+            points: Arc::new(vec![EnvPoint::new(
+                Unit::new(0.5).unwrap(),
+                Sample::new(-0.75).unwrap(),
+                true,
+            )]),
+        };
+
+        let encoded = module_to_string(&module).unwrap();
+        let decoded = module_from_str(&encoded).unwrap();
+
+        assert_eq!(decoded, module);
     }
 }

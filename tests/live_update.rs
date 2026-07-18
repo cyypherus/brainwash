@@ -1,7 +1,8 @@
 use assert_no_alloc::assert_no_alloc;
 use brainwash::compile::{CompiledPatch, PatchControls, PatchEngine, UpdateRejected};
 use brainwash::live::RealtimePatchEngine;
-use brainwash::patch::{InputKind, Module, Patch, Wave};
+use brainwash::osc::Wave;
+use brainwash::patch::{InputKind, Module, Patch};
 use brainwash::sample::Unit;
 use brainwash::scale::cmin;
 use brainwash::time::{Hertz, SampleRate};
@@ -163,12 +164,12 @@ fn patch_controls_drive_oscillator_frequency() {
     let rate = SampleRate::new(44_100).unwrap();
     let mut patch = Patch::new();
     let freq = patch.insert(Module::Freq);
-    let osc = patch.insert(Module::Osc {
-        wave: Wave::Saw,
-        frequency: Hertz::new(110.0).unwrap(),
-        gain: Unit::ONE,
-        unipolar: false,
-    });
+    let osc = patch.insert(brainwash::preset::oscillator(
+        Wave::Saw,
+        Hertz::new(110.0).unwrap(),
+        Unit::ONE,
+        false,
+    ));
     let port = patch.input_port(osc, InputKind::Freq).unwrap();
     patch.connect_input(freq, port).unwrap();
     patch.output(osc).unwrap();
@@ -245,7 +246,6 @@ fn realtime_function_bodies_exclude_allocator_shapes() {
         "pub fn replace",
         "pub fn take_retired",
         "pub fn next_with_controls",
-        "fn input_values",
     ] {
         let body = function_body(compile, name);
         for token in [
@@ -266,12 +266,12 @@ fn realtime_function_bodies_exclude_allocator_shapes() {
 
 fn compiled_patch(wave: Wave, frequency: f32, rate: SampleRate) -> CompiledPatch {
     let mut patch = Patch::new();
-    let osc = patch.insert(Module::Osc {
+    let osc = patch.insert(brainwash::preset::oscillator(
         wave,
-        frequency: Hertz::new(frequency).unwrap(),
-        gain: Unit::ONE,
-        unipolar: false,
-    });
+        Hertz::new(frequency).unwrap(),
+        Unit::ONE,
+        false,
+    ));
     patch.output(osc).unwrap();
     CompiledPatch::new(&patch, rate).unwrap()
 }
