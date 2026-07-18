@@ -1,0 +1,586 @@
+use super::*;
+
+pub(super) fn sync_delay_sources(surface: &mut PatchSurface) {
+    let delays = surface
+        .modules
+        .iter()
+        .filter(|module| module.kind() == ModuleKind::Delay)
+        .map(|module| module.id)
+        .collect::<Vec<_>>();
+    for module in &mut surface.modules {
+        if let ModuleBody::DelayTap { source, .. } = &mut module.body {
+            source.options = delays.clone();
+            if source
+                .selected
+                .is_none_or(|selected| !delays.contains(&selected))
+            {
+                source.selected = delays.first().copied();
+            }
+        }
+        if let Some(composition) = module.composition_surface_mut() {
+            sync_delay_sources(composition);
+        }
+    }
+}
+
+pub(super) fn composition_body(
+    graph: Box<brainwash::patch::Composition>,
+    next_module_id: &mut u32,
+) -> Option<ModuleBody> {
+    const FDN_POSITIONS: [(u16, u16); 24] = [
+        (5, 13),
+        (6, 14),
+        (7, 15),
+        (8, 12),
+        (0, 20),
+        (21, 20),
+        (0, 22),
+        (2, 22),
+        (4, 22),
+        (6, 22),
+        (21, 22),
+        (23, 22),
+        (25, 22),
+        (27, 22),
+        (0, 7),
+        (1, 6),
+        (2, 5),
+        (3, 4),
+        (4, 3),
+        (5, 2),
+        (6, 1),
+        (7, 0),
+        (4, 10),
+        (12, 12),
+    ];
+    const FDN_DRIVE_POSITIONS: [(u16, u16); 11] = [
+        (0, 0),
+        (2, 1),
+        (4, 2),
+        (6, 3),
+        (8, 8),
+        (10, 7),
+        (12, 6),
+        (14, 5),
+        (16, 4),
+        (18, 8),
+        (20, 0),
+    ];
+    const FEEDBACK_BANK_POSITIONS: [(u16, u16); 12] = [
+        (0, 0),
+        (2, 0),
+        (4, 0),
+        (6, 0),
+        (8, 0),
+        (10, 0),
+        (12, 0),
+        (14, 0),
+        (16, 1),
+        (18, 6),
+        (20, 11),
+        (22, 16),
+    ];
+    const REFLECTION_POSITIONS: [(u16, u16); 16] = [
+        (0, 0),
+        (2, 0),
+        (4, 0),
+        (6, 0),
+        (8, 0),
+        (10, 0),
+        (12, 0),
+        (14, 0),
+        (16, 1),
+        (18, 3),
+        (20, 5),
+        (22, 7),
+        (24, 9),
+        (26, 11),
+        (28, 13),
+        (30, 15),
+    ];
+    const OUTPUT_MIX_POSITIONS: [(u16, u16); 13] = [
+        (0, 0),
+        (2, 0),
+        (4, 0),
+        (6, 0),
+        (8, 0),
+        (10, 0),
+        (12, 0),
+        (14, 0),
+        (16, 0),
+        (18, 1),
+        (20, 6),
+        (22, 11),
+        (24, 13),
+    ];
+    let entries = graph
+        .patch()
+        .module_entries()
+        .map(|(id, module)| (id, module.clone()))
+        .collect::<Vec<_>>();
+    let connections = graph.patch().connection_entries().collect::<Vec<_>>();
+    let mut remaining = entries.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+    let mut ordered = Vec::new();
+    while !remaining.is_empty() {
+        let index = remaining
+            .iter()
+            .position(|candidate| {
+                !connections.iter().any(|(from, input)| {
+                    input.module() == *candidate && remaining.contains(&from.module())
+                })
+            })
+            .expect("composition is acyclic");
+        ordered.push(remaining.remove(index));
+    }
+    let mut modules = Vec::new();
+    let ids = entries
+        .iter()
+        .enumerate()
+        .map(|(index, (id, _))| (*id, ModuleId::new(*next_module_id + index as u32)))
+        .collect::<Vec<_>>();
+    *next_module_id += ids.len() as u32;
+    let mut y = 0;
+    let mut x = 0;
+    let positions = ordered
+        .iter()
+        .map(|core_id| {
+            let node = entries
+                .iter()
+                .find_map(|(id, module)| (*id == *core_id).then_some(module))
+                .expect("composition module exists");
+            let position = (*core_id, GridPos::new(x, y));
+            x += 2;
+            y += (node.input_kinds().len() as u16).max(
+                matches!(node, AudioModule::Input { .. })
+                    .then_some(u16::from(
+                        graph.inputs().len() <= 5 && graph.name() != "ADSR",
+                    ))
+                    .or_else(|| {
+                        graph
+                            .outputs()
+                            .iter()
+                            .any(|output| output.port().module() == *core_id)
+                            .then_some(1)
+                    })
+                    .or_else(|| (node.output_count() > 1).then_some(node.output_count()))
+                    .unwrap_or(0),
+            );
+            position
+        })
+        .collect::<HashMap<_, _>>();
+    for (core_id, node) in &entries {
+        let projected = ids
+            .iter()
+            .find_map(|(id, projected)| (*id == *core_id).then_some(*projected))
+            .expect("projected module exists");
+        let body = if let Some(input) = graph
+            .inputs()
+            .iter()
+            .find(|input| input.module() == *core_id)
+        {
+            let default = match node {
+                AudioModule::Input { default, .. } => default.value(),
+                _ => 0.0,
+            };
+            ModuleBody::CompositionInput {
+                label: input.label().to_string(),
+                kind: input.kind(),
+                value: float_param(-100_000, 100_000, 1, (default * 100.0).round() as i32),
+            }
+        } else {
+            match node {
+                AudioModule::Composition(composition) => {
+                    composition_body(composition.clone(), next_module_id)?
+                }
+                AudioModule::DelayTap(tap) => {
+                    let source = ids
+                        .iter()
+                        .find_map(|(id, projected)| (*id == tap.delay()).then_some(*projected))
+                        .expect("delay tap source exists");
+                    let options = ids
+                        .iter()
+                        .filter_map(|(id, projected)| {
+                            entries
+                                .iter()
+                                .find_map(|(candidate, module)| {
+                                    (*candidate == *id).then_some(module)
+                                })
+                                .is_some_and(|module| matches!(module, AudioModule::Delay { .. }))
+                                .then_some(*projected)
+                        })
+                        .collect();
+                    let mut body = ModuleKind::DelayTap.default_body();
+                    let ModuleBody::DelayTap {
+                        source: selected,
+                        gain,
+                    } = &mut body
+                    else {
+                        unreachable!()
+                    };
+                    selected.selected = Some(source);
+                    selected.options = options;
+                    gain.value = (tap.gain().value() * 100.0).round() as i32;
+                    body
+                }
+                _ => graph_node_body(node),
+            }
+        };
+        let position = if graph.name() == "FDN Tank" && entries.len() == FDN_POSITIONS.len() {
+            let index = entries.iter().position(|(id, _)| *id == *core_id)?;
+            let (x, y) = FDN_POSITIONS[index];
+            GridPos::new(x, y)
+        } else if graph.name() == "FDN Drive" && entries.len() == FDN_DRIVE_POSITIONS.len() {
+            let index = entries.iter().position(|(id, _)| *id == *core_id)?;
+            let (x, y) = FDN_DRIVE_POSITIONS[index];
+            GridPos::new(x, y)
+        } else if graph.name() == "Feedback Bank" && entries.len() == FEEDBACK_BANK_POSITIONS.len()
+        {
+            let index = entries.iter().position(|(id, _)| *id == *core_id)?;
+            let (x, y) = FEEDBACK_BANK_POSITIONS[index];
+            GridPos::new(x, y)
+        } else if graph.name() == "Reflection" && entries.len() == REFLECTION_POSITIONS.len() {
+            let index = entries.iter().position(|(id, _)| *id == *core_id)?;
+            let (x, y) = REFLECTION_POSITIONS[index];
+            GridPos::new(x, y)
+        } else if graph.name() == "Output Mix" && entries.len() == OUTPUT_MIX_POSITIONS.len() {
+            let index = entries.iter().position(|(id, _)| *id == *core_id)?;
+            let (x, y) = OUTPUT_MIX_POSITIONS[index];
+            GridPos::new(x, y)
+        } else {
+            *positions.get(core_id)?
+        };
+        modules.push(Module {
+            id: projected,
+            position,
+            orientation: if graph.name() == "FDN Tank" {
+                Orientation::Down
+            } else {
+                Orientation::Right
+            },
+            body,
+            disabled: false,
+        });
+    }
+    let mut exposed_outputs: Vec<(brainwash::patch::OutputPort, GridPos)> = Vec::new();
+    let output_x = modules
+        .iter()
+        .map(|module| {
+            module.position.x
+                + module_footprint(module, module.composition_surface().map(composition_ports)).0
+        })
+        .max()?;
+    for (index, declared) in graph.outputs().iter().enumerate() {
+        let source = ids
+            .iter()
+            .find_map(|(id, projected)| (declared.port().module() == *id).then_some(*projected))?;
+        let source_module = modules.iter().find(|module| module.id == source)?;
+        let position = if graph.name() == "FDN Tank" && entries.len() == FDN_POSITIONS.len() {
+            GridPos::new(31, 18 + index as u16)
+        } else if graph.outputs().len() == 1 {
+            GridPos::new(
+                source_module.position.x
+                    + module_footprint(
+                        source_module,
+                        source_module.composition_surface().map(composition_ports),
+                    )
+                    .0,
+                y.max(source_module.position.y + 1),
+            )
+        } else {
+            GridPos::new(
+                output_x + 1,
+                source_module.position.y + declared.port().index(),
+            )
+        };
+        modules.push(Module {
+            id: ModuleId::new(*next_module_id),
+            position,
+            orientation: if graph.outputs().len() == 1 {
+                Orientation::Down
+            } else {
+                Orientation::Right
+            },
+            body: ModuleBody::CompositionOutput {
+                label: declared.label().to_string(),
+                input: input_param(),
+            },
+            disabled: false,
+        });
+        exposed_outputs.push((declared.port(), position));
+        *next_module_id += 1;
+    }
+    let output_position = exposed_outputs.first()?.1;
+    if graph.name() == "FDN Tank" && entries.len() == FDN_POSITIONS.len() {
+        let mut occupied = HashSet::new();
+        for module in &modules {
+            let (width, height) =
+                module_footprint(module, module.composition_surface().map(composition_ports));
+            for y in module.position.y..module.position.y + height {
+                for x in module.position.x..module.position.x + width {
+                    occupied.insert(GridPos::new(x, y));
+                }
+            }
+        }
+        for (core_source, projected_source) in &ids {
+            let source = modules
+                .iter()
+                .find(|module| module.id == *projected_source)?;
+            let source_position = source.position;
+            let core_module = entries
+                .iter()
+                .find_map(|(id, module)| (*id == *core_source).then_some(module))?;
+            for source_output in 0..core_module.output_count() {
+                let source_x = source_position.x + source_output;
+                let source_y = source_position.y;
+                let mut targets = connections
+                    .iter()
+                    .filter(|(from, _)| {
+                        from.module() == *core_source && from.index() == source_output
+                    })
+                    .filter_map(|(_, input)| {
+                        let target = ids.iter().find_map(|(id, projected)| {
+                            (*id == input.module()).then_some(*projected)
+                        })?;
+                        let target_module = modules.iter().find(|module| module.id == target)?;
+                        let core_target = entries
+                            .iter()
+                            .find_map(|(id, module)| (*id == input.module()).then_some(module))?;
+                        let input_index = core_target
+                            .input_kinds()
+                            .iter()
+                            .position(|kind| *kind == input.kind())?;
+                        Some((
+                            target_module.position.x + input_index as u16,
+                            target_module.position.y,
+                        ))
+                    })
+                    .collect::<Vec<_>>();
+                if graph.patch().output_module().is_some_and(|output| {
+                    output.module() == *core_source && output.index() == source_output
+                }) {
+                    targets.push((output_position.x, output_position.y));
+                }
+                targets.sort_unstable();
+                targets.dedup();
+                if targets.is_empty() {
+                    continue;
+                }
+                if targets.len() == 1
+                    && targets[0].0 == source_x
+                    && (source_y + 1..targets[0].1)
+                        .all(|y| !occupied.contains(&GridPos::new(source_x, y)))
+                {
+                    continue;
+                }
+                let last = targets.last()?.0;
+                let max_bus_y = targets.iter().map(|(_, y)| *y).min()?.checked_sub(1)?;
+                let bus_y = (source_y + 1..=max_bus_y).find(|bus_y| {
+                    (source_y + 1..=*bus_y).all(|y| !occupied.contains(&GridPos::new(source_x, y)))
+                        && (source_x..=last).all(|x| !occupied.contains(&GridPos::new(x, *bus_y)))
+                        && targets.iter().all(|(x, target_y)| {
+                            (*bus_y..*target_y).all(|y| !occupied.contains(&GridPos::new(*x, y)))
+                        })
+                });
+                let Some(bus_y) = bus_y else {
+                    return None;
+                };
+                let same_column = targets
+                    .first()
+                    .is_some_and(|(column, _)| *column == source_x);
+                modules.push(Module {
+                    id: ModuleId::new(*next_module_id),
+                    position: GridPos::new(source_x, bus_y),
+                    orientation: Orientation::Right,
+                    body: if same_column {
+                        ModuleBody::TopSplit
+                    } else {
+                        ModuleBody::TurnDownRight
+                    },
+                    disabled: false,
+                });
+                occupied.insert(GridPos::new(source_x, bus_y));
+                *next_module_id += 1;
+                let mut columns = targets
+                    .into_iter()
+                    .map(|(column, _)| column)
+                    .filter(|column| *column > source_x)
+                    .collect::<Vec<_>>();
+                columns.dedup();
+                for column in columns {
+                    modules.push(Module {
+                        id: ModuleId::new(*next_module_id),
+                        position: GridPos::new(column, bus_y),
+                        orientation: Orientation::Right,
+                        body: if column == last {
+                            ModuleBody::TurnRightDown
+                        } else {
+                            ModuleBody::LeftSplit
+                        },
+                        disabled: false,
+                    });
+                    occupied.insert(GridPos::new(column, bus_y));
+                    *next_module_id += 1;
+                }
+            }
+        }
+        return Some(ModuleBody::Composition {
+            name: graph.name().to_string(),
+            surface: PatchSurface {
+                cursor: GridPos::new(0, 0),
+                modules,
+            },
+        });
+    }
+    for (core_source, projected_source) in &ids {
+        let source = modules
+            .iter()
+            .find(|module| module.id == *projected_source)
+            .expect("projected source exists");
+        let source_position = source.position;
+        let source_width =
+            module_footprint(source, source.composition_surface().map(composition_ports)).0;
+        let core_module = entries
+            .iter()
+            .find_map(|(id, module)| (*id == *core_source).then_some(module))?;
+        for source_output in 0..core_module.output_count() {
+            let source_y = source_position.y + source_output;
+            let source_x = source_position.x;
+            let mut rows = connections
+                .iter()
+                .filter(|(from, _)| from.module() == *core_source && from.index() == source_output)
+                .filter_map(|(_, input)| {
+                    let target = ids.iter().find_map(|(id, projected)| {
+                        (*id == input.module()).then_some(*projected)
+                    })?;
+                    let target_module = modules.iter().find(|module| module.id == target)?;
+                    let core_target = entries
+                        .iter()
+                        .find_map(|(id, module)| (*id == input.module()).then_some(module))?;
+                    let input_index = core_target
+                        .input_kinds()
+                        .iter()
+                        .position(|kind| *kind == input.kind())?;
+                    Some(target_module.position.y + input_index as u16)
+                })
+                .collect::<Vec<_>>();
+            let output_positions = exposed_outputs
+                .iter()
+                .filter_map(|(port, position)| {
+                    (port.module() == *core_source && port.index() == source_output)
+                        .then_some(*position)
+                })
+                .collect::<Vec<_>>();
+            let feeds_output_below = graph.outputs().len() == 1 && !output_positions.is_empty();
+            if graph.outputs().len() > 1 {
+                rows.extend(output_positions.iter().map(|position| position.y));
+            }
+            rows.sort_unstable();
+            rows.dedup();
+            if rows.len() == 1 && rows[0] == source_y && !feeds_output_below {
+                continue;
+            }
+            let Some(last) = rows
+                .last()
+                .copied()
+                .or(feeds_output_below.then_some(source_y))
+            else {
+                continue;
+            };
+            let bus_x = source_x + source_width;
+            let same_row = rows.first().is_some_and(|row| *row == source_y);
+            modules.push(Module {
+                id: ModuleId::new(*next_module_id),
+                position: GridPos::new(bus_x, source_y),
+                orientation: Orientation::Right,
+                body: if same_row {
+                    ModuleBody::LeftSplit
+                } else {
+                    ModuleBody::TurnRightDown
+                },
+                disabled: false,
+            });
+            *next_module_id += 1;
+            for row in rows.into_iter().filter(|row| *row > source_y) {
+                modules.push(Module {
+                    id: ModuleId::new(*next_module_id),
+                    position: GridPos::new(bus_x, row),
+                    orientation: Orientation::Right,
+                    body: if row == last {
+                        ModuleBody::TurnDownRight
+                    } else {
+                        ModuleBody::TopSplit
+                    },
+                    disabled: false,
+                });
+                *next_module_id += 1;
+            }
+        }
+    }
+    Some(ModuleBody::Composition {
+        name: graph.name().to_string(),
+        surface: PatchSurface {
+            cursor: GridPos::new(0, 0),
+            modules,
+        },
+    })
+}
+
+fn graph_node_body(module: &AudioModule) -> ModuleBody {
+    match module {
+        AudioModule::Delay { time, .. } => ModuleBody::Delay {
+            input: float_param(-100, 100, 1, 0),
+            time: match time {
+                Duration::Samples(samples) => time_param(samples.value() as i32, TimeUnit::Samples),
+                Duration::Seconds(seconds) => {
+                    let mut time =
+                        time_param((seconds.value() * 100.0).round() as i32, TimeUnit::Seconds);
+                    time.exact_seconds = Some(seconds.value().to_bits());
+                    time
+                }
+            },
+        },
+        _ => ModuleBody::Primitive(module.clone()),
+    }
+}
+
+pub(super) fn graph_node_label(module: &AudioModule) -> &'static str {
+    match module {
+        AudioModule::Input { .. } => "Input",
+        AudioModule::Freq => "Frequency",
+        AudioModule::Gate => "Gate",
+        AudioModule::Degree => "Degree",
+        AudioModule::DegreeGate { .. } => "Degree Gate",
+        AudioModule::Constant(_) => "Constant",
+        AudioModule::Absolute => "Absolute",
+        AudioModule::Pass => "Pass",
+        AudioModule::Damp { .. } => "Damping",
+        AudioModule::Osc { .. } => "Oscillator",
+        AudioModule::Rise { .. } => "Rise",
+        AudioModule::Fall { .. } => "Fall",
+        AudioModule::Ramp { .. } => "Ramp",
+        AudioModule::Envelope { .. } => "Envelope",
+        AudioModule::Lowpass { .. } => "Lowpass",
+        AudioModule::Highpass { .. } => "Highpass",
+        AudioModule::Comb { .. } => "Comb",
+        AudioModule::Allpass { .. } => "Allpass",
+        AudioModule::Delay { .. } => "Delay",
+        AudioModule::DelayTap { .. } => "Delay Tap",
+        AudioModule::VariableDelay { .. } => "Variable Delay",
+        AudioModule::Waveshaper(_) => "Waveshaper",
+        AudioModule::Slew { .. } => "Slew",
+        AudioModule::Binary { op, .. } => match op {
+            BinaryOp::Multiply => "Multiply",
+            BinaryOp::Add => "Add",
+            BinaryOp::Subtract => "Subtract",
+            BinaryOp::Divide => "Divide",
+            BinaryOp::Power => "Power",
+            BinaryOp::GreaterThan => "Greater Than",
+            BinaryOp::LessThan => "Less Than",
+        },
+        AudioModule::Switch { .. } => "Switch",
+        AudioModule::Random => "Random",
+        AudioModule::Sample { .. } => "Sample",
+        AudioModule::Probe => "Probe",
+        AudioModule::Composition(_) => "Composition",
+    }
+}

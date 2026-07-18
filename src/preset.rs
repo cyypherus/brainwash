@@ -397,11 +397,9 @@ fn reverb_tank(room: Unit, damp: Unit, modulation: Unit) -> Module {
         drive
     });
     let mut delays = Vec::new();
-    for channel in 0..8 {
+    for delay_samples in delay_samples.iter().take(8) {
         let delay = patch.insert(Module::Delay {
-            time: Duration::Seconds(
-                Seconds::new((delay_samples[channel] + 32) as f32 / 29_761.0).unwrap(),
-            ),
+            time: Duration::Seconds(Seconds::new((*delay_samples + 32) as f32 / 29_761.0).unwrap()),
             feedback: Unit::ZERO,
         });
         delays.push(delay);

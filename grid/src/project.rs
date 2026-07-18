@@ -1,3 +1,4 @@
+use crate::{ModuleId, Orientation};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io;
@@ -29,26 +30,27 @@ pub struct CompositionDef {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModuleDef {
-    pub id: u32,
+    pub id: ModuleId,
     pub kind: ModuleKind,
     pub x: u16,
     pub y: u16,
-    #[serde(default, skip_serializing_if = "is_horizontal")]
+    #[serde(default, skip_serializing_if = "is_right")]
     pub orientation: Orientation,
     pub params: ModuleParams,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ModuleId(pub u32);
+#[serde(transparent)]
+pub struct CompositionId(u32);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct CompositionId(pub u32);
+impl CompositionId {
+    pub fn new(value: u32) -> Self {
+        Self(value)
+    }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum Orientation {
-    #[default]
-    Horizontal,
-    Vertical,
+    pub fn value(self) -> u32 {
+        self.0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -60,16 +62,6 @@ pub enum WaveType {
     Saw,
     RSaw,
     Noise,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum DistType {
-    #[default]
-    Tube,
-    Tape,
-    Fuzz,
-    Fold,
-    Clip,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,12 +89,10 @@ pub enum StandardModule {
     Degree,
     DegreeGate,
     Rate,
-    Transpose,
     Osc,
     Rise,
     Fall,
     Ramp,
-    Adsr,
     Envelope,
     Lpf,
     Hpf,
@@ -110,10 +100,6 @@ pub enum StandardModule {
     Allpass,
     Delay,
     DelayTap(ModuleId),
-    Reverb,
-    Distortion,
-    Compressor,
-    Flanger,
     Mul,
     Add,
     Gt,
@@ -169,10 +155,6 @@ pub enum ModuleParams {
     Rate {
         time: TimeValue,
     },
-    Transpose {
-        semitones: f32,
-        connected: u8,
-    },
     Osc {
         wave: WaveType,
         frequency: f32,
@@ -189,11 +171,6 @@ pub enum ModuleParams {
     Ramp {
         value: f32,
         time: TimeValue,
-        connected: u8,
-    },
-    Adsr {
-        attack_ratio: f32,
-        sustain: f32,
         connected: u8,
     },
     Envelope {
@@ -218,33 +195,6 @@ pub enum ModuleParams {
     },
     Delay {
         time: TimeValue,
-        connected: u8,
-    },
-    Reverb {
-        room: f32,
-        damp: f32,
-        mod_depth: f32,
-        diffusion: f32,
-        connected: u8,
-    },
-    Distortion {
-        dist_type: DistType,
-        drive: f32,
-        asymmetry: f32,
-        connected: u8,
-    },
-    Flanger {
-        rate: f32,
-        depth: f32,
-        feedback: f32,
-        connected: u8,
-    },
-    Compressor {
-        threshold: f32,
-        ratio: f32,
-        attack: f32,
-        release: f32,
-        makeup: f32,
         connected: u8,
     },
     Mul {
@@ -313,8 +263,8 @@ fn default_bars() -> f32 {
     1.0
 }
 
-fn is_horizontal(orientation: &Orientation) -> bool {
-    *orientation == Orientation::Horizontal
+fn is_right(orientation: &Orientation) -> bool {
+    *orientation == Orientation::Right
 }
 
 pub fn from_str(input: &str) -> Result<Project, ron::error::SpannedError> {

@@ -194,7 +194,7 @@ fn extract_notes(
     start: f32,
     end: f32,
     notes: &mut Vec<TimelineNote>,
-    scale: &crate::Scale,
+    scale: &crate::scale::Scale,
 ) {
     match item {
         Item::Note(note) => {
@@ -256,7 +256,7 @@ impl Track {
         self.playhead = phase.rem_euclid(1.0);
     }
 
-    pub fn parse(notation: &str, scale: &crate::Scale) -> Result<Self, String> {
+    pub fn parse(notation: &str, scale: &crate::scale::Scale) -> Result<Self, String> {
         let ast = parse_notation(notation)?;
         let mut events = Vec::new();
 
@@ -300,11 +300,7 @@ impl Track {
     pub fn play(&mut self, to: f32) -> Vec<NoteEvent> {
         let mut events = [None; 64];
         let count = self.play_into(to, &mut events);
-        events
-            .into_iter()
-            .take(count)
-            .filter_map(|event| event)
-            .collect()
+        events.into_iter().take(count).flatten().collect()
     }
 
     pub fn play_into(&mut self, to: f32, events: &mut [Option<NoteEvent>]) -> usize {
@@ -356,11 +352,7 @@ impl Track {
     pub(crate) fn advance_with_direction(&mut self, to: f32, forward: bool) -> Vec<NoteEvent> {
         let mut events = [None; 64];
         let count = self.advance_with_direction_into(to, forward, &mut events);
-        events
-            .into_iter()
-            .take(count)
-            .filter_map(|event| event)
-            .collect()
+        events.into_iter().take(count).flatten().collect()
     }
 
     pub(crate) fn advance_with_direction_into(

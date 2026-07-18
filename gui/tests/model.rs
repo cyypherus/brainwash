@@ -12,7 +12,7 @@ use std::fs;
 use std::path::PathBuf;
 
 #[test]
-fn module_inventory_matches_tui_surface_count() {
+fn module_inventory_has_expected_surface_count() {
     assert_eq!(all_modules().len(), 40);
     assert_eq!(all_modules()[0], ModuleKind::Osc);
     assert_eq!(all_modules()[1], ModuleKind::Output);
@@ -92,7 +92,7 @@ fn cursor_movement_stays_inside_grid() {
 }
 
 #[test]
-fn fast_movement_matches_tui_step() {
+fn fast_movement_uses_four_cell_step() {
     let mut state = GuiState::new(10, 10);
 
     state.apply(GuiAction::RightFast);
@@ -168,7 +168,7 @@ fn palette_search_filters_and_places_module() {
 }
 
 #[test]
-fn palette_search_navigation_backspace_and_cancel_match_tui() {
+fn palette_search_navigation_backspace_and_cancel_are_consistent() {
     let mut state = GuiState::new(8, 8);
     let mut pane = PaneBuilder::new("main", main_view).build();
     pane.redraw(&mut state, 640, 480, 1.0);
@@ -219,7 +219,7 @@ fn select_action_cancels_selection_mode() {
 }
 
 #[test]
-fn move_confirm_cancel_delete_and_rotate_match_tui_basics() {
+fn move_confirm_cancel_delete_and_rotate_work() {
     let mut state = GuiState::new(8, 8);
     state.apply(GuiAction::OpenPalette);
     state.apply(GuiAction::Confirm);
@@ -364,7 +364,7 @@ fn editing_a_composition_changes_its_name() {
 }
 
 #[test]
-fn fraction_time_parameters_use_tui_fraction_scale() {
+fn fraction_time_parameters_use_fraction_scale() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 3, 0);
 
@@ -464,11 +464,13 @@ fn save_export_and_quit_prompts_track_requested_state() {
         Some(save_path.to_string_lossy().as_ref())
     );
     assert!(!state.dirty());
-    let project = brainwash_gui::project::load(&save_path).unwrap();
+    let project = brainwash_grid::project::load(&save_path).unwrap();
     assert_eq!(project.modules.len(), 1);
     assert_eq!(
         project.modules[0].kind,
-        brainwash_gui::project::ModuleKind::Standard(brainwash_gui::project::StandardModule::Freq)
+        brainwash_grid::project::ModuleKind::Standard(
+            brainwash_grid::project::StandardModule::Freq
+        )
     );
 
     state.apply(GuiAction::Export);
@@ -564,7 +566,7 @@ fn saving_existing_file_requires_overwrite_or_save_as_choice() {
 }
 
 #[test]
-fn track_settings_match_tui_bounds_and_wrapping() {
+fn track_settings_apply_bounds_and_wrapping() {
     let mut state = GuiState::new(8, 8);
 
     state.apply(GuiAction::TrackSettings);
@@ -894,7 +896,7 @@ fn haven_key_gestures_drive_model() {
 }
 
 #[test]
-fn haven_transient_mode_confirm_keys_match_tui() {
+fn haven_transient_mode_confirm_keys_work() {
     let mut state = GuiState::new(8, 8);
     let mut pane = PaneBuilder::new("main", main_view).build();
     pane.redraw(&mut state, 640, 480, 1.0);
@@ -994,7 +996,7 @@ fn haven_palette_search_keys_drive_model() {
 }
 
 #[test]
-fn haven_palette_category_keys_match_tui_action() {
+fn haven_palette_category_keys_work() {
     let mut state = GuiState::new(8, 8);
     let mut pane = PaneBuilder::new("main", main_view).build();
     pane.redraw(&mut state, 640, 480, 1.0);
@@ -1098,7 +1100,7 @@ fn haven_prompt_keys_drive_model() {
 }
 
 #[test]
-fn haven_prompt_editing_keys_match_tui_text_input() {
+fn haven_prompt_editing_keys_work() {
     let mut state = GuiState::new(8, 8);
     let mut pane = PaneBuilder::new("main", main_view).build();
     pane.redraw(&mut state, 640, 480, 1.0);
@@ -1352,7 +1354,7 @@ fn haven_visual_editors_redraw() {
 }
 
 #[test]
-fn haven_envelope_move_keys_match_tui_bindings() {
+fn haven_envelope_move_keys_work() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 1, 4);
     let module = state.module_at(GridPos::new(0, 0)).unwrap().id();
@@ -1435,7 +1437,7 @@ fn haven_envelope_points_drag_with_mouse() {
 }
 
 #[test]
-fn haven_probe_keys_match_tui_bindings() {
+fn haven_probe_keys_work() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 4, 0);
     let module = state.module_at(GridPos::new(0, 0)).unwrap().id();
@@ -1461,7 +1463,7 @@ fn haven_probe_keys_match_tui_bindings() {
 }
 
 #[test]
-fn haven_sample_keys_match_tui_bindings() {
+fn haven_sample_keys_work() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 0, 6);
     let module = state.module_at(GridPos::new(0, 0)).unwrap().id();
@@ -3009,19 +3011,19 @@ fn loading_dirty_project_requires_an_explicit_choice() {
 fn loading_restores_sample_path_and_relink_clears_missing_state() {
     let path = project_path("sample-load");
     let sample_name = "missing-sample.wav";
-    let project = brainwash_gui::project::Project {
+    let project = brainwash_grid::project::Project {
         bpm: 120.0,
         bars: 1.0,
         scale_idx: 0,
-        modules: vec![brainwash_gui::project::ModuleDef {
-            id: 1,
-            kind: brainwash_gui::project::ModuleKind::Standard(
-                brainwash_gui::project::StandardModule::Sample,
+        modules: vec![brainwash_grid::project::ModuleDef {
+            id: brainwash_grid::ModuleId::new(1),
+            kind: brainwash_grid::project::ModuleKind::Standard(
+                brainwash_grid::project::StandardModule::Sample,
             ),
             x: 0,
             y: 0,
-            orientation: brainwash_gui::project::Orientation::Horizontal,
-            params: brainwash_gui::project::ModuleParams::Sample {
+            orientation: brainwash_grid::Orientation::Right,
+            params: brainwash_grid::project::ModuleParams::Sample {
                 file_idx: 0,
                 file_name: sample_name.to_string(),
                 samples: std::sync::Arc::new(Vec::new()),
@@ -3031,7 +3033,7 @@ fn loading_restores_sample_path_and_relink_clears_missing_state() {
         track: None,
         compositions: Vec::new(),
     };
-    brainwash_gui::project::save(&path, &project).unwrap();
+    brainwash_grid::project::save(&path, &project).unwrap();
 
     let mut state = GuiState::new(8, 8);
     state.load_project(&path).unwrap();
@@ -3053,8 +3055,8 @@ fn loading_restores_sample_path_and_relink_clears_missing_state() {
 
     let saved = project_path("sample-relinked-save");
     assert!(state.save_project(&saved));
-    let saved_project = brainwash_gui::project::load(&saved).unwrap();
-    let brainwash_gui::project::ModuleParams::Sample { file_name, .. } =
+    let saved_project = brainwash_grid::project::load(&saved).unwrap();
+    let brainwash_grid::project::ModuleParams::Sample { file_name, .. } =
         &saved_project.modules[0].params
     else {
         panic!("expected sample module parameters");
@@ -3184,24 +3186,24 @@ fn load_project_rejects_module_kind_and_params_disagreement() {
 #[test]
 fn load_project_rejects_modules_outside_the_fixed_grid() {
     let path = project_path("out-of-bounds");
-    let project = brainwash_gui::project::Project {
+    let project = brainwash_grid::project::Project {
         bpm: 120.0,
         bars: 1.0,
         scale_idx: 0,
-        modules: vec![brainwash_gui::project::ModuleDef {
-            id: 1,
-            kind: brainwash_gui::project::ModuleKind::Standard(
-                brainwash_gui::project::StandardModule::Gate,
+        modules: vec![brainwash_grid::project::ModuleDef {
+            id: brainwash_grid::ModuleId::new(1),
+            kind: brainwash_grid::project::ModuleKind::Standard(
+                brainwash_grid::project::StandardModule::Gate,
             ),
             x: 8,
             y: 0,
-            orientation: brainwash_gui::project::Orientation::Horizontal,
-            params: brainwash_gui::project::ModuleParams::None,
+            orientation: brainwash_grid::Orientation::Right,
+            params: brainwash_grid::project::ModuleParams::None,
         }],
         track: None,
         compositions: Vec::new(),
     };
-    brainwash_gui::project::save(&path, &project).unwrap();
+    brainwash_grid::project::save(&path, &project).unwrap();
 
     let mut state = GuiState::new(8, 8);
     let error = state.load_project(&path).unwrap_err();

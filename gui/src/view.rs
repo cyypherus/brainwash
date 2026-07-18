@@ -3,6 +3,7 @@ use crate::model::{
     GuiState, Mode, ModuleCategory, ModuleId, ModuleKind, Orientation, PaletteModule,
     ParameterValue,
 };
+use brainwash_grid::bounded_delta;
 use haven::*;
 
 const ROOT: u64 = 1;
@@ -75,7 +76,7 @@ pub fn main_view<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
                 Align::TopCenter,
                 vec![space().height(TITLE_BAR_SPACE), palette_panel(state, app)],
             )
-                .expand(),
+            .expand(),
         );
     }
     stack(root_layers).align(Align::TopLeading)
@@ -506,7 +507,8 @@ fn grid_content<'a>(
     let visible_y = visible_axis(view.y, size.rows(), rows);
     let row_views = visible_y
         .map(|y| {
-            let cells = visible_x.clone()
+            let cells = visible_x
+                .clone()
                 .map(|x| grid_cell(state, GridPos::new(x, y), id_offset, show_selection, app))
                 .collect::<Vec<_>>();
             row_spaced(GAP, cells).height(CELL)
@@ -516,10 +518,8 @@ fn grid_content<'a>(
     stack_aligned(
         Align::TopLeading,
         vec![
-            column_spaced(GAP, row_views).offset(
-                view.x as f32 * (CELL + GAP),
-                view.y as f32 * (CELL + GAP),
-            ),
+            column_spaced(GAP, row_views)
+                .offset(view.x as f32 * (CELL + GAP), view.y as f32 * (CELL + GAP)),
             connection_layer(state, app, id_offset, hidden, view, size),
             module_layer(state, app, id_offset, hidden, view, size),
             rect(id_offset + 72_000)
@@ -568,13 +568,13 @@ fn grid_preview(state: &GuiState) -> Option<GridPreview> {
                 source_module: Some(source),
                 source_min: module.position(),
                 source_max: GridPos::new(module.position().x + width, module.position().y + height),
-                dx: bounded_grid_delta(
+                dx: bounded_delta(
                     module.position().x,
                     module.position().x + width,
                     state.cursor().x as i16 - module.position().x as i16,
                     state.grid_size().0,
                 ),
-                dy: bounded_grid_delta(
+                dy: bounded_delta(
                     module.position().y,
                     module.position().y + height,
                     state.cursor().y as i16 - module.position().y as i16,
@@ -592,13 +592,13 @@ fn grid_preview(state: &GuiState) -> Option<GridPreview> {
                 source_module: Some(module.id()),
                 source_min: module.position(),
                 source_max: GridPos::new(module.position().x + width, module.position().y + height),
-                dx: bounded_grid_delta(
+                dx: bounded_delta(
                     module.position().x,
                     module.position().x + width,
                     state.cursor().x as i16 - origin.x as i16,
                     state.grid_size().0,
                 ),
-                dy: bounded_grid_delta(
+                dy: bounded_delta(
                     module.position().y,
                     module.position().y + height,
                     state.cursor().y as i16 - origin.y as i16,
@@ -617,19 +617,20 @@ fn grid_preview(state: &GuiState) -> Option<GridPreview> {
             extent,
             origin,
         } => {
-            let source_min = GridPos::new(anchor.x.min(extent.x), anchor.y.min(extent.y));
-            let source_max = GridPos::new(anchor.x.max(extent.x), anchor.y.max(extent.y));
+            let source = crate::model::GridRect::from_points(anchor, extent);
+            let source_min = source.min();
+            let source_max = source.max();
             Some(GridPreview {
                 source_module: None,
                 source_min,
                 source_max,
-                dx: bounded_grid_delta(
+                dx: bounded_delta(
                     source_min.x,
                     source_max.x,
                     state.cursor().x as i16 - origin.x as i16,
                     state.grid_size().0,
                 ),
-                dy: bounded_grid_delta(
+                dy: bounded_delta(
                     source_min.y,
                     source_max.y,
                     state.cursor().y as i16 - origin.y as i16,
@@ -640,12 +641,6 @@ fn grid_preview(state: &GuiState) -> Option<GridPreview> {
         }
         _ => None,
     }
-}
-
-fn bounded_grid_delta(min: u16, max: u16, delta: i16, size: u16) -> i16 {
-    let lower = -(min as i16);
-    let upper = size.saturating_sub(1).saturating_sub(max) as i16;
-    delta.clamp(lower, upper)
 }
 
 fn grid_preview_layer<'a>(
