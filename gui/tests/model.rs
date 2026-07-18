@@ -256,7 +256,7 @@ fn move_confirm_cancel_delete_and_rotate_match_tui_basics() {
 
 #[test]
 fn move_places_multi_cell_module_relative_to_grabbed_cell() {
-    let mut state = GuiState::new(8, 8);
+    let mut state = GuiState::default();
     place_module_kind(&mut state, ModuleKind::Adsr);
     let id = state.module_at(GridPos::new(0, 0)).unwrap().id();
 
@@ -531,6 +531,36 @@ fn save_and_export_prompt_confirm_existing_paths_before_overwrite() {
         state.exported_path(),
         Some(save_path.to_string_lossy().as_ref())
     );
+}
+
+#[test]
+fn saving_existing_file_requires_overwrite_or_save_as_choice() {
+    let mut state = GuiState::new(8, 8);
+    let save_path = project_path("save-confirm");
+
+    state.apply(GuiAction::Save);
+    assert!(state.take_save_request());
+    assert!(state.save_project(&save_path));
+
+    state.apply(GuiAction::Save);
+    assert_eq!(state.mode(), Mode::SaveConfirm);
+    assert!(!state.take_save_request());
+
+    state.apply(GuiAction::Cancel);
+    assert_eq!(state.mode(), Mode::Normal);
+    assert!(!state.take_save_request());
+
+    state.apply(GuiAction::Save);
+    state.apply(GuiAction::SaveAs);
+    assert_eq!(state.mode(), Mode::Normal);
+    assert!(state.take_save_request());
+
+    state.apply(GuiAction::Save);
+    state.apply(GuiAction::Confirm);
+    assert_eq!(state.mode(), Mode::Normal);
+    assert!(!state.dirty());
+
+    let _ = fs::remove_file(save_path);
 }
 
 #[test]
@@ -1004,25 +1034,42 @@ fn haven_palette_lays_out_categories_horizontally_and_modules_vertically() {
 }
 
 #[test]
-fn haven_palette_background_stays_top_aligned_across_contents() {
-    let mut normal = GuiState::new(8, 8);
-    normal.apply(GuiAction::OpenPalette);
-    let mut normal_pane = PaneBuilder::new("main", main_view).build();
-    normal_pane.redraw(&mut normal, 760, 560, 1.0);
-    let normal_background = normal_pane.location(200).unwrap();
+fn haven_palette_background_stays_top_aligned_when_switching_tabs() {
+    let panel_area = |pane: &Pane<GuiState>, frame: &Frame| {
+        let center = pane.location(200).unwrap();
+        frame
+            .items
+            .iter()
+            .find_map(|item| match item {
+                RenderItem::Path { area, .. }
+                    if (area.x + area.width * 0.5 - center.x).abs() < 0.5
+                        && (area.y + area.height * 0.5 - center.y).abs() < 0.5 =>
+                {
+                    Some(*area)
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
 
-    let mut search = GuiState::new(8, 8);
-    search.apply(GuiAction::OpenPalette);
-    search.apply(GuiAction::Search);
-    for character in "lpf".chars() {
-        search.apply(GuiAction::InputChar(character));
+    let mut state = GuiState::new(8, 8);
+    state.apply(GuiAction::OpenPalette);
+    let mut pane = PaneBuilder::new("main", main_view).build();
+
+    for category in ModuleCategory::ALL {
+        state.apply(GuiAction::Palette(category));
+        let (frame, _) = pane.redraw(&mut state, 760, 560, 1.0);
+        let area = panel_area(&pane, &frame);
+        assert!((area.y - 40.).abs() < 0.5, "{category:?}: {area:?}");
     }
-    let mut search_pane = PaneBuilder::new("main", main_view).build();
-    search_pane.redraw(&mut search, 760, 560, 1.0);
-    let search_background = search_pane.location(200).unwrap();
 
-    assert!((search_background.x - normal_background.x).abs() < 10.);
-    assert!((search_background.y - normal_background.y).abs() < 10.);
+    state.apply(GuiAction::Search);
+    for character in "lpf".chars() {
+        state.apply(GuiAction::InputChar(character));
+    }
+    let (frame, _) = pane.redraw(&mut state, 760, 560, 1.0);
+    let area = panel_area(&pane, &frame);
+    assert!((area.y - 40.).abs() < 0.5, "{area:?}");
 }
 
 #[test]
@@ -1487,7 +1534,7 @@ fn haven_sample_keys_match_tui_bindings() {
 
 #[test]
 fn adsr_opens_as_a_composition() {
-    let mut state = GuiState::new(8, 8);
+    let mut state = GuiState::default();
     place_module(&mut state, 1, 3);
     state.apply(GuiAction::EditComposition);
     assert_eq!(state.composition_depth(), 1);
@@ -1897,7 +1944,7 @@ fn haven_grid_renders_composition_input_port() {
 
 #[test]
 fn haven_grid_renders_multi_port_modules_as_multi_cell_tiles() {
-    let mut state = GuiState::new(8, 8);
+    let mut state = GuiState::default();
     state.apply(GuiAction::OpenPalette);
     state.apply(GuiAction::Search);
     for character in "compressor".chars() {
@@ -2019,7 +2066,7 @@ fn gui_composition_routes_parent_input_to_child_composition_input() {
 
 #[test]
 fn gui_reverb_emits_a_wet_tail_after_an_impulse() {
-    let mut state = GuiState::new(16, 16);
+    let mut state = GuiState::default();
     place_module_kind(&mut state, ModuleKind::Gate);
     state.apply(GuiAction::Right);
     place_module_kind(&mut state, ModuleKind::Reverb);
@@ -2475,6 +2522,56 @@ fn selection_copy_places_group_and_keeps_originals() {
 }
 
 #[test]
+fn selection_move_keeps_right_side_grab_over_group_at_left_edge() {
+    let mut state = GuiState::new(8, 8);
+    place_module(&mut state, 0, 0);
+    state.apply(GuiAction::Right);
+    place_module(&mut state, 0, 1);
+    state.apply(GuiAction::Left);
+    state.apply(GuiAction::Select);
+    state.apply(GuiAction::Right);
+    state.apply(GuiAction::Move);
+    state.apply(GuiAction::LeftFast);
+
+    assert_eq!(state.cursor(), GridPos::new(1, 0));
+
+    let mut pane = PaneBuilder::new("main", main_view).build();
+    pane.redraw(&mut state, 640, 480, 1.0);
+
+    assert_point_near(
+        pane.location(view_module_id(GridPos::new(0, 0), true))
+            .unwrap(),
+        pane.location(view_cell_id(GridPos::new(0, 0))).unwrap(),
+    );
+    assert_point_near(
+        pane.location(view_module_id(GridPos::new(1, 0), true))
+            .unwrap(),
+        pane.location(view_cell_id(GridPos::new(1, 0))).unwrap(),
+    );
+}
+
+#[test]
+fn haven_single_module_copy_renders_preview_at_cursor() {
+    let mut state = GuiState::new(8, 8);
+    place_module_kind(&mut state, ModuleKind::Freq);
+    state.apply(GuiAction::Copy);
+    state.apply(GuiAction::Right);
+
+    let mut pane = PaneBuilder::new("main", main_view).build();
+    pane.redraw(&mut state, 640, 480, 1.0);
+
+    assert!(
+        pane.location(view_module_id(GridPos::new(0, 0), false))
+            .is_some()
+    );
+    assert_point_near(
+        pane.location(view_module_id(GridPos::new(0, 0), true))
+            .unwrap(),
+        pane.location(view_cell_id(GridPos::new(1, 0))).unwrap(),
+    );
+}
+
+#[test]
 fn haven_grid_drag_moves_module() {
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 0, 0);
@@ -2682,7 +2779,7 @@ fn haven_selection_move_preview_offsets_clipped_grid() {
 
 #[test]
 fn haven_single_module_move_preview_ignores_overlapped_modules() {
-    let mut state = GuiState::new(8, 8);
+    let mut state = GuiState::default();
     place_module_kind(&mut state, ModuleKind::Adsr);
     state.apply(GuiAction::Right);
     state.apply(GuiAction::Down);
@@ -3081,6 +3178,36 @@ fn load_project_rejects_module_kind_and_params_disagreement() {
     assert_eq!(state.modules().len(), 1);
     assert_eq!(state.modules()[0].kind(), ModuleKind::Gate);
 
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn load_project_rejects_modules_outside_the_fixed_grid() {
+    let path = project_path("out-of-bounds");
+    let project = brainwash_gui::project::Project {
+        bpm: 120.0,
+        bars: 1.0,
+        scale_idx: 0,
+        modules: vec![brainwash_gui::project::ModuleDef {
+            id: 1,
+            kind: brainwash_gui::project::ModuleKind::Standard(
+                brainwash_gui::project::StandardModule::Gate,
+            ),
+            x: 8,
+            y: 0,
+            orientation: brainwash_gui::project::Orientation::Horizontal,
+            params: brainwash_gui::project::ModuleParams::None,
+        }],
+        track: None,
+        compositions: Vec::new(),
+    };
+    brainwash_gui::project::save(&path, &project).unwrap();
+
+    let mut state = GuiState::new(8, 8);
+    let error = state.load_project(&path).unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(state.modules().is_empty());
     let _ = fs::remove_file(path);
 }
 

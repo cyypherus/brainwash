@@ -24,7 +24,7 @@ use brainwash::scale::{
 use brainwash::time::{Duration, Hertz, SampleRate, Samples, Seconds};
 use brainwash::{Scale, track::Track};
 use haven::{ButtonState, TextState};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
@@ -201,6 +201,7 @@ pub enum Mode {
         origin: GridPos,
     },
     LoadConfirm,
+    SaveConfirm,
     ExportPrompt,
     ExportConfirm,
     TrackPrompt,
@@ -502,6 +503,7 @@ struct TimeParam {
     unit: TimeUnit,
     denominator: i32,
     connected: bool,
+    exact_seconds: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -777,6 +779,7 @@ fn time_param(value: i32, unit: TimeUnit) -> TimeParam {
         unit,
         denominator: 4,
         connected: true,
+        exact_seconds: None,
     }
 }
 
@@ -1621,7 +1624,7 @@ impl ModuleBody {
                 AudioInputKind::Time,
                 AudioInputKind::Feedback,
             ],
-            ModuleBody::Delay { .. } => &[AudioInputKind::In, AudioInputKind::Time],
+            ModuleBody::Delay { .. } => &[AudioInputKind::Time, AudioInputKind::In],
             ModuleBody::DelayTap { .. } => &[],
             ModuleBody::Reverb { .. } => &[
                 AudioInputKind::In,
@@ -1925,6 +1928,7 @@ fn set_time_param(
         ParameterValue::Time { value, unit } if *unit != TimeUnit::Bars => {
             target.value = *value;
             target.unit = *unit;
+            target.exact_seconds = None;
         }
         ParameterValue::Bars {
             numerator,
@@ -1933,6 +1937,7 @@ fn set_time_param(
             target.value = (*numerator).max(1);
             target.unit = TimeUnit::Bars;
             target.denominator = (*denominator).max(1);
+            target.exact_seconds = None;
         }
         _ => return false,
     }
@@ -2048,6 +2053,16 @@ impl Module {
 
     pub fn kind(&self) -> ModuleKind {
         self.body.kind()
+    }
+
+    fn is_wire(&self) -> bool {
+        matches!(
+            self.kind(),
+            ModuleKind::TurnRightDown
+                | ModuleKind::TurnDownRight
+                | ModuleKind::LeftSplit
+                | ModuleKind::TopSplit
+        )
     }
 
     pub fn position(&self) -> GridPos {
@@ -2492,6 +2507,36 @@ fn update_disabled_states_for_surface(surface: &mut PatchSurface) {
     }
 }
 
+fn validate_surface_bounds(surface: &PatchSurface, width: u16, height: u16) -> Result<(), String> {
+    for module in &surface.modules {
+        let footprint =
+            module_footprint(module, module.composition_surface().map(composition_ports));
+        if module.position.x.saturating_add(footprint.0) > width
+            || module.position.y.saturating_add(footprint.1) > height
+        {
+            return Err(format!("module {} is outside the grid", module.id.0));
+        }
+        if let Some(nested) = module.composition_surface() {
+            validate_surface_bounds(nested, width, height)?;
+        }
+    }
+    for (index, left) in surface.modules.iter().enumerate() {
+        let left_size = module_footprint(left, left.composition_surface().map(composition_ports));
+        for right in &surface.modules[index + 1..] {
+            let right_size =
+                module_footprint(right, right.composition_surface().map(composition_ports));
+            if left.position.x < right.position.x.saturating_add(right_size.0)
+                && right.position.x < left.position.x.saturating_add(left_size.0)
+                && left.position.y < right.position.y.saturating_add(right_size.1)
+                && right.position.y < left.position.y.saturating_add(left_size.1)
+            {
+                return Err(format!("modules {} and {} overlap", left.id.0, right.id.0));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn max_module_id(surface: &PatchSurface) -> Option<u32> {
     surface
         .modules
@@ -2505,15 +2550,13 @@ fn max_module_id(surface: &PatchSurface) -> Option<u32> {
         .max()
 }
 
+#[cfg(test)]
 fn surface_extent(surface: &PatchSurface) -> (u16, u16) {
     surface.modules.iter().fold((1, 1), |extent, module| {
+        let size = module_footprint(module, module.composition_surface().map(composition_ports));
         let own = (
-            module.position.x.saturating_add(2),
-            module
-                .position
-                .y
-                .saturating_add(module.input_count().max(1))
-                .saturating_add(1),
+            module.position.x.saturating_add(size.0),
+            module.position.y.saturating_add(size.1),
         );
         (extent.0.max(own.0), extent.1.max(own.1))
     })
@@ -2526,8 +2569,8 @@ fn module_footprint(module: &Module, composition_ports: Option<(u16, u16)>) -> (
     let (inputs, outputs) =
         composition_ports.unwrap_or_else(|| (module.input_count(), module.output_count()));
     match module.orientation {
-        Orientation::Right => (outputs.max(1), inputs.max(1)),
-        Orientation::Down => (inputs.max(1), outputs.max(1)),
+        Orientation::Right => (1, inputs.max(outputs).max(1)),
+        Orientation::Down => (inputs.max(outputs).max(1), 1),
     }
 }
 
@@ -2630,8 +2673,7 @@ impl GuiState {
     }
 
     pub(crate) fn grid_size(&self) -> (u16, u16) {
-        let (width, height) = surface_extent(self.instrument().surface());
-        (self.width.max(width), self.height.max(height))
+        (self.width, self.height)
     }
 
     pub(crate) fn set_grid_view_size(&mut self, size: GridViewSize) {
@@ -3019,8 +3061,11 @@ impl GuiState {
             return 1;
         }
         match module.orientation {
-            Orientation::Right => self.module_output_count(module).max(1),
-            Orientation::Down => self.module_input_count(module).max(1),
+            Orientation::Right => 1,
+            Orientation::Down => self
+                .module_input_count(module)
+                .max(self.module_output_count(module))
+                .max(1),
         }
     }
 
@@ -3029,8 +3074,11 @@ impl GuiState {
             return 1;
         }
         match module.orientation {
-            Orientation::Right => self.module_input_count(module).max(1),
-            Orientation::Down => self.module_output_count(module).max(1),
+            Orientation::Right => self
+                .module_input_count(module)
+                .max(self.module_output_count(module))
+                .max(1),
+            Orientation::Down => 1,
         }
     }
 
@@ -3250,6 +3298,7 @@ impl GuiState {
             | Mode::ProbeEdit { .. }
             | Mode::SampleView { .. }
             | Mode::LoadConfirm
+            | Mode::SaveConfirm
             | Mode::ExportPrompt
             | Mode::ExportConfirm
             | Mode::TrackPrompt
@@ -3263,20 +3312,8 @@ impl GuiState {
 
     fn surface_connections(&self, modules: &[Module]) -> Vec<Connection> {
         let mut connections = Vec::new();
-        let width = self.width.max(
-            modules
-                .iter()
-                .map(|module| module.position.x + self.module_width(module))
-                .max()
-                .unwrap_or(0),
-        );
-        let height = self.height.max(
-            modules
-                .iter()
-                .map(|module| module.position.y + self.module_height(module))
-                .max()
-                .unwrap_or(0),
-        );
+        let width = self.width;
+        let height = self.height;
         let mut occupied = HashMap::new();
         for module in modules.iter().filter(|module| !module.disabled) {
             for y in module.position.y..module.position.y + self.module_height(module) {
@@ -3370,6 +3407,40 @@ impl GuiState {
         connections
     }
 
+    fn semantic_surface_connections(
+        &self,
+        modules: &[Module],
+    ) -> Result<Vec<Connection>, AudioPatchError> {
+        let physical = self.surface_connections(modules);
+        physical
+            .iter()
+            .filter(|connection| {
+                modules
+                    .iter()
+                    .find(|module| module.id == connection.to)
+                    .is_some_and(|module| !module.is_wire())
+            })
+            .map(|connection| {
+                let mut semantic = *connection;
+                while modules
+                    .iter()
+                    .find(|module| module.id == semantic.from)
+                    .is_some_and(Module::is_wire)
+                {
+                    semantic = *physical
+                        .iter()
+                        .find(|candidate| candidate.to == semantic.from)
+                        .ok_or(AudioPatchError::InvalidParameter)?;
+                }
+                Ok(Connection {
+                    to: connection.to,
+                    input: connection.input,
+                    ..semantic
+                })
+            })
+            .collect()
+    }
+
     fn module_fits(&self, module: &Module, position: GridPos, ignored: &[ModuleId]) -> bool {
         self.area_fits(
             self.module_width(module),
@@ -3405,7 +3476,7 @@ impl GuiState {
             .iter()
             .find(|module| !module.disabled && module.kind() == ModuleKind::Output)
             .ok_or(AudioPatchError::MissingOutput)?;
-        let connections = self.surface_connections(root_modules);
+        let connections = self.semantic_surface_connections(root_modules)?;
         let mut needed = Vec::new();
         let mut has_output_signal = false;
         for connection in connections
@@ -3481,20 +3552,18 @@ impl GuiState {
             });
         }
         for id in needed.iter().rev().copied() {
-            let Some(module) = root_modules
-                .iter()
-                .find(|module| !module.disabled && module.id == id && module.kind() == ModuleKind::DelayTap)
-            else {
+            let Some(module) = root_modules.iter().find(|module| {
+                !module.disabled && module.id == id && module.kind() == ModuleKind::DelayTap
+            }) else {
                 continue;
             };
-            let audio_id = insert_audio_delay_tap(
-                &mut patch,
-                module,
-                root_modules,
-                &ids,
-                |id| AudioKey::Root(id),
-            )?;
-            ids.push(AudioNode { key: AudioKey::Root(id), id: audio_id });
+            let audio_id = insert_audio_delay_tap(&mut patch, module, root_modules, &ids, |id| {
+                AudioKey::Root(id)
+            })?;
+            ids.push(AudioNode {
+                key: AudioKey::Root(id),
+                id: audio_id,
+            });
         }
 
         for (owner_id, composition) in needed
@@ -3510,7 +3579,15 @@ impl GuiState {
                     .map(|surface| (module.id, surface))
             })
         {
-            for module in composition.modules.iter().filter(|module| !module.disabled) {
+            for module in composition
+                .modules
+                .iter()
+                .filter(|module| {
+                    !module.disabled
+                        && !module.is_wire()
+                        && module.kind() != ModuleKind::CompositionOutput
+                })
+            {
                 if module.kind() == ModuleKind::DelayTap {
                     continue;
                 }
@@ -3541,18 +3618,23 @@ impl GuiState {
                     id: audio_id,
                 });
             }
-            for module in composition.modules.iter().filter(|module| {
-                !module.disabled && module.kind() == ModuleKind::DelayTap
-            }) {
-                let audio_id = insert_audio_delay_tap(
-                    &mut patch,
-                    module,
-                    &composition.modules,
-                    &ids,
-                    |id| AudioKey::Composition { owner: owner_id, module: id },
-                )?;
+            for module in composition
+                .modules
+                .iter()
+                .filter(|module| !module.disabled && module.kind() == ModuleKind::DelayTap)
+            {
+                let audio_id =
+                    insert_audio_delay_tap(&mut patch, module, &composition.modules, &ids, |id| {
+                        AudioKey::Composition {
+                            owner: owner_id,
+                            module: id,
+                        }
+                    })?;
                 ids.push(AudioNode {
-                    key: AudioKey::Composition { owner: owner_id, module: module.id },
+                    key: AudioKey::Composition {
+                        owner: owner_id,
+                        module: module.id,
+                    },
                     id: audio_id,
                 });
             }
@@ -3566,7 +3648,7 @@ impl GuiState {
         });
 
         for connection in &connections {
-            let from = root_connection_source(root_modules, &ids, connection);
+            let from = root_connection_source(self, root_modules, &ids, connection);
             if connection.to == output.id {
                 let input = connection.input();
                 if input >= self.module_input_count(output) as usize {
@@ -3584,6 +3666,7 @@ impl GuiState {
                 let port = patch
                     .input_port(output_id, connection.audio_input())
                     .map_err(AudioPatchError::Connect)?;
+                let from = patch.output_port(from.0, from.1).map_err(AudioPatchError::Connect)?;
                 patch
                     .connect_input(from, port)
                     .map_err(AudioPatchError::Connect)?;
@@ -3625,6 +3708,7 @@ impl GuiState {
                 let port = patch
                     .input_port(to, AudioInputKind::A)
                     .map_err(AudioPatchError::Connect)?;
+                let from = patch.output_port(from.0, from.1).map_err(AudioPatchError::Connect)?;
                 patch
                     .connect_input(from, port)
                     .map_err(AudioPatchError::Connect)?;
@@ -3638,6 +3722,7 @@ impl GuiState {
                 let port = patch
                     .input_port(to, connection.audio_input())
                     .map_err(AudioPatchError::Connect)?;
+                let from = patch.output_port(from.0, from.1).map_err(AudioPatchError::Connect)?;
                 patch
                     .connect_input(from, port)
                     .map_err(AudioPatchError::Connect)?;
@@ -3650,7 +3735,7 @@ impl GuiState {
                 .find(|module| module.id == *id)
                 .and_then(|module| module.composition_surface().map(|surface| (*id, surface)))
         }) {
-            for connection in self.surface_connections(&composition.modules) {
+            for connection in self.semantic_surface_connections(&composition.modules)? {
                 let Some(from) = audio_id(
                     &ids,
                     AudioKey::Composition {
@@ -3686,13 +3771,15 @@ impl GuiState {
                 let port = patch
                     .input_port(to, connection.audio_input())
                     .map_err(AudioPatchError::Connect)?;
+                let from = patch.output_port(from, 0).map_err(AudioPatchError::Connect)?;
                 patch
                     .connect_input(from, port)
                     .map_err(AudioPatchError::Connect)?;
             }
         }
 
-        patch.output(output_id).map_err(AudioPatchError::Connect)?;
+        let output = patch.output_port(output_id, 0).map_err(AudioPatchError::Connect)?;
+        patch.output(output).map_err(AudioPatchError::Connect)?;
         let patch = CompiledPatch::new(&patch, rate).map_err(AudioPatchError::Compile)?;
         Ok(GuiAudioPatch {
             patch,
@@ -3917,11 +4004,17 @@ impl GuiState {
         let bpm = project.bpm.round().clamp(1.0, u16::MAX as f32) as u16;
         let mut root = instrument_surface_from_project(&project)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        let (project_width, project_height) = surface_extent(&root);
-        self.width = self.width.max(project_width);
-        self.height = self.height.max(project_height);
         let mut next_projection_id = max_module_id(&root).map(|id| id + 1).unwrap_or(0);
-        canonicalize_builtin_compositions(&mut root, &mut next_projection_id, bpm);
+        canonicalize_builtin_compositions(&mut root, &mut next_projection_id, bpm).map_err(
+            |()| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "composition does not fit the grid",
+                )
+            },
+        )?;
+        validate_surface_bounds(&root, self.width, self.height)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let instrument = Instrument {
             root,
             track_text: project.track.unwrap_or_else(|| "(0/2/4/7)".to_string()),
@@ -4000,6 +4093,7 @@ impl GuiState {
                 origin,
             } => self.apply_copy_selection(action, anchor, extent, origin),
             Mode::LoadConfirm => self.apply_load_confirm(action),
+            Mode::SaveConfirm => self.apply_save_confirm(action),
             Mode::ExportPrompt => self.apply_export_prompt(action),
             Mode::ExportConfirm => self.apply_export_confirm(action),
             Mode::TrackPrompt => self.apply_track_prompt(action),
@@ -4434,8 +4528,8 @@ impl GuiState {
                 }
             }
             GuiAction::Save => {
-                if let Some(path) = self.saved_path.clone() {
-                    self.save_project(Path::new(&path));
+                if self.saved_path.is_some() {
+                    self.mode = Mode::SaveConfirm;
                 } else {
                     self.save_requested = true;
                 }
@@ -5224,6 +5318,23 @@ impl GuiState {
             GuiAction::Delete => {
                 self.mode = Mode::Normal;
                 self.load_requested = true;
+            }
+            GuiAction::Cancel => self.mode = Mode::Normal,
+            _ => {}
+        }
+    }
+
+    fn apply_save_confirm(&mut self, action: GuiAction) {
+        match action {
+            GuiAction::Confirm => {
+                if let Some(path) = self.saved_path.clone() {
+                    self.save_project(Path::new(&path));
+                }
+                self.mode = Mode::Normal;
+            }
+            GuiAction::SaveAs => {
+                self.save_requested = true;
+                self.mode = Mode::Normal;
             }
             GuiAction::Cancel => self.mode = Mode::Normal,
             _ => {}
@@ -6204,8 +6315,53 @@ impl GuiState {
     fn move_cursor(&mut self, dx: i16, dy: i16) {
         let cursor = self.cursor();
         let (width, height) = self.grid_size();
-        let x = (cursor.x as i16 + dx).clamp(0, width.saturating_sub(1) as i16);
-        let y = (cursor.y as i16 + dy).clamp(0, height.saturating_sub(1) as i16);
+        let ((min_x, max_x), (min_y, max_y)) = match self.mode {
+            Mode::SelectMove {
+                anchor,
+                extent,
+                origin,
+            }
+            | Mode::CopySelection {
+                anchor,
+                extent,
+                origin,
+            } if self.held_selection.is_none() => {
+                let left = anchor.x.min(extent.x);
+                let right = anchor.x.max(extent.x);
+                let top = anchor.y.min(extent.y);
+                let bottom = anchor.y.max(extent.y);
+                (
+                    (
+                        origin.x.saturating_sub(left) as i16,
+                        width
+                            .saturating_sub(1)
+                            .saturating_sub(right.saturating_sub(origin.x))
+                            as i16,
+                    ),
+                    (
+                        origin.y.saturating_sub(top) as i16,
+                        height
+                            .saturating_sub(1)
+                            .saturating_sub(bottom.saturating_sub(origin.y))
+                            as i16,
+                    ),
+                )
+            }
+            _ => (
+                (0, width.saturating_sub(1) as i16),
+                (0, height.saturating_sub(1) as i16),
+            ),
+        };
+        let grid_x = (cursor.x as i16 + dx).clamp(0, width.saturating_sub(1) as i16);
+        let grid_y = (cursor.y as i16 + dy).clamp(0, height.saturating_sub(1) as i16);
+        let (x, y) = if self
+            .module_at(GridPos::new(grid_x as u16, grid_y as u16))
+            .is_some_and(Module::is_composition)
+        {
+            (grid_x, grid_y)
+        } else {
+            (grid_x.clamp(min_x, max_x), grid_y.clamp(min_y, max_y))
+        };
         self.instrument_mut().surface_mut().cursor = GridPos::new(x as u16, y as u16);
     }
 
@@ -6333,7 +6489,12 @@ impl GuiState {
         self.next_module_id += 1;
         let mut body = kind.default_body();
         if let Some(graph) = graph {
-            body = composition_body(Box::new(graph), &mut self.next_module_id);
+            let Some(projected) = composition_body(Box::new(graph), &mut self.next_module_id)
+            else {
+                self.next_module_id = before.next_module_id;
+                return;
+            };
+            body = projected;
         } else {
             let candidate = Module {
                 id,
@@ -6345,7 +6506,11 @@ impl GuiState {
             if let Ok(AudioModule::Composition(graph)) =
                 audio_module(&candidate, SampleRate::new(44_100).unwrap(), self.bpm)
             {
-                body = composition_body(graph, &mut self.next_module_id);
+                let Some(projected) = composition_body(graph, &mut self.next_module_id) else {
+                    self.next_module_id = before.next_module_id;
+                    return;
+                };
+                body = projected;
             }
         }
         let module = Module {
@@ -6355,6 +6520,12 @@ impl GuiState {
             body,
             disabled: false,
         };
+        if module.composition_surface().is_some_and(|surface| {
+            validate_surface_bounds(surface, self.width, self.height).is_err()
+        }) {
+            self.next_module_id = before.next_module_id;
+            return;
+        }
         if !self.module_fits(&module, cursor, &[]) {
             self.next_module_id = before.next_module_id;
             return;
@@ -6375,7 +6546,10 @@ fn sync_delay_sources(surface: &mut PatchSurface) {
     for module in &mut surface.modules {
         if let ModuleBody::DelayTap { source, .. } = &mut module.body {
             source.options = delays.clone();
-            if source.selected.is_none_or(|selected| !delays.contains(&selected)) {
+            if source
+                .selected
+                .is_none_or(|selected| !delays.contains(&selected))
+            {
                 source.selected = delays.first().copied();
             }
         }
@@ -6389,24 +6563,111 @@ fn canonicalize_builtin_compositions(
     surface: &mut PatchSurface,
     next_module_id: &mut u32,
     bpm: u16,
-) {
+) -> Result<(), ()> {
     for module in &mut surface.modules {
         if let Some(composition) = module.composition_surface_mut() {
-            canonicalize_builtin_compositions(composition, next_module_id, bpm);
+            canonicalize_builtin_compositions(composition, next_module_id, bpm)?;
             continue;
         }
         if let Ok(AudioModule::Composition(graph)) =
             audio_module(module, SampleRate::new(44_100).unwrap(), bpm)
         {
-            module.body = composition_body(graph, next_module_id);
+            module.body = composition_body(graph, next_module_id).ok_or(())?;
         }
     }
+    Ok(())
 }
 
 fn composition_body(
     graph: Box<brainwash::patch::Composition>,
     next_module_id: &mut u32,
-) -> ModuleBody {
+) -> Option<ModuleBody> {
+    const FDN_POSITIONS: [(u16, u16); 24] = [
+        (5, 13),
+        (6, 14),
+        (7, 15),
+        (8, 12),
+        (0, 20),
+        (21, 20),
+        (0, 22),
+        (2, 22),
+        (4, 22),
+        (6, 22),
+        (21, 22),
+        (23, 22),
+        (25, 22),
+        (27, 22),
+        (0, 7),
+        (1, 6),
+        (2, 5),
+        (3, 4),
+        (4, 3),
+        (5, 2),
+        (6, 1),
+        (7, 0),
+        (4, 10),
+        (12, 12),
+    ];
+    const FDN_DRIVE_POSITIONS: [(u16, u16); 11] = [
+        (0, 0),
+        (2, 1),
+        (4, 2),
+        (6, 3),
+        (8, 8),
+        (10, 7),
+        (12, 6),
+        (14, 5),
+        (16, 4),
+        (18, 8),
+        (20, 0),
+    ];
+    const FEEDBACK_BANK_POSITIONS: [(u16, u16); 12] = [
+        (0, 0),
+        (2, 0),
+        (4, 0),
+        (6, 0),
+        (8, 0),
+        (10, 0),
+        (12, 0),
+        (14, 0),
+        (16, 1),
+        (18, 6),
+        (20, 11),
+        (22, 16),
+    ];
+    const REFLECTION_POSITIONS: [(u16, u16); 16] = [
+        (0, 0),
+        (2, 0),
+        (4, 0),
+        (6, 0),
+        (8, 0),
+        (10, 0),
+        (12, 0),
+        (14, 0),
+        (16, 1),
+        (18, 3),
+        (20, 5),
+        (22, 7),
+        (24, 9),
+        (26, 11),
+        (28, 13),
+        (30, 15),
+    ];
+    const OUTPUT_MIX_POSITIONS: [(u16, u16); 13] = [
+        (0, 0),
+        (2, 0),
+        (4, 0),
+        (6, 0),
+        (8, 0),
+        (10, 0),
+        (12, 0),
+        (14, 0),
+        (16, 0),
+        (18, 1),
+        (20, 6),
+        (22, 11),
+        (24, 13),
+    ];
     let entries = graph
         .patch()
         .module_entries()
@@ -6421,46 +6682,70 @@ fn composition_body(
             .position(|candidate| {
                 !connections
                     .iter()
-                    .any(|(from, input)| input.module() == *candidate && remaining.contains(from))
+                    .any(|(from, input)| input.module() == *candidate && remaining.contains(&from.module()))
             })
             .expect("composition is acyclic");
         ordered.push(remaining.remove(index));
     }
     let mut modules = Vec::new();
-    let ids = ordered
+    let ids = entries
         .iter()
         .enumerate()
-        .map(|(index, id)| (*id, ModuleId(*next_module_id + index as u32)))
+        .map(|(index, (id, _))| (*id, ModuleId(*next_module_id + index as u32)))
         .collect::<Vec<_>>();
     *next_module_id += ids.len() as u32;
     let mut y = 0;
-    for (node_index, core_id) in ordered.into_iter().enumerate() {
-        let node = entries
-            .iter()
-            .find_map(|(id, module)| (*id == core_id).then_some(module))
-            .expect("composition module exists");
+    let mut x = 0;
+    let positions = ordered
+        .iter()
+        .map(|core_id| {
+            let node = entries
+                .iter()
+                .find_map(|(id, module)| (*id == *core_id).then_some(module))
+                .expect("composition module exists");
+            let position = (*core_id, GridPos::new(x, y));
+            x += 2;
+            y += (node.input_kinds().len() as u16).max(
+                matches!(node, AudioModule::Input { .. })
+                    .then_some(u16::from(
+                        graph.inputs().len() <= 5 && graph.name() != "ADSR",
+                    ))
+                    .or_else(|| {
+                        graph
+                            .outputs()
+                            .iter()
+                            .any(|output| output.port().module() == *core_id)
+                            .then_some(1)
+                    })
+                    .or_else(|| (node.output_count() > 1).then_some(node.output_count()))
+                    .unwrap_or(0),
+            );
+            position
+        })
+        .collect::<HashMap<_, _>>();
+    for (core_id, node) in &entries {
         let projected = ids
             .iter()
-            .find_map(|(id, projected)| (*id == core_id).then_some(*projected))
+            .find_map(|(id, projected)| (*id == *core_id).then_some(*projected))
             .expect("projected module exists");
-        let body = graph
+        let body = if let Some(input) = graph
             .inputs()
             .iter()
-            .find(|input| input.module() == core_id)
-            .map(|input| {
-                let default = match node {
-                    AudioModule::Input { default, .. } => default.value(),
-                    _ => 0.0,
-                };
-                ModuleBody::CompositionInput {
-                    label: input.label().to_string(),
-                    kind: input.kind(),
-                    value: float_param(-100_000, 100_000, 1, (default * 100.0).round() as i32),
-                }
-            })
-            .unwrap_or_else(|| match node {
+            .find(|input| input.module() == *core_id)
+        {
+            let default = match node {
+                AudioModule::Input { default, .. } => default.value(),
+                _ => 0.0,
+            };
+            ModuleBody::CompositionInput {
+                label: input.label().to_string(),
+                kind: input.kind(),
+                value: float_param(-100_000, 100_000, 1, (default * 100.0).round() as i32),
+            }
+        } else {
+            match node {
                 AudioModule::Composition(composition) => {
-                    composition_body(composition.clone(), next_module_id)
+                    composition_body(composition.clone(), next_module_id)?
                 }
                 AudioModule::DelayTap(tap) => {
                     let source = ids
@@ -6493,107 +6778,309 @@ fn composition_body(
                     body
                 }
                 _ => graph_node_body(node),
-            });
+            }
+        };
+        let position = if graph.name() == "FDN Tank" && entries.len() == FDN_POSITIONS.len() {
+            let index = entries.iter().position(|(id, _)| *id == *core_id)?;
+            let (x, y) = FDN_POSITIONS[index];
+            GridPos::new(x, y)
+        } else if graph.name() == "FDN Drive" && entries.len() == FDN_DRIVE_POSITIONS.len() {
+            let index = entries.iter().position(|(id, _)| *id == *core_id)?;
+            let (x, y) = FDN_DRIVE_POSITIONS[index];
+            GridPos::new(x, y)
+        } else if graph.name() == "Feedback Bank"
+            && entries.len() == FEEDBACK_BANK_POSITIONS.len()
+        {
+            let index = entries.iter().position(|(id, _)| *id == *core_id)?;
+            let (x, y) = FEEDBACK_BANK_POSITIONS[index];
+            GridPos::new(x, y)
+        } else if graph.name() == "Reflection" && entries.len() == REFLECTION_POSITIONS.len() {
+            let index = entries.iter().position(|(id, _)| *id == *core_id)?;
+            let (x, y) = REFLECTION_POSITIONS[index];
+            GridPos::new(x, y)
+        } else if graph.name() == "Output Mix" && entries.len() == OUTPUT_MIX_POSITIONS.len() {
+            let index = entries.iter().position(|(id, _)| *id == *core_id)?;
+            let (x, y) = OUTPUT_MIX_POSITIONS[index];
+            GridPos::new(x, y)
+        } else {
+            *positions.get(core_id)?
+        };
         modules.push(Module {
             id: projected,
-            position: GridPos::new(2 + node_index as u16 * 2, y),
-            orientation: Orientation::Right,
+            position,
+            orientation: if graph.name() == "FDN Tank" {
+                Orientation::Down
+            } else {
+                Orientation::Right
+            },
             body,
             disabled: false,
         });
-        y += node.input_kinds().len().max(1) as u16 + 1;
     }
-    let output = ModuleId(*next_module_id);
-    let output_position = GridPos::new(2 + ids.len() as u16 * 2, y);
-    modules.push(Module {
-        id: output,
-        position: output_position,
-        orientation: Orientation::Right,
-        body: ModuleBody::CompositionOutput {
-            label: "Output".to_string(),
-            input: input_param(),
-        },
-        disabled: false,
-    });
-    *next_module_id += 1;
-    for (core_source, projected_source) in &ids {
-        let source_y = modules
+    let mut exposed_outputs: Vec<(brainwash::patch::OutputPort, GridPos)> = Vec::new();
+    let output_x = modules
+        .iter()
+        .map(|module| {
+            module.position.x
+                + module_footprint(module, module.composition_surface().map(composition_ports)).0
+        })
+        .max()?;
+    for (index, declared) in graph.outputs().iter().enumerate() {
+        let source = ids
             .iter()
-            .find(|module| module.id == *projected_source)
-            .expect("projected source exists")
-            .position
-            .y;
-        let source_x = modules
-            .iter()
-            .find(|module| module.id == *projected_source)
-            .expect("projected source exists")
-            .position
-            .x;
-        let mut rows = connections
-            .iter()
-            .filter(|(from, _)| from == core_source)
-            .filter_map(|(_, input)| {
-                let target = ids
-                    .iter()
-                    .find_map(|(id, projected)| (*id == input.module()).then_some(*projected))?;
-                let target_module = modules.iter().find(|module| module.id == target)?;
-                let core_target = entries
-                    .iter()
-                    .find_map(|(id, module)| (*id == input.module()).then_some(module))?;
-                let input_index = core_target
-                    .input_kinds()
-                    .iter()
-                    .position(|kind| *kind == input.kind())?;
-                Some(target_module.position.y + input_index as u16)
-            })
-            .collect::<Vec<_>>();
-        if Some(*core_source) == graph.patch().output_module() {
-            rows.push(output_position.y);
-        }
-        rows.sort_unstable();
-        rows.dedup();
-        if rows.len() == 1 && rows[0] == source_y {
-            continue;
-        }
-        let Some(last) = rows.last().copied() else {
-            continue;
+            .find_map(|(id, projected)| (declared.port().module() == *id).then_some(*projected))?;
+        let source_module = modules.iter().find(|module| module.id == source)?;
+        let position = if graph.name() == "FDN Tank" && entries.len() == FDN_POSITIONS.len() {
+            GridPos::new(31, 18 + index as u16)
+        } else if graph.outputs().len() == 1 {
+            GridPos::new(
+                source_module.position.x
+                    + module_footprint(
+                        source_module,
+                        source_module.composition_surface().map(composition_ports),
+                    )
+                    .0,
+                y.max(source_module.position.y + 1),
+            )
+        } else {
+            GridPos::new(
+                output_x + 1,
+                source_module.position.y + declared.port().index(),
+            )
         };
-        let bus_x = source_x + 1;
-        let same_row = rows.first().is_some_and(|row| *row == source_y);
         modules.push(Module {
             id: ModuleId(*next_module_id),
-            position: GridPos::new(bus_x, source_y),
-            orientation: Orientation::Right,
-            body: if same_row {
-                ModuleBody::LeftSplit
+            position,
+            orientation: if graph.outputs().len() == 1 {
+                Orientation::Down
             } else {
-                ModuleBody::TurnRightDown
+                Orientation::Right
+            },
+            body: ModuleBody::CompositionOutput {
+                label: declared.label().to_string(),
+                input: input_param(),
             },
             disabled: false,
         });
+        exposed_outputs.push((declared.port(), position));
         *next_module_id += 1;
-        for row in rows.into_iter().filter(|row| *row > source_y) {
+    }
+    let output_position = exposed_outputs.first()?.1;
+    if graph.name() == "FDN Tank" && entries.len() == FDN_POSITIONS.len() {
+        let mut occupied = HashSet::new();
+        for module in &modules {
+            let (width, height) = module_footprint(module, module.composition_surface().map(composition_ports));
+            for y in module.position.y..module.position.y + height {
+                for x in module.position.x..module.position.x + width {
+                    occupied.insert(GridPos::new(x, y));
+                }
+            }
+        }
+        for (core_source, projected_source) in &ids {
+            let source = modules.iter().find(|module| module.id == *projected_source)?;
+            let source_position = source.position;
+            let core_module = entries
+                .iter()
+                .find_map(|(id, module)| (*id == *core_source).then_some(module))?;
+            for source_output in 0..core_module.output_count() {
+                let source_x = source_position.x + source_output;
+                let source_y = source_position.y;
+                let mut targets = connections
+                    .iter()
+                    .filter(|(from, _)| {
+                        from.module() == *core_source && from.index() == source_output
+                    })
+                    .filter_map(|(_, input)| {
+                        let target = ids.iter().find_map(|(id, projected)| {
+                            (*id == input.module()).then_some(*projected)
+                        })?;
+                        let target_module = modules.iter().find(|module| module.id == target)?;
+                        let core_target = entries
+                            .iter()
+                            .find_map(|(id, module)| (*id == input.module()).then_some(module))?;
+                        let input_index = core_target
+                            .input_kinds()
+                            .iter()
+                            .position(|kind| *kind == input.kind())?;
+                        Some((
+                            target_module.position.x + input_index as u16,
+                            target_module.position.y,
+                        ))
+                    })
+                    .collect::<Vec<_>>();
+                if graph.patch().output_module().is_some_and(|output| {
+                    output.module() == *core_source && output.index() == source_output
+                }) {
+                    targets.push((output_position.x, output_position.y));
+                }
+                targets.sort_unstable();
+                targets.dedup();
+                if targets.is_empty() {
+                    continue;
+                }
+                if targets.len() == 1
+                    && targets[0].0 == source_x
+                    && (source_y + 1..targets[0].1)
+                        .all(|y| !occupied.contains(&GridPos::new(source_x, y)))
+                {
+                    continue;
+                }
+                let last = targets.last()?.0;
+                let max_bus_y = targets.iter().map(|(_, y)| *y).min()?.checked_sub(1)?;
+                let bus_y = (source_y + 1..=max_bus_y).find(|bus_y| {
+                    (source_y + 1..=*bus_y)
+                        .all(|y| !occupied.contains(&GridPos::new(source_x, y)))
+                        && (source_x..=last)
+                            .all(|x| !occupied.contains(&GridPos::new(x, *bus_y)))
+                        && targets.iter().all(|(x, target_y)| {
+                            (*bus_y..*target_y)
+                                .all(|y| !occupied.contains(&GridPos::new(*x, y)))
+                        })
+                });
+                let Some(bus_y) = bus_y else {
+                    return None;
+                };
+                let same_column = targets
+                    .first()
+                    .is_some_and(|(column, _)| *column == source_x);
+                modules.push(Module {
+                    id: ModuleId(*next_module_id),
+                    position: GridPos::new(source_x, bus_y),
+                    orientation: Orientation::Right,
+                    body: if same_column {
+                        ModuleBody::TopSplit
+                    } else {
+                        ModuleBody::TurnDownRight
+                    },
+                    disabled: false,
+                });
+                occupied.insert(GridPos::new(source_x, bus_y));
+                *next_module_id += 1;
+                let mut columns = targets
+                    .into_iter()
+                    .map(|(column, _)| column)
+                    .filter(|column| *column > source_x)
+                    .collect::<Vec<_>>();
+                columns.dedup();
+                for column in columns {
+                    modules.push(Module {
+                        id: ModuleId(*next_module_id),
+                        position: GridPos::new(column, bus_y),
+                        orientation: Orientation::Right,
+                        body: if column == last {
+                            ModuleBody::TurnRightDown
+                        } else {
+                            ModuleBody::LeftSplit
+                        },
+                        disabled: false,
+                    });
+                    occupied.insert(GridPos::new(column, bus_y));
+                    *next_module_id += 1;
+                }
+            }
+        }
+        return Some(ModuleBody::Composition {
+            name: graph.name().to_string(),
+            surface: PatchSurface { cursor: GridPos::new(0, 0), modules },
+        });
+    }
+    for (core_source, projected_source) in &ids {
+        let source = modules
+            .iter()
+            .find(|module| module.id == *projected_source)
+            .expect("projected source exists");
+        let source_position = source.position;
+        let source_width = module_footprint(
+            source,
+            source.composition_surface().map(composition_ports),
+        )
+        .0;
+        let core_module = entries
+            .iter()
+            .find_map(|(id, module)| (*id == *core_source).then_some(module))?;
+        for source_output in 0..core_module.output_count() {
+            let source_y = source_position.y + source_output;
+            let source_x = source_position.x;
+            let mut rows = connections
+                .iter()
+                .filter(|(from, _)| {
+                    from.module() == *core_source && from.index() == source_output
+                })
+                .filter_map(|(_, input)| {
+                    let target = ids.iter().find_map(|(id, projected)| {
+                        (*id == input.module()).then_some(*projected)
+                    })?;
+                    let target_module = modules.iter().find(|module| module.id == target)?;
+                    let core_target = entries
+                        .iter()
+                        .find_map(|(id, module)| (*id == input.module()).then_some(module))?;
+                    let input_index = core_target
+                        .input_kinds()
+                        .iter()
+                        .position(|kind| *kind == input.kind())?;
+                    Some(target_module.position.y + input_index as u16)
+                })
+                .collect::<Vec<_>>();
+            let output_positions = exposed_outputs
+                .iter()
+                .filter_map(|(port, position)| {
+                    (port.module() == *core_source && port.index() == source_output)
+                        .then_some(*position)
+                })
+                .collect::<Vec<_>>();
+            let feeds_output_below = graph.outputs().len() == 1 && !output_positions.is_empty();
+            if graph.outputs().len() > 1 {
+                rows.extend(output_positions.iter().map(|position| position.y));
+            }
+            rows.sort_unstable();
+            rows.dedup();
+            if rows.len() == 1 && rows[0] == source_y && !feeds_output_below {
+                continue;
+            }
+            let Some(last) = rows
+                .last()
+                .copied()
+                .or(feeds_output_below.then_some(source_y))
+            else {
+                continue;
+            };
+            let bus_x = source_x + source_width;
+            let same_row = rows.first().is_some_and(|row| *row == source_y);
             modules.push(Module {
                 id: ModuleId(*next_module_id),
-                position: GridPos::new(bus_x, row),
+                position: GridPos::new(bus_x, source_y),
                 orientation: Orientation::Right,
-                body: if row == last {
-                    ModuleBody::TurnDownRight
+                body: if same_row {
+                    ModuleBody::LeftSplit
                 } else {
-                    ModuleBody::TopSplit
+                    ModuleBody::TurnRightDown
                 },
                 disabled: false,
             });
             *next_module_id += 1;
+            for row in rows.into_iter().filter(|row| *row > source_y) {
+                modules.push(Module {
+                    id: ModuleId(*next_module_id),
+                    position: GridPos::new(bus_x, row),
+                    orientation: Orientation::Right,
+                    body: if row == last {
+                        ModuleBody::TurnDownRight
+                    } else {
+                        ModuleBody::TopSplit
+                    },
+                    disabled: false,
+                });
+                *next_module_id += 1;
+            }
         }
     }
-    ModuleBody::Composition {
+    Some(ModuleBody::Composition {
         name: graph.name().to_string(),
         surface: PatchSurface {
             cursor: GridPos::new(0, 0),
             modules,
         },
-    }
+    })
 }
 
 fn graph_node_body(module: &AudioModule) -> ModuleBody {
@@ -6603,7 +7090,10 @@ fn graph_node_body(module: &AudioModule) -> ModuleBody {
             time: match time {
                 Duration::Samples(samples) => time_param(samples.value() as i32, TimeUnit::Samples),
                 Duration::Seconds(seconds) => {
-                    time_param((seconds.value() * 100.0).round() as i32, TimeUnit::Seconds)
+                    let mut time =
+                        time_param((seconds.value() * 100.0).round() as i32, TimeUnit::Seconds);
+                    time.exact_seconds = Some(seconds.value().to_bits());
+                    time
                 }
             },
         },
@@ -6894,12 +7384,14 @@ fn project_params(
         | ModuleBody::TopSplit
         | ModuleBody::RightJoin
         | ModuleBody::DownJoin => ProjectModuleParams::None,
-        ModuleBody::CompositionInput { label, kind, value } => ProjectModuleParams::CompositionInput {
-            label: label.clone(),
-            kind: *kind,
-            value: project_float(*value),
-            connected: value.connected,
-        },
+        ModuleBody::CompositionInput { label, kind, value } => {
+            ProjectModuleParams::CompositionInput {
+                label: label.clone(),
+                kind: *kind,
+                value: project_float(*value),
+                connected: value.connected,
+            }
+        }
         ModuleBody::DegreeGate { degree } => ProjectModuleParams::DegreeGate {
             degree: degree.value,
         },
@@ -7165,7 +7657,10 @@ fn project_time(param: TimeParam) -> Result<ProjectTimeValue, String> {
     match param.unit {
         TimeUnit::Seconds => {
             value.unit = ProjectTimeUnit::Seconds;
-            value.seconds = param.value as f32 / 100.0;
+            value.seconds = param
+                .exact_seconds
+                .map(f32::from_bits)
+                .unwrap_or(param.value as f32 / 100.0);
         }
         TimeUnit::Samples => {
             value.unit = ProjectTimeUnit::Samples;
@@ -7259,14 +7754,18 @@ fn surface_from_project_modules(
         })
         .collect::<Result<Vec<_>, String>>()?;
     for (definition, module) in definitions.iter().zip(&mut modules) {
-        let ProjectModuleKind::Standard(ProjectStandardModule::DelayTap(source_id)) = definition.kind
+        let ProjectModuleKind::Standard(ProjectStandardModule::DelayTap(source_id)) =
+            definition.kind
         else {
             continue;
         };
         let options = definitions
             .iter()
             .filter(|candidate| {
-                matches!(candidate.kind, ProjectModuleKind::Standard(ProjectStandardModule::Delay))
+                matches!(
+                    candidate.kind,
+                    ProjectModuleKind::Standard(ProjectStandardModule::Delay)
+                )
             })
             .map(|candidate| ModuleId(candidate.id))
             .collect::<Vec<_>>();
@@ -7863,6 +8362,12 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
     for (index, parameter) in parameters.into_iter().enumerate() {
         module.body.set_parameter(index, parameter);
     }
+    if let ProjectModuleParams::Delay { time, .. } = params
+        && time.unit == ProjectTimeUnit::Seconds
+        && let ModuleBody::Delay { time: target, .. } = &mut module.body
+    {
+        target.exact_seconds = Some(time.seconds.to_bits());
+    }
 }
 
 fn set_float(parameters: &mut [ModuleParameter], index: usize, value: f32) {
@@ -8010,20 +8515,23 @@ mod tests {
         source.selected = Some(delay.id);
         source.options.push(delay.id);
         let mut patch = Patch::new();
-        let delay_id = patch.insert(audio_module(
-            &delay,
-            SampleRate::new(44_100).unwrap(),
-            120,
-        ).unwrap());
-        let ids = [AudioNode { key: AudioKey::Root(delay.id), id: delay_id }];
+        let delay_id =
+            patch.insert(audio_module(&delay, SampleRate::new(44_100).unwrap(), 120).unwrap());
+        let ids = [AudioNode {
+            key: AudioKey::Root(delay.id),
+            id: delay_id,
+        }];
 
-        assert!(insert_audio_delay_tap(
-            &mut patch,
-            &tap,
-            &[delay.clone(), tap.clone()],
-            &ids,
-            AudioKey::Root,
-        ).is_ok());
+        assert!(
+            insert_audio_delay_tap(
+                &mut patch,
+                &tap,
+                &[delay.clone(), tap.clone()],
+                &ids,
+                AudioKey::Root,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -8133,11 +8641,13 @@ mod tests {
             kind: AudioInputKind::In,
             default: AudioSample::ZERO,
         });
-        patch.output(input).unwrap();
+        let output = patch.output_port(input, 0).unwrap();
+        patch.output(output).unwrap();
         let composition = brainwash::patch::Composition::new(
             "My Module",
             patch,
             [("Signal".to_string(), AudioInputKind::In, input)],
+            [("Output".to_string(), output)],
         )
         .unwrap();
         let mut state = GuiState::new(16, 16);
@@ -8155,8 +8665,93 @@ mod tests {
     }
 
     #[test]
+    fn composition_projection_preserves_declared_outputs() {
+        let mut patch = Patch::new();
+        let first = patch.insert(AudioModule::Constant(AudioSample::new(0.25).unwrap()));
+        let second = patch.insert(AudioModule::Constant(AudioSample::new(0.75).unwrap()));
+        let first_output = patch.output_port(first, 0).unwrap();
+        let second_output = patch.output_port(second, 0).unwrap();
+        patch.output(first_output).unwrap();
+        let graph = Box::new(
+            brainwash::patch::Composition::new(
+                "Pair",
+                patch,
+                Vec::<(String, AudioInputKind, AudioModuleId)>::new(),
+                [
+                    ("First".to_string(), first_output),
+                    ("Second".to_string(), second_output),
+                ],
+            )
+            .unwrap(),
+        );
+        let mut state = GuiState::default();
+        let owner = Module {
+            id: ModuleId(0),
+            position: GridPos::new(0, 0),
+            orientation: Orientation::Right,
+            body: composition_body(graph, &mut state.next_module_id).unwrap(),
+            disabled: false,
+        };
+        let surface = owner.composition_surface().unwrap();
+        assert_eq!(composition_outputs(surface).len(), 2);
+        assert_eq!(
+            composition_outputs(surface)
+                .into_iter()
+                .filter_map(|id| surface.modules.iter().find(|module| module.id == id))
+                .filter_map(|module| match &module.body {
+                    ModuleBody::CompositionOutput { label, .. } => Some(label.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            ["First", "Second"]
+        );
+        let AudioModule::Composition(projected) = gui_composition(
+            &state,
+            &owner,
+            SampleRate::new(44_100).unwrap(),
+            120,
+        )
+        .unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(projected.outputs().len(), 2);
+        let mut outer = Patch::new();
+        let pair = outer.insert(AudioModule::Composition(projected));
+        outer.output(outer.output_port(pair, 1).unwrap()).unwrap();
+        let mut compiled = CompiledPatch::new(&outer, SampleRate::new(44_100).unwrap()).unwrap();
+        assert_eq!(compiled.next().left(), AudioSample::new(0.75).unwrap());
+    }
+
+    #[test]
+    fn composition_projection_rejects_a_surface_larger_than_the_grid() {
+        let mut patch = Patch::new();
+        let mut output = None;
+        for _ in 0..800 {
+            output = Some(patch.insert(AudioModule::Constant(AudioSample::ZERO)));
+        }
+        let output = patch.output_port(output.unwrap(), 0).unwrap();
+        patch.output(output).unwrap();
+        let composition = brainwash::patch::Composition::new(
+            "Too Large",
+            patch,
+            Vec::<(String, AudioInputKind, AudioModuleId)>::new(),
+            [("Output".to_string(), output)],
+        )
+        .unwrap();
+        let mut state = GuiState::default();
+        state.set_user_compositions(vec![composition]);
+        state.palette_category = ModuleCategory::Composition;
+        let index = state.palette_modules().len() - 1;
+        state.choose_palette_index(index);
+        state.apply(GuiAction::Confirm);
+
+        assert!(state.modules().is_empty());
+    }
+
+    #[test]
     fn complex_builtin_opens_as_an_owned_surface() {
-        let mut state = GuiState::new(16, 16);
+        let mut state = GuiState::default();
         state.insert_at_cursor(ModuleKind::Compressor, None);
         let undo = state.undo.len();
 
@@ -8178,24 +8773,208 @@ mod tests {
 
     #[test]
     fn reverb_projection_stays_bounded() {
-        let mut state = GuiState::new(16, 16);
+        let mut state = GuiState::default();
         state.insert_at_cursor(ModuleKind::Reverb, None);
         let surface = state.modules()[0].composition_surface().unwrap();
-        assert_eq!(state.grid_size(), (16, 16));
+        assert_eq!(state.grid_size(), (32, 24));
         assert!(surface.modules.len() < 30);
         assert!(surface_extent(surface).0 < 20);
     }
 
     #[test]
-    fn pointer_can_mutate_a_builtin_composition() {
-        let mut state = GuiState::new(16, 16);
-        state.insert_at_cursor(ModuleKind::Compressor, None);
+    fn every_reverb_surface_fits_the_default_grid() {
+        fn check(surface: &PatchSurface) {
+            let extent = surface_extent(surface);
+            assert!(
+                extent.0 <= 32 && extent.1 <= 24,
+                "surface is {}x{} with {} modules",
+                extent.0,
+                extent.1,
+                surface.modules.len()
+            );
+            assert!(surface.modules.iter().all(|module| !module.disabled));
+            for module in &surface.modules {
+                if let Some(nested) = module.composition_surface() {
+                    check(nested);
+                }
+            }
+        }
+
+        let mut state = GuiState::default();
+        state.insert_at_cursor(ModuleKind::Reverb, None);
+        check(state.modules()[0].composition_surface().unwrap());
+    }
+
+    #[test]
+    fn projected_reverb_compiles_from_the_connections_rendered_by_the_gui() {
+        let graph = brainwash::preset::reverb(
+            Unit::new(0.7).unwrap(),
+            Unit::new(0.2).unwrap(),
+            Unit::ZERO,
+            Unit::new(0.8).unwrap(),
+        );
+        let AudioModule::Composition(graph) = graph else {
+            unreachable!()
+        };
+        let mut state = GuiState::default();
+        state.next_module_id = 3;
+        state.instrument_mut().root = PatchSurface {
+            cursor: GridPos::new(0, 0),
+            modules: vec![
+                Module {
+                    id: ModuleId(0),
+                    position: GridPos::new(0, 0),
+                    orientation: Orientation::Right,
+                    body: ModuleBody::Gate,
+                    disabled: false,
+                },
+                Module {
+                    id: ModuleId(1),
+                    position: GridPos::new(1, 0),
+                    orientation: Orientation::Right,
+                    body: composition_body(graph.clone(), &mut state.next_module_id).unwrap(),
+                    disabled: false,
+                },
+                Module {
+                    id: ModuleId(2),
+                    position: GridPos::new(2, 0),
+                    orientation: Orientation::Right,
+                    body: ModuleKind::Output.default_body(),
+                    disabled: false,
+                },
+            ],
+        };
+        let rate = SampleRate::new(29_761).unwrap();
+        fn check(state: &GuiState, graph: &brainwash::patch::Composition, surface: &PatchSurface) {
+            let core_modules = graph.patch().module_entries().collect::<Vec<_>>();
+            let gui_modules = surface
+                .modules
+                .iter()
+                .filter(|module| !module.is_wire() && module.kind() != ModuleKind::CompositionOutput)
+                .collect::<Vec<_>>();
+            assert_eq!(core_modules.len(), gui_modules.len(), "{} modules", graph.name());
+            let core = graph
+                .patch()
+                .connection_entries()
+                .map(|(from, to)| {
+                    (
+                        core_modules.iter().position(|(id, _)| *id == from.module()).unwrap(),
+                        from.index(),
+                        core_modules.iter().position(|(id, _)| *id == to.module()).unwrap(),
+                        to.kind(),
+                    )
+                })
+                .collect::<HashSet<_>>();
+            let gui = state
+                .semantic_surface_connections(&surface.modules)
+                .unwrap()
+                .into_iter()
+                .filter_map(|connection| {
+                    Some((
+                        gui_modules.iter().position(|module| module.id == connection.from)?,
+                        connection.output as u16,
+                        gui_modules.iter().position(|module| module.id == connection.to)?,
+                        connection.audio_input(),
+                    ))
+                })
+                .collect::<HashSet<_>>();
+            assert_eq!(gui, core, "{} connections", graph.name());
+            for ((_, core_module), gui_module) in core_modules.into_iter().zip(gui_modules) {
+                if let (AudioModule::Composition(nested), Some(nested_surface)) =
+                    (core_module, gui_module.composition_surface())
+                {
+                    check(state, nested, nested_surface);
+                }
+            }
+        }
+        check(
+            &state,
+            &graph,
+            state.instrument().root.modules[1].composition_surface().unwrap(),
+        );
+        let mut projected = state.compile_audio_patch(rate).unwrap();
+        let mut patch = Patch::new();
+        let gate = patch.insert(AudioModule::Gate);
+        let reverb = patch.insert(AudioModule::Composition(graph));
+        let input = patch.input_port(reverb, AudioInputKind::In).unwrap();
+        patch
+            .connect_input(patch.output_port(gate, 0).unwrap(), input)
+            .unwrap();
+        patch.output(patch.output_port(reverb, 0).unwrap()).unwrap();
+        let mut canonical = CompiledPatch::new(&patch, rate).unwrap();
+        for frame in 0..12_000 {
+            let controls = brainwash::compile::PatchControls {
+                gate: if frame == 0 { 1.0 } else { 0.0 },
+                ..brainwash::compile::PatchControls::default()
+            };
+            let actual = projected.next_with_controls(controls);
+            let expected = canonical.next_with_controls(controls);
+            assert_eq!(actual, expected, "frame {frame}");
+        }
+    }
+
+    #[test]
+    fn every_nested_reverb_composition_can_be_opened() {
+        let mut state = GuiState::default();
+        state.insert_at_cursor(ModuleKind::Reverb, None);
         state.apply(GuiAction::EditComposition);
-        let module = state
+
+        let diffuser = state
             .modules()
             .iter()
-            .find(|module| module.position == GridPos::new(2, 0))
-            .unwrap();
+            .find(|module| module.label() == "Input Diffuser")
+            .unwrap()
+            .position;
+        state.instrument_mut().surface_mut().cursor = diffuser;
+        state.apply(GuiAction::EditComposition);
+        let stage = state
+            .modules()
+            .iter()
+            .find(|module| module.label() == "Diffuser Stage")
+            .unwrap()
+            .position;
+        state.instrument_mut().surface_mut().cursor = stage;
+        state.apply(GuiAction::EditComposition);
+        assert_eq!(state.composition_depth(), 3);
+        state.apply(GuiAction::ExitComposition);
+        state.apply(GuiAction::ExitComposition);
+
+        let tank = state
+            .modules()
+            .iter()
+            .find(|module| module.label() == "FDN Tank")
+            .unwrap()
+            .position;
+        state.instrument_mut().surface_mut().cursor = tank;
+        state.apply(GuiAction::EditComposition);
+        let drive = state
+            .modules()
+            .iter()
+            .find(|module| module.label() == "FDN Drive")
+            .unwrap()
+            .position;
+        state.instrument_mut().surface_mut().cursor = drive;
+        state.apply(GuiAction::EditComposition);
+        for label in ["Delay Modulation Bank", "Feedback Bank"] {
+            let position = state
+                .modules()
+                .iter()
+                .find(|module| module.label() == label)
+                .unwrap()
+                .position;
+            state.instrument_mut().surface_mut().cursor = position;
+            state.apply(GuiAction::EditComposition);
+            assert_eq!(state.composition_depth(), 4);
+            state.apply(GuiAction::ExitComposition);
+        }
+    }
+
+    #[test]
+    fn pointer_can_mutate_a_builtin_composition() {
+        let mut state = GuiState::default();
+        state.insert_at_cursor(ModuleKind::Compressor, None);
+        state.apply(GuiAction::EditComposition);
+        let module = &state.modules()[0];
         let id = module.id;
         let position = module.position;
 
@@ -8220,18 +8999,20 @@ mod tests {
             kind: AudioInputKind::In,
             default: AudioSample::ZERO,
         });
-        patch.output(input).unwrap();
+        let output = patch.output_port(input, 0).unwrap();
+        patch.output(output).unwrap();
         let graph = Box::new(
             brainwash::patch::Composition::new(
                 "Identity",
                 patch,
                 [("Signal".to_string(), AudioInputKind::In, input)],
+                [("Output".to_string(), output)],
             )
             .unwrap(),
         );
         let mut state = GuiState::new(8, 8);
         state.next_module_id = 3;
-        let composition = composition_body(graph, &mut state.next_module_id);
+        let composition = composition_body(graph, &mut state.next_module_id).unwrap();
         state.instrument_mut().root.modules = vec![
             Module {
                 id: ModuleId(0),
@@ -8262,6 +9043,7 @@ mod tests {
                 .is_ok()
         );
     }
+
 }
 
 impl ModuleKind {
@@ -8270,8 +9052,8 @@ impl ModuleKind {
             return 1;
         }
         match orientation {
-            Orientation::Right => self.output_count().max(1),
-            Orientation::Down => self.input_count().max(1),
+            Orientation::Right => 1,
+            Orientation::Down => self.input_count().max(self.output_count()).max(1),
         }
     }
 
@@ -8280,8 +9062,8 @@ impl ModuleKind {
             return 1;
         }
         match orientation {
-            Orientation::Right => self.input_count().max(1),
-            Orientation::Down => self.output_count().max(1),
+            Orientation::Right => self.input_count().max(self.output_count()).max(1),
+            Orientation::Down => 1,
         }
     }
 
@@ -8387,6 +9169,7 @@ impl ModuleKind {
     }
 }
 
+
 fn collect_audio_inputs(module: ModuleId, connections: &[Connection], needed: &mut Vec<ModuleId>) {
     if needed.contains(&module) {
         return;
@@ -8399,10 +9182,7 @@ fn collect_audio_inputs(module: ModuleId, connections: &[Connection], needed: &m
     }
 }
 
-fn output_voice_mode(
-    modules: &[Module],
-    dependencies: &OutputDependencies,
-) -> VoiceMode {
+fn output_voice_mode(modules: &[Module], dependencies: &OutputDependencies) -> VoiceMode {
     if modules.iter().any(|module| {
         dependencies.0.contains(&module.id) && module_uses_voice_controls(module.kind())
     }) || dependencies
@@ -8458,43 +9238,36 @@ fn gui_composition(
     };
     let mut patch = Patch::new();
     let mut ids = Vec::new();
+    let connections = state.semantic_surface_connections(&surface.modules)?;
     for module in surface
         .modules
         .iter()
-        .filter(|module| !module.disabled && module.kind() != ModuleKind::DelayTap)
+        .filter(|module| {
+            !module.disabled
+                && !module.is_wire()
+                && module.kind() != ModuleKind::CompositionOutput
+        })
     {
-        let audio = match &module.body {
-            ModuleBody::CompositionInput { kind, value, .. } => AudioModule::Input {
+        let audio_id = match &module.body {
+            ModuleBody::CompositionInput { kind, value, .. } => patch.insert(AudioModule::Input {
                 kind: *kind,
                 default: AudioSample::new(value.value as f32 / 100.0)
                     .ok_or(AudioPatchError::InvalidParameter)?,
-            },
-            ModuleBody::Composition { .. } => gui_composition(state, module, rate, bpm)?,
-            _ => audio_module(module, rate, bpm)?,
+            }),
+            ModuleBody::Composition { .. } => {
+                patch.insert(gui_composition(state, module, rate, bpm)?)
+            }
+            ModuleBody::DelayTap { .. } => {
+                insert_audio_delay_tap(&mut patch, module, &surface.modules, &ids, AudioKey::Root)?
+            }
+            _ => patch.insert(audio_module(module, rate, bpm)?),
         };
         ids.push(AudioNode {
             key: AudioKey::Root(module.id),
-            id: patch.insert(audio),
+            id: audio_id,
         });
     }
-    for module in surface
-        .modules
-        .iter()
-        .filter(|module| !module.disabled && module.kind() == ModuleKind::DelayTap)
-    {
-        let id = insert_audio_delay_tap(
-            &mut patch,
-            module,
-            &surface.modules,
-            &ids,
-            AudioKey::Root,
-        )?;
-        ids.push(AudioNode {
-            key: AudioKey::Root(module.id),
-            id,
-        });
-    }
-    for connection in state.surface_connections(&surface.modules) {
+    for connection in &connections {
         let Some(from) = audio_id(&ids, AudioKey::Root(connection.from)) else {
             continue;
         };
@@ -8502,18 +9275,56 @@ fn gui_composition(
             continue;
         };
         let input = connection.audio_input();
-        let port = patch.input_port(to, input).map_err(AudioPatchError::Connect)?;
+        let port = patch
+            .input_port(to, input)
+            .map_err(AudioPatchError::Connect)?;
+        let output = surface
+            .modules
+            .iter()
+            .find(|module| module.id == connection.from)
+            .is_some_and(Module::is_composition)
+            .then_some(connection.output as u16)
+            .unwrap_or(0);
+        let from = patch
+            .output_port(from, output)
+            .map_err(AudioPatchError::Connect)?;
         patch
             .connect_input(from, port)
             .map_err(AudioPatchError::Connect)?;
     }
-    let output = surface
-        .modules
-        .iter()
-        .find(|module| module.kind() == ModuleKind::CompositionOutput)
-        .and_then(|module| audio_id(&ids, AudioKey::Root(module.id)))
-        .ok_or(AudioPatchError::MissingOutput)?;
-    patch.output(output).map_err(AudioPatchError::Connect)?;
+    let outputs = composition_outputs(surface)
+        .into_iter()
+        .map(|id| {
+            let module = surface
+                .modules
+                .iter()
+                .find(|module| module.id == id)
+                .ok_or(AudioPatchError::MissingOutput)?;
+            let ModuleBody::CompositionOutput { label, .. } = &module.body else {
+                return Err(AudioPatchError::MissingOutput);
+            };
+            let connection = connections
+                .iter()
+                .find(|connection| connection.to == id)
+                .ok_or(AudioPatchError::MissingOutput)?;
+            let output = audio_id(&ids, AudioKey::Root(connection.from))
+                .ok_or(AudioPatchError::MissingOutput)?;
+            let output_index = surface
+                .modules
+                .iter()
+                .find(|module| module.id == connection.from)
+                .is_some_and(Module::is_composition)
+                .then_some(connection.output as u16)
+                .unwrap_or(0);
+            patch
+                .output_port(output, output_index)
+                .map(|output| (label.clone(), output))
+                .map_err(AudioPatchError::Connect)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    patch
+        .output(outputs.first().ok_or(AudioPatchError::MissingOutput)?.1)
+        .map_err(AudioPatchError::Connect)?;
     let inputs = composition_inputs(surface)
         .into_iter()
         .filter_map(|id| {
@@ -8521,14 +9332,15 @@ fn gui_composition(
             let ModuleBody::CompositionInput { label, kind, .. } = &module.body else {
                 return None;
             };
-            Some((
-                label.clone(),
-                *kind,
-                audio_id(&ids, AudioKey::Root(id))?,
-            ))
+            Some((label.clone(), *kind, audio_id(&ids, AudioKey::Root(id))?))
         })
         .collect::<Vec<_>>();
-    brainwash::patch::Composition::new(name.clone(), patch, inputs)
+    brainwash::patch::Composition::new(
+        name.clone(),
+        patch,
+        inputs,
+        outputs,
+    )
         .map(|composition| AudioModule::Composition(Box::new(composition)))
         .map_err(|_| AudioPatchError::InvalidParameter)
 }
@@ -8629,10 +9441,22 @@ fn audio_module(
             time: audio_duration(module, 1, rate, bpm)?,
             feedback: audio_unit(module, 2)?,
         }),
-        ModuleKind::Delay => Ok(AudioModule::Delay {
-            time: audio_duration(module, 1, rate, bpm)?,
-            feedback: Unit::ZERO,
-        }),
+        ModuleKind::Delay => {
+            let ModuleBody::Delay { time, .. } = &module.body else {
+                unreachable!()
+            };
+            Ok(AudioModule::Delay {
+                time: if let Some(seconds) = time.exact_seconds {
+                    Duration::Seconds(
+                        Seconds::new(f32::from_bits(seconds))
+                            .ok_or(AudioPatchError::InvalidParameter)?,
+                    )
+                } else {
+                    audio_duration(module, 1, rate, bpm)?
+                },
+                feedback: Unit::ZERO,
+            })
+        }
         ModuleKind::DelayTap => Err(AudioPatchError::InvalidParameter),
         ModuleKind::Reverb => Ok(brainwash::preset::reverb(
             audio_unit(module, 1)?,
@@ -8719,25 +9543,41 @@ fn audio_id(ids: &[AudioNode], key: AudioKey) -> Option<AudioModuleId> {
 }
 
 fn root_connection_source(
+    state: &GuiState,
     root_modules: &[Module],
     ids: &[AudioNode],
     connection: &Connection,
-) -> Option<AudioModuleId> {
+) -> Option<(AudioModuleId, u16)> {
     let source = root_modules
         .iter()
         .find(|module| module.id == connection.from)?;
     if !source.is_composition() {
-        return audio_id(ids, AudioKey::Root(source.id));
+        return audio_id(ids, AudioKey::Root(source.id)).map(|id| (id, 0));
     }
-    let outputs = composition_outputs(source.composition_surface()?);
-    let module = outputs.get(connection.output).copied()?;
+    let surface = source.composition_surface()?;
+    let terminal = composition_outputs(surface).get(connection.output).copied()?;
+    let semantic = state.semantic_surface_connections(&surface.modules).ok()?;
+    let output = semantic.iter().find(|connection| connection.to == terminal)?;
+    let module = surface
+        .modules
+        .iter()
+        .find(|module| module.id == output.from)?;
     audio_id(
         ids,
         AudioKey::Composition {
             owner: source.id,
-            module,
+            module: output.from,
         },
     )
+    .map(|id| {
+        (
+            id,
+            module
+                .is_composition()
+                .then_some(output.output as u16)
+                .unwrap_or(0),
+        )
+    })
 }
 
 fn composition_input_key(module: &Module) -> u16 {

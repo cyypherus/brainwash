@@ -171,8 +171,10 @@ fn patch_controls_drive_oscillator_frequency() {
         false,
     ));
     let port = patch.input_port(osc, InputKind::Freq).unwrap();
-    patch.connect_input(freq, port).unwrap();
-    patch.output(osc).unwrap();
+    patch
+        .connect_input(patch.output_port(freq, 0).unwrap(), port)
+        .unwrap();
+    patch.output(patch.output_port(osc, 0).unwrap()).unwrap();
     let mut compiled = CompiledPatch::new(&patch, rate).unwrap();
 
     let controls = PatchControls {
@@ -272,7 +274,7 @@ fn compiled_patch(wave: Wave, frequency: f32, rate: SampleRate) -> CompiledPatch
         Unit::ONE,
         false,
     ));
-    patch.output(osc).unwrap();
+    patch.output(patch.output_port(osc, 0).unwrap()).unwrap();
     CompiledPatch::new(&patch, rate).unwrap()
 }
 

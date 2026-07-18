@@ -1,9 +1,10 @@
 use crate::delay::Delay;
 use crate::effect::Distortion;
 use crate::osc::Oscillator;
-use crate::patch::{BinaryOp, EnvPoint, InputKind, Module, Patch};
+use crate::patch::{BinaryOp, EnvPoint, InputKind, InputPort, Module, ModuleId, OutputPort, Patch};
 use crate::sample::{Frame, Sample, Unit};
 use crate::time::{Duration, Hertz, SampleRate};
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -11,11 +12,10 @@ use std::sync::Arc;
 pub struct CompiledPatch {
     nodes: Vec<Node>,
     inputs: Vec<Vec<Option<usize>>>,
-    input_values: Vec<Vec<Option<Sample>>>,
     values: Vec<Sample>,
     output: usize,
     probes: Vec<(crate::patch::ModuleId, usize)>,
-    meters: Vec<(crate::patch::ModuleId, usize)>,
+    meters: Vec<(crate::patch::ModuleId, usize, MeterInputs)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -107,13 +107,19 @@ enum Node {
         samples: Arc<Vec<Sample>>,
     },
     Probe,
-    Composition(Box<CompiledPatch>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct Transition {
     old: CompiledPatch,
     position: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MeterInputs {
+    All,
+    Input(usize),
+    Output(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -180,6 +186,122 @@ struct VariableDelay {
 }
 
 const UPDATE_FADE_FRAMES: usize = 128;
+
+struct Expanded {
+    outputs: HashMap<OutputPort, OutputPort>,
+    inputs: HashMap<InputPort, InputPort>,
+}
+
+fn flatten(source: &Patch) -> Result<(Patch, Vec<(ModuleId, ModuleId, usize)>), CompileError> {
+    let mut patch = Patch::new();
+    let mut meters = Vec::new();
+    let expanded = expand(source, &mut patch, true, &mut meters)?;
+    let output = source
+        .output_id()
+        .and_then(|output| expanded.outputs.get(&output).copied())
+        .ok_or(CompileError::MissingOutput)?;
+    patch
+        .output(output)
+        .map_err(|_| CompileError::MissingOutput)?;
+    Ok((patch, meters))
+}
+
+fn expand(
+    source: &Patch,
+    target: &mut Patch,
+    root: bool,
+    meters: &mut Vec<(ModuleId, ModuleId, usize)>,
+) -> Result<Expanded, CompileError> {
+    let mut outputs = HashMap::new();
+    let mut inputs = HashMap::new();
+    let mut modules = HashMap::new();
+
+    for (id, module) in source.module_entries() {
+        match module {
+            Module::Composition(composition) => {
+                let nested = expand(composition.patch(), target, false, meters)?;
+                for (index, output) in composition.outputs().iter().enumerate() {
+                    outputs.insert(
+                        source.output_port(id, index as u16).unwrap(),
+                        *nested
+                            .outputs
+                            .get(&output.port())
+                            .ok_or(CompileError::MissingOutput)?,
+                    );
+                }
+                for (index, input) in composition.inputs().iter().enumerate() {
+                    let nested_input = *nested
+                        .inputs
+                        .get(&InputPort {
+                            module: input.module(),
+                            input: input.kind(),
+                        })
+                        .ok_or(CompileError::InvalidInput)?;
+                    meters.push((nested_input.module(), id, index));
+                    inputs.insert(source.input_port(id, input.kind()).unwrap(), nested_input);
+                }
+            }
+            Module::DelayTap(tap) => {
+                let delay = *modules
+                    .get(&tap.delay())
+                    .ok_or(CompileError::InvalidDelay)?;
+                let mapped = target
+                    .insert_delay_tap(delay, tap.gain())
+                    .map_err(|_| CompileError::InvalidDelay)?;
+                modules.insert(id, mapped);
+                outputs.insert(
+                    source.output_port(id, 0).unwrap(),
+                    target.output_port(mapped, 0).unwrap(),
+                );
+            }
+            Module::Input { kind, default } if !root => {
+                let mapped = target.insert(Module::Binary {
+                    op: BinaryOp::Add,
+                    a: *default,
+                    b: Sample::ZERO,
+                });
+                modules.insert(id, mapped);
+                outputs.insert(
+                    source.output_port(id, 0).unwrap(),
+                    target.output_port(mapped, 0).unwrap(),
+                );
+                inputs.insert(
+                    InputPort {
+                        module: id,
+                        input: *kind,
+                    },
+                    target.input_port(mapped, InputKind::A).unwrap(),
+                );
+            }
+            _ => {
+                let mapped = target.insert(module.clone());
+                modules.insert(id, mapped);
+                outputs.insert(
+                    source.output_port(id, 0).unwrap(),
+                    target.output_port(mapped, 0).unwrap(),
+                );
+                for kind in module.input_kinds() {
+                    inputs.insert(
+                        source.input_port(id, kind).unwrap(),
+                        target.input_port(mapped, kind).unwrap(),
+                    );
+                }
+            }
+        }
+    }
+
+    for (from, input) in source.connection_entries() {
+        target
+            .connect_input(
+                *outputs.get(&from).ok_or(CompileError::MissingModule)?,
+                *inputs.get(&input).ok_or(CompileError::InvalidInput)?,
+            )
+            .map_err(|_| CompileError::InvalidInput)?;
+    }
+
+    Ok(Expanded { outputs, inputs })
+}
+
 impl Default for PatchControls {
     fn default() -> Self {
         Self {
@@ -195,7 +317,6 @@ impl CompiledPatch {
         Self {
             nodes: vec![Node::Silence],
             inputs: vec![Vec::new()],
-            input_values: vec![Vec::new()],
             values: vec![Sample::ZERO],
             output: 0,
             probes: Vec::new(),
@@ -204,7 +325,34 @@ impl CompiledPatch {
     }
 
     pub fn new(patch: &Patch, rate: SampleRate) -> Result<Self, CompileError> {
-        Self::compile(patch, rate, None)
+        if patch
+            .module_entries()
+            .any(|(_, module)| matches!(module, Module::Composition(_)))
+        {
+            let (patch, meter_map) = flatten(patch)?;
+            let mut compiled = Self::compile(&patch, rate, None)?;
+            for (flattened, module, input) in meter_map {
+                let source = resolve_passthrough_source(&patch, flattened)?;
+                if let Some((_, rank, _)) = compiled
+                    .meters
+                    .iter()
+                    .find(|(candidate, _, _)| *candidate == source)
+                {
+                    compiled.meters.push((
+                        module,
+                        *rank,
+                        if source == flattened {
+                            MeterInputs::Input(input)
+                        } else {
+                            MeterInputs::Output(input)
+                        },
+                    ));
+                }
+            }
+            Ok(compiled)
+        } else {
+            Self::compile(patch, rate, None)
+        }
     }
 
     fn compile(
@@ -215,15 +363,8 @@ impl CompiledPatch {
         let order = compile_order(patch)?
             .into_iter()
             .filter(|module_index| {
-                !matches!(patch.modules()[*module_index].1, Module::Pass)
-                    || patch
-                        .connections()
-                        .iter()
-                        .filter(|connection| {
-                            connection.input.module == patch.modules()[*module_index].0
-                        })
-                        .count()
-                        != 1
+                let id = patch.modules()[*module_index].0;
+                resolve_passthrough_source(patch, id).unwrap_or(id) == id
             })
             .collect::<Vec<_>>();
         let mut rank_by_module = Vec::with_capacity(order.len());
@@ -237,7 +378,10 @@ impl CompiledPatch {
         }
 
         for connection in patch.connections() {
-            let source_id = resolve_pass_source(patch, connection.from)?;
+            if connection.from.output != 0 {
+                return Err(CompileError::InvalidInput);
+            }
+            let source_id = resolve_passthrough_source(patch, connection.from.module)?;
             if !order
                 .iter()
                 .any(|module_index| patch.modules()[*module_index].0 == connection.input.module)
@@ -280,10 +424,11 @@ impl CompiledPatch {
             .iter()
             .copied()
             .enumerate()
-            .filter_map(|(rank, module_index)| {
-                let (id, module) = &patch.modules()[module_index];
-                (module.input_count() > 0).then_some((*id, rank))
+            .map(|(rank, module_index)| {
+                let (id, _) = &patch.modules()[module_index];
+                (*id, rank)
             })
+            .map(|(id, rank)| (id, rank, MeterInputs::All))
             .collect();
 
         let mut nodes = Vec::with_capacity(order.len());
@@ -312,7 +457,7 @@ impl CompiledPatch {
         }
         let output = patch
             .output_id()
-            .map(|id| resolve_pass_source(patch, id))
+            .map(|port| resolve_passthrough_source(patch, port.module))
             .transpose()?
             .and_then(|id| {
                 rank_by_module
@@ -322,10 +467,6 @@ impl CompiledPatch {
             .ok_or(CompileError::MissingOutput)?;
         Ok(Self {
             nodes,
-            input_values: inputs
-                .iter()
-                .map(|inputs| vec![None; inputs.len()])
-                .collect(),
             inputs,
             values: vec![Sample::ZERO; patch.modules().len()],
             output,
@@ -346,7 +487,7 @@ impl CompiledPatch {
         for idx in 0..self.nodes.len() {
             if let Node::DelayTap { delay, gain } = self.nodes[idx] {
                 let seconds = self.inputs[delay]
-                    .get(1)
+                    .first()
                     .copied()
                     .flatten()
                     .and_then(|source| self.values.get(source).copied());
@@ -356,13 +497,8 @@ impl CompiledPatch {
                 };
                 continue;
             }
-            for (value, source) in self.input_values[idx]
-                .iter_mut()
-                .zip(self.inputs[idx].iter().copied())
-            {
-                *value = source.and_then(|source| self.values.get(source).copied());
-            }
-            self.values[idx] = self.nodes[idx].process(&self.input_values[idx], external, controls);
+            self.values[idx] =
+                self.nodes[idx].process(&self.inputs[idx], &self.values, external, controls);
         }
         Frame::mono(self.values[self.output].clipped())
     }
@@ -374,11 +510,54 @@ impl CompiledPatch {
     }
 
     fn visit_input_values(&self, mut visitor: impl FnMut(crate::patch::ModuleId, usize, Sample)) {
-        for (id, index) in &self.meters {
-            for (input, source) in self.inputs[*index].iter().copied().enumerate() {
+        for (id, index, meter_inputs) in &self.meters {
+            if let MeterInputs::Output(input) = meter_inputs {
+                visitor(*id, *input, self.values[*index]);
+                continue;
+            }
+            for (slot, source) in self.inputs[*index].iter().copied().enumerate() {
+                if matches!(meter_inputs, MeterInputs::Input(_)) && slot != 0 {
+                    continue;
+                }
                 visitor(
                     *id,
-                    input,
+                    match meter_inputs {
+                        MeterInputs::Input(input) => *input,
+                        MeterInputs::All => slot,
+                        MeterInputs::Output(_) => unreachable!(),
+                    },
+                    source
+                        .map(|source| self.values[source])
+                        .unwrap_or(Sample::ZERO),
+                );
+            }
+        }
+    }
+
+    fn visit_module_input_values(
+        &self,
+        module: crate::patch::ModuleId,
+        mut visitor: impl FnMut(usize, Sample),
+    ) {
+        for (_, index, meter_inputs) in self
+            .meters
+            .iter()
+            .filter(|(candidate, _, _)| *candidate == module)
+        {
+            if let MeterInputs::Output(input) = meter_inputs {
+                visitor(*input, self.values[*index]);
+                continue;
+            }
+            for (slot, source) in self.inputs[*index].iter().copied().enumerate() {
+                if matches!(meter_inputs, MeterInputs::Input(_)) && slot != 0 {
+                    continue;
+                }
+                visitor(
+                    match meter_inputs {
+                        MeterInputs::Input(input) => *input,
+                        MeterInputs::All => slot,
+                        MeterInputs::Output(_) => unreachable!(),
+                    },
                     source
                         .map(|source| self.values[source])
                         .unwrap_or(Sample::ZERO),
@@ -388,7 +567,7 @@ impl CompiledPatch {
     }
 }
 
-fn resolve_pass_source(
+fn resolve_passthrough_source(
     patch: &Patch,
     mut module: crate::patch::ModuleId,
 ) -> Result<crate::patch::ModuleId, CompileError> {
@@ -398,9 +577,6 @@ fn resolve_pass_source(
             .iter()
             .find_map(|(id, definition)| (*id == module).then_some(definition))
             .ok_or(CompileError::MissingModule)?;
-        if !matches!(definition, Module::Pass) {
-            return Ok(module);
-        }
         let mut incoming = patch
             .connections()
             .iter()
@@ -411,7 +587,32 @@ fn resolve_pass_source(
         if incoming.next().is_some() {
             return Ok(module);
         }
-        module = connection.from;
+        let passthrough = match definition {
+            Module::Pass => true,
+            Module::Binary {
+                op: BinaryOp::Add,
+                a,
+                b,
+            } => match connection.input.input {
+                InputKind::A => *b == Sample::ZERO,
+                InputKind::B => *a == Sample::ZERO,
+                _ => false,
+            },
+            Module::Binary {
+                op: BinaryOp::Multiply,
+                a,
+                b,
+            } => match connection.input.input {
+                InputKind::A => b.value() == 1.0,
+                InputKind::B => a.value() == 1.0,
+                _ => false,
+            },
+            _ => false,
+        };
+        if !passthrough {
+            return Ok(module);
+        }
+        module = connection.from.module;
     }
 }
 
@@ -474,16 +675,25 @@ impl PatchEngine {
     pub fn visit_input_values(&self, visitor: impl FnMut(crate::patch::ModuleId, usize, Sample)) {
         self.active.visit_input_values(visitor);
     }
+
+    pub fn visit_module_input_values(
+        &self,
+        module: crate::patch::ModuleId,
+        visitor: impl FnMut(usize, Sample),
+    ) {
+        self.active.visit_module_input_values(module, visitor);
+    }
 }
 
 impl Node {
     fn process(
         &mut self,
-        inputs: &[Option<Sample>],
+        inputs: &[Option<usize>],
+        values: &[Sample],
         external: &[Option<Sample>],
         controls: PatchControls,
     ) -> Sample {
-        let in0 = sample(inputs, 0);
+        let in0 = sample(inputs, values, 0);
         match self {
             Node::Input { index, default } => {
                 external.get(*index).copied().flatten().unwrap_or(*default)
@@ -507,9 +717,15 @@ impl Node {
             }
             Node::Constant(value) => *value,
             Node::Absolute => Sample::raw(in0.value().abs()),
-            Node::Pass => Sample::raw(inputs.iter().flatten().map(|input| input.value()).sum()),
+            Node::Pass => Sample::raw(
+                inputs
+                    .iter()
+                    .flatten()
+                    .map(|input| values[*input].value())
+                    .sum(),
+            ),
             Node::Damp { coefficient, value } => {
-                if let Some(input) = inputs.get(1).copied().flatten()
+                if let Some(input) = input(inputs, values, 1)
                     && let Some(next) = Unit::new(input.value() * 0.5)
                 {
                     *coefficient = next;
@@ -518,9 +734,8 @@ impl Node {
                 Sample::raw(*value)
             }
             Node::Osc { osc, frequency } => {
-                let frequency = inputs
-                    .first()
-                    .and_then(|input| input.and_then(|input| Hertz::new(input.value())))
+                let frequency = input(inputs, values, 0)
+                    .and_then(|input| Hertz::new(input.value()))
                     .unwrap_or(*frequency);
                 if let Some(frequency) = Hertz::new(frequency.value()) {
                     osc.set_frequency(frequency);
@@ -531,18 +746,16 @@ impl Node {
             Node::Ramp(ramp) => Sample::raw(ramp.next(in0.value())),
             Node::Envelope { points } => Sample::raw(envelope_value(points, in0.value())),
             Node::Lowpass(filter) => {
-                if let Some(cutoff) = inputs
-                    .get(1)
-                    .and_then(|input| input.and_then(|input| filter_cutoff(input.value())))
+                if let Some(cutoff) =
+                    input(inputs, values, 1).and_then(|input| filter_cutoff(input.value()))
                 {
                     filter.cutoff = cutoff;
                 }
                 filter.lowpass(in0)
             }
             Node::Highpass(filter) => {
-                if let Some(cutoff) = inputs
-                    .get(1)
-                    .and_then(|input| input.and_then(|input| filter_cutoff(input.value())))
+                if let Some(cutoff) =
+                    input(inputs, values, 1).and_then(|input| filter_cutoff(input.value()))
                 {
                     filter.cutoff = cutoff;
                 }
@@ -550,41 +763,38 @@ impl Node {
             }
             Node::Comb(comb) => Sample::raw(comb.next(in0.value())),
             Node::Allpass(allpass) => {
-                if let Some(feedback) = inputs.get(2).copied().flatten()
+                if let Some(feedback) = input(inputs, values, 2)
                     && let Some(feedback) = Unit::new(feedback.value())
                 {
                     allpass.feedback = feedback;
                 }
                 Sample::raw(allpass.next(in0.value()))
             }
-            Node::Delay(delay) => delay.process_at(in0, inputs.get(1).copied().flatten()),
+            Node::Delay(delay) => delay.process_at(
+                input(inputs, values, 1).unwrap_or(Sample::ZERO),
+                input(inputs, values, 0),
+            ),
             Node::DelayTap { .. } => Sample::ZERO,
             Node::VariableDelay(delay) => Sample::raw(delay.next(
                 in0.value(),
-                inputs.get(1).copied().flatten().map_or(0.0, Sample::value),
-                inputs.get(2).copied().flatten().map_or(0.0, Sample::value),
+                input(inputs, values, 1).map_or(0.0, Sample::value),
+                input(inputs, values, 2).map_or(0.0, Sample::value),
             )),
             Node::Waveshaper(kind) => kind.process(in0),
             Node::Slew(slew) => {
-                if let Some(rise) = inputs.get(1).copied().flatten() {
+                if let Some(rise) = input(inputs, values, 1) {
                     slew.rise = crate::time::Seconds::new(rise.value())
                         .unwrap_or_else(|| crate::time::Seconds::new(0.0).unwrap());
                 }
-                if let Some(fall) = inputs.get(2).copied().flatten() {
+                if let Some(fall) = input(inputs, values, 2) {
                     slew.fall = crate::time::Seconds::new(fall.value())
                         .unwrap_or_else(|| crate::time::Seconds::new(0.0).unwrap());
                 }
                 Sample::raw(slew.next(in0.value()))
             }
             Node::Binary { op, a, b } => {
-                let a = inputs
-                    .first()
-                    .and_then(|input| input.map(|input| input.value()))
-                    .unwrap_or(*a);
-                let b = inputs
-                    .get(1)
-                    .and_then(|input| input.map(|input| input.value()))
-                    .unwrap_or(*b);
+                let a = input(inputs, values, 0).map(Sample::value).unwrap_or(*a);
+                let b = input(inputs, values, 1).map(Sample::value).unwrap_or(*b);
                 Sample::raw(match op {
                     BinaryOp::Multiply => a * b,
                     BinaryOp::Add => a + b,
@@ -614,14 +824,8 @@ impl Node {
                 })
             }
             Node::Switch { a, b } => {
-                let a = inputs
-                    .get(1)
-                    .and_then(|input| input.map(|input| input.value()))
-                    .unwrap_or(*a);
-                let b = inputs
-                    .get(2)
-                    .and_then(|input| input.map(|input| input.value()))
-                    .unwrap_or(*b);
+                let a = input(inputs, values, 1).map(Sample::value).unwrap_or(*a);
+                let b = input(inputs, values, 2).map(Sample::value).unwrap_or(*b);
                 if in0.value() <= 0.5 {
                     Sample::raw(a)
                 } else {
@@ -642,7 +846,6 @@ impl Node {
             }
             Node::Sample { samples } => Sample::raw(sample_value(samples, in0.value())),
             Node::Probe => in0,
-            Node::Composition(composition) => composition.next_with_inputs(controls, inputs).left(),
         }
     }
 }
@@ -825,7 +1028,7 @@ fn compile_order(patch: &Patch) -> Result<Vec<usize>, CompileError> {
     let mut indegree = vec![0usize; patch.modules().len()];
     let mut outgoing = vec![Vec::new(); patch.modules().len()];
     for connection in patch.connections() {
-        let source = module_index(patch, connection.from)?;
+        let source = module_index(patch, connection.from.module)?;
         let target = module_index(patch, connection.input.module)?;
         outgoing[source].push(target);
         indegree[target] += 1;
@@ -839,7 +1042,7 @@ fn compile_order(patch: &Patch) -> Result<Vec<usize>, CompileError> {
         }) else {
             continue;
         };
-        let source = module_index(patch, connection.from)?;
+        let source = module_index(patch, connection.from.module)?;
         if !outgoing[source].contains(&tap_index) {
             outgoing[source].push(tap_index);
             indegree[tap_index] += 1;
@@ -959,16 +1162,20 @@ fn create_node(
             samples: Arc::clone(samples),
         },
         Module::Probe => Node::Probe,
-        Module::Composition(composition) => Node::Composition(Box::new(CompiledPatch::compile(
-            composition.patch(),
-            rate,
-            Some(composition),
-        )?)),
+        Module::Composition(_) => return Err(CompileError::InvalidInput),
     })
 }
 
-fn sample(inputs: &[Option<Sample>], index: usize) -> Sample {
-    inputs.get(index).copied().flatten().unwrap_or(Sample::ZERO)
+fn input(inputs: &[Option<usize>], values: &[Sample], index: usize) -> Option<Sample> {
+    inputs
+        .get(index)
+        .copied()
+        .flatten()
+        .and_then(|source| values.get(source).copied())
+}
+
+fn sample(inputs: &[Option<usize>], values: &[Sample], index: usize) -> Sample {
+    input(inputs, values, index).unwrap_or(Sample::ZERO)
 }
 
 fn filter_cutoff(value: f32) -> Option<Hertz> {
@@ -1029,7 +1236,7 @@ mod tests {
     use super::*;
     use crate::osc::Wave;
     use crate::patch::InputKind;
-    use crate::patch::{Module, Patch};
+    use crate::patch::{Composition, Module, Patch};
     use crate::time::Hertz;
 
     fn patch(rate: f32) -> Patch {
@@ -1038,7 +1245,7 @@ mod tests {
             wave: Wave::Sine,
             frequency: Hertz::new(rate).unwrap(),
         });
-        patch.output(osc).unwrap();
+        patch.output(patch.output_port(osc, 0).unwrap()).unwrap();
         patch
     }
 
@@ -1080,9 +1287,12 @@ mod tests {
             .insert_delay_tap(delay, Unit::new(0.5).unwrap())
             .unwrap();
         patch
-            .connect_input(signal, patch.input_port(delay, InputKind::In).unwrap())
+            .connect_input(
+                patch.output_port(signal, 0).unwrap(),
+                patch.input_port(delay, InputKind::In).unwrap(),
+            )
             .unwrap();
-        patch.output(tap).unwrap();
+        patch.output(patch.output_port(tap, 0).unwrap()).unwrap();
         let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
 
         assert_eq!(compiled.next().left(), Sample::ZERO);
@@ -1096,14 +1306,86 @@ mod tests {
         let source = patch.insert(Module::Constant(Sample::new(0.25).unwrap()));
         let first = patch.insert(Module::Pass);
         let second = patch.insert(Module::Pass);
-        patch.connect(source, first).unwrap();
-        patch.connect(first, second).unwrap();
-        patch.output(second).unwrap();
+        patch
+            .connect(patch.output_port(source, 0).unwrap(), first)
+            .unwrap();
+        patch
+            .connect(patch.output_port(first, 0).unwrap(), second)
+            .unwrap();
+        patch.output(patch.output_port(second, 0).unwrap()).unwrap();
 
         let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
 
         assert_eq!(compiled.nodes.len(), 1);
         assert_eq!(compiled.next().left(), Sample::new(0.25).unwrap());
+    }
+
+    #[test]
+    fn composition_boundaries_are_elided_from_the_runtime_plan() {
+        let mut module = Module::Absolute;
+        for depth in 0..16 {
+            let mut patch = Patch::new();
+            let input = patch.insert(Module::Input {
+                kind: InputKind::In,
+                default: Sample::ZERO,
+            });
+            let inner = patch.insert(module);
+            patch
+                .connect_input(
+                    patch.output_port(input, 0).unwrap(),
+                    patch.input_port(inner, InputKind::In).unwrap(),
+                )
+                .unwrap();
+            let output = patch.output_port(inner, 0).unwrap();
+            patch.output(output).unwrap();
+            module = Module::Composition(Box::new(
+                Composition::new(
+                    format!("Layer {depth}"),
+                    patch,
+                    [("Input".to_string(), InputKind::In, input)],
+                    [("Output".to_string(), output)],
+                )
+                .unwrap(),
+            ));
+        }
+        let mut patch = Patch::new();
+        let source = patch.insert(Module::Constant(Sample::new(-0.25).unwrap()));
+        let nested = patch.insert(module);
+        patch
+            .connect_input(
+                patch.output_port(source, 0).unwrap(),
+                patch.input_port(nested, InputKind::In).unwrap(),
+            )
+            .unwrap();
+        patch.output(patch.output_port(nested, 0).unwrap()).unwrap();
+
+        let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+
+        assert_eq!(compiled.nodes.len(), 2);
+        assert_eq!(compiled.next().left(), Sample::new(0.25).unwrap());
+    }
+
+    #[test]
+    fn composed_reverb_compiles_to_a_compact_runtime_plan() {
+        let mut patch = Patch::new();
+        let signal = patch.insert(Module::Constant(Sample::ZERO));
+        let reverb = patch.insert(crate::preset::reverb(
+            Unit::new(0.7).unwrap(),
+            Unit::new(0.2).unwrap(),
+            Unit::ZERO,
+            Unit::new(0.8).unwrap(),
+        ));
+        patch
+            .connect_input(
+                patch.output_port(signal, 0).unwrap(),
+                patch.input_port(reverb, InputKind::In).unwrap(),
+            )
+            .unwrap();
+        patch.output(patch.output_port(reverb, 0).unwrap()).unwrap();
+
+        let compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+
+        assert!(compiled.nodes.len() <= 140, "{}", compiled.nodes.len());
     }
 
     #[test]
@@ -1115,7 +1397,7 @@ mod tests {
             patch.input_port(gate, InputKind::Freq),
             Err(crate::patch::ConnectError::ClosedInput)
         );
-        patch.output(gate).unwrap();
+        patch.output(patch.output_port(gate, 0).unwrap()).unwrap();
         let rate = SampleRate::new(44_100).unwrap();
 
         assert!(CompiledPatch::new(&patch, rate).is_ok());
@@ -1126,8 +1408,10 @@ mod tests {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Constant(Sample::new(0.25).unwrap()));
         let probe = patch.insert(Module::Probe);
-        patch.connect(source, probe).unwrap();
-        patch.output(probe).unwrap();
+        patch
+            .connect(patch.output_port(source, 0).unwrap(), probe)
+            .unwrap();
+        patch.output(patch.output_port(probe, 0).unwrap()).unwrap();
 
         let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
         compiled.next();
@@ -1146,8 +1430,12 @@ mod tests {
             cutoff: Hertz::new(1000.0).unwrap(),
         });
         let port = patch.input_port(lowpass, InputKind::In).unwrap();
-        patch.connect_input(source, port).unwrap();
-        patch.output(lowpass).unwrap();
+        patch
+            .connect_input(patch.output_port(source, 0).unwrap(), port)
+            .unwrap();
+        patch
+            .output(patch.output_port(lowpass, 0).unwrap())
+            .unwrap();
 
         let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
         compiled.next();
@@ -1165,8 +1453,12 @@ mod tests {
         let source = patch.insert(Module::Constant(Sample::new(0.25).unwrap()));
         let transpose = patch.insert(crate::preset::transpose(Sample::new(12.0).unwrap()));
         let input = patch.input_port(transpose, InputKind::In).unwrap();
-        patch.connect_input(source, input).unwrap();
-        patch.output(transpose).unwrap();
+        patch
+            .connect_input(patch.output_port(source, 0).unwrap(), input)
+            .unwrap();
+        patch
+            .output(patch.output_port(transpose, 0).unwrap())
+            .unwrap();
 
         let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
         assert!((compiled.next().left().value() - 0.5).abs() < 0.001);
@@ -1184,8 +1476,12 @@ mod tests {
             crate::patch::Gain::new(1.0).unwrap(),
         ));
         let port = patch.input_port(compressor, InputKind::Gain).unwrap();
-        patch.connect_input(source, port).unwrap();
-        patch.output(compressor).unwrap();
+        patch
+            .connect_input(patch.output_port(source, 0).unwrap(), port)
+            .unwrap();
+        patch
+            .output(patch.output_port(compressor, 0).unwrap())
+            .unwrap();
 
         let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
         compiled.next();
@@ -1219,16 +1515,47 @@ mod tests {
                 }),
             )
         });
-        inner.output(inputs[6].2).unwrap();
+        let output = inner.output_port(inputs[6].2, 0).unwrap();
+        inner.output(output).unwrap();
         let composition = Module::Composition(Box::new(
-            crate::patch::Composition::new("Wide", inner, inputs).unwrap(),
+            crate::patch::Composition::new("Wide", inner, inputs, [("Output".to_string(), output)])
+                .unwrap(),
         ));
         let mut patch = Patch::new();
         let source = patch.insert(Module::Constant(Sample::new(0.75).unwrap()));
         let target = patch.insert(composition);
         let port = patch.input_port(target, InputKind::Q).unwrap();
-        patch.connect_input(source, port).unwrap();
-        patch.output(target).unwrap();
+        patch
+            .connect_input(patch.output_port(source, 0).unwrap(), port)
+            .unwrap();
+        patch.output(patch.output_port(target, 0).unwrap()).unwrap();
+        let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+
+        assert_eq!(compiled.next().left(), Sample::new(0.75).unwrap());
+    }
+
+    #[test]
+    fn composition_output_index_selects_declared_signal() {
+        let mut inner = Patch::new();
+        let first = inner.insert(Module::Constant(Sample::new(0.25).unwrap()));
+        let second = inner.insert(Module::Constant(Sample::new(0.75).unwrap()));
+        let first_output = inner.output_port(first, 0).unwrap();
+        let second_output = inner.output_port(second, 0).unwrap();
+        inner.output(first_output).unwrap();
+        let composition = crate::patch::Composition::new(
+            "Pair",
+            inner,
+            [],
+            [
+                ("First".to_string(), first_output),
+                ("Second".to_string(), second_output),
+            ],
+        )
+        .unwrap();
+        let mut patch = Patch::new();
+        let pair = patch.insert(Module::Composition(Box::new(composition)));
+        patch.output(patch.output_port(pair, 1).unwrap()).unwrap();
+
         let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
 
         assert_eq!(compiled.next().left(), Sample::new(0.75).unwrap());

@@ -75,7 +75,7 @@ pub fn module_from_str(input: &str) -> Result<Module, LoadError> {
 struct FilePatch {
     modules: Vec<FileModuleEntry>,
     connections: Vec<FileConnection>,
-    output: u32,
+    output: FileOutput,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -83,6 +83,7 @@ struct FileComposition {
     name: String,
     patch: FilePatch,
     inputs: Vec<FileCompositionInput>,
+    outputs: Vec<FileCompositionOutput>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -94,8 +95,21 @@ struct FileModuleEntry {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct FileConnection {
     from: u32,
+    output: u16,
     to: u32,
     input: InputKind,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+struct FileOutput {
+    module: u32,
+    output: u16,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct FileCompositionOutput {
+    label: String,
+    port: FileOutput,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -249,12 +263,19 @@ impl FilePatch {
                 .connections()
                 .iter()
                 .map(|connection| FileConnection {
-                    from: connection.from.0,
+                    from: connection.from.module.0,
+                    output: connection.from.output,
                     to: connection.input.module.0,
                     input: connection.input.input,
                 })
                 .collect(),
-            output: patch.output_id().ok_or(SaveError::Value)?.0,
+            output: {
+                let output = patch.output_id().ok_or(SaveError::Value)?;
+                FileOutput {
+                    module: output.module.0,
+                    output: output.output,
+                }
+            },
         })
     }
 
@@ -292,6 +313,9 @@ impl FilePatch {
         }
         for connection in self.connections {
             let from = *ids.get(&connection.from).ok_or(LoadError::Value)?;
+            let from = patch
+                .output_port(from, connection.output)
+                .map_err(|_| LoadError::Value)?;
             let to = *ids.get(&connection.to).ok_or(LoadError::Value)?;
             let input = patch
                 .input_port(to, connection.input)
@@ -300,7 +324,10 @@ impl FilePatch {
                 .connect_input(from, input)
                 .map_err(|_| LoadError::Value)?;
         }
-        let output = *ids.get(&self.output).ok_or(LoadError::Value)?;
+        let output = *ids.get(&self.output.module).ok_or(LoadError::Value)?;
+        let output = patch
+            .output_port(output, self.output.output)
+            .map_err(|_| LoadError::Value)?;
         patch.output(output).map_err(|_| LoadError::Value)?;
         Ok((patch, ids))
     }
@@ -320,6 +347,17 @@ impl FileComposition {
                     module: input.module().0,
                 })
                 .collect(),
+            outputs: composition
+                .outputs()
+                .iter()
+                .map(|output| FileCompositionOutput {
+                    label: output.label().to_string(),
+                    port: FileOutput {
+                        module: output.port().module().0,
+                        output: output.port().index(),
+                    },
+                })
+                .collect(),
         })
     }
 
@@ -336,7 +374,18 @@ impl FileComposition {
                 ))
             })
             .collect::<Result<Vec<_>, LoadError>>()?;
-        Composition::new(self.name, patch, inputs).map_err(|_| LoadError::Value)
+        let outputs = self
+            .outputs
+            .into_iter()
+            .map(|output| {
+                let module = *ids.get(&output.port.module).ok_or(LoadError::Value)?;
+                let port = patch
+                    .output_port(module, output.port.output)
+                    .map_err(|_| LoadError::Value)?;
+                Ok((output.label, port))
+            })
+            .collect::<Result<Vec<_>, LoadError>>()?;
+        Composition::new(self.name, patch, inputs, outputs).map_err(|_| LoadError::Value)
     }
 }
 
@@ -551,6 +600,7 @@ impl FileModule {
                 inputs,
             } => {
                 let (patch, ids) = patch.into_patch_with_ids()?;
+                let output = patch.output_id().ok_or(LoadError::Value)?;
                 let inputs = inputs
                     .into_iter()
                     .map(|input| {
@@ -562,7 +612,8 @@ impl FileModule {
                     })
                     .collect::<Result<Vec<_>, LoadError>>()?;
                 Module::Composition(Box::new(
-                    Composition::new(name, patch, inputs).map_err(|_| LoadError::Value)?,
+                    Composition::new(name, patch, inputs, [("Output".to_string(), output)])
+                        .map_err(|_| LoadError::Value)?,
                 ))
             }
         })
@@ -672,8 +723,12 @@ mod tests {
             Gain::new(1.0).unwrap(),
         ));
         let input = patch.input_port(compressor, InputKind::In).unwrap();
-        patch.connect_input(source, input).unwrap();
-        patch.output(compressor).unwrap();
+        patch
+            .connect_input(patch.output_port(source, 0).unwrap(), input)
+            .unwrap();
+        patch
+            .output(patch.output_port(compressor, 0).unwrap())
+            .unwrap();
 
         let encoded = to_string(&patch).unwrap();
         let decoded = from_str(&encoded).unwrap();
@@ -690,11 +745,13 @@ mod tests {
             kind: InputKind::In,
             default: Sample::ZERO,
         });
-        patch.output(input).unwrap();
+        let output = patch.output_port(input, 0).unwrap();
+        patch.output(output).unwrap();
         let composition = Composition::new(
             "User Gain",
             patch,
             [("Signal".to_string(), InputKind::In, input)],
+            [("Output".to_string(), output)],
         )
         .unwrap();
 
@@ -704,6 +761,38 @@ mod tests {
         assert_eq!(decoded.name(), "User Gain");
         assert_eq!(decoded.inputs()[0].label(), "Signal");
         assert_eq!(composition_to_string(&decoded).unwrap(), encoded);
+    }
+
+    #[test]
+    fn composition_file_preserves_output_order_and_sources() {
+        let mut patch = Patch::new();
+        let first = patch.insert(Module::Constant(Sample::new(0.25).unwrap()));
+        let second = patch.insert(Module::Constant(Sample::new(0.75).unwrap()));
+        let first_output = patch.output_port(first, 0).unwrap();
+        let second_output = patch.output_port(second, 0).unwrap();
+        patch.output(first_output).unwrap();
+        let composition = Composition::new(
+            "Pair",
+            patch,
+            Vec::<(String, InputKind, crate::patch::ModuleId)>::new(),
+            [
+                ("First".to_string(), first_output),
+                ("Second".to_string(), second_output),
+            ],
+        )
+        .unwrap();
+
+        let decoded = composition_from_str(&composition_to_string(&composition).unwrap()).unwrap();
+
+        assert_eq!(
+            decoded
+                .outputs()
+                .iter()
+                .map(|output| output.label())
+                .collect::<Vec<_>>(),
+            ["First", "Second"]
+        );
+        assert_ne!(decoded.outputs()[0].port(), decoded.outputs()[1].port());
     }
 
     #[test]
@@ -745,7 +834,7 @@ mod tests {
         let tap = patch
             .insert_delay_tap(delay, Unit::new(0.5).unwrap())
             .unwrap();
-        patch.output(tap).unwrap();
+        patch.output(patch.output_port(tap, 0).unwrap()).unwrap();
 
         let decoded = from_str(&to_string(&patch).unwrap()).unwrap();
         let (_, Module::DelayTap(tap)) = decoded

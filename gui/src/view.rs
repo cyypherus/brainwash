@@ -47,12 +47,13 @@ pub fn main_view<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
         Mode::QuitConfirm
             | Mode::ValueInput { .. }
             | Mode::LoadConfirm
+            | Mode::SaveConfirm
             | Mode::ExportPrompt
             | Mode::ExportConfirm
             | Mode::TrackPrompt
             | Mode::TrackSettings { .. }
     ) {
-        let prompt_height = if matches!(state.mode(), Mode::LoadConfirm) {
+        let prompt_height = if matches!(state.mode(), Mode::LoadConfirm | Mode::SaveConfirm) {
             132.
         } else {
             178.
@@ -70,8 +71,10 @@ pub fn main_view<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
     ];
     if matches!(state.mode(), Mode::Palette) || state.palette_searching() {
         root_layers.push(
-            stack(vec![palette_panel(state, app).align(Align::TopCenter)])
-                .pad_top(TITLE_BAR_SPACE)
+            column_aligned(
+                Align::TopCenter,
+                vec![space().height(TITLE_BAR_SPACE), palette_panel(state, app)],
+            )
                 .expand(),
         );
     }
@@ -419,6 +422,7 @@ fn mode_color(state: &GuiState) -> Color {
         | Mode::TrackSettings { .. } => accent(),
         Mode::QuitConfirm
         | Mode::LoadConfirm
+        | Mode::SaveConfirm
         | Mode::ExportPrompt
         | Mode::ExportConfirm
         | Mode::TrackPrompt => Color::from_rgb8(190, 76, 91),
@@ -552,6 +556,33 @@ struct GridPreview {
 
 fn grid_preview(state: &GuiState) -> Option<GridPreview> {
     match state.mode() {
+        Mode::Copy { source } => {
+            let module = state
+                .modules()
+                .iter()
+                .find(|module| module.id() == source)?;
+            let render_module = state.grid_render_module(module);
+            let width = render_module.width.saturating_sub(1);
+            let height = render_module.height.saturating_sub(1);
+            Some(GridPreview {
+                source_module: Some(source),
+                source_min: module.position(),
+                source_max: GridPos::new(module.position().x + width, module.position().y + height),
+                dx: bounded_grid_delta(
+                    module.position().x,
+                    module.position().x + width,
+                    state.cursor().x as i16 - module.position().x as i16,
+                    state.grid_size().0,
+                ),
+                dy: bounded_grid_delta(
+                    module.position().y,
+                    module.position().y + height,
+                    state.cursor().y as i16 - module.position().y as i16,
+                    state.grid_size().1,
+                ),
+                copy: true,
+            })
+        }
         Mode::Move { module, origin } => {
             let module = state.moving_module(module)?;
             let render_module = state.grid_render_module(module);
@@ -1091,6 +1122,7 @@ fn prompt_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSta
         Mode::QuitConfirm => ("Quit", "Discard unsaved patch changes?"),
         Mode::ValueInput { .. } => ("Value", "Type a numeric value"),
         Mode::LoadConfirm => ("Unsaved changes", "Save before opening another patch?"),
+        Mode::SaveConfirm => ("Save", "Overwrite or save as a new file?"),
         Mode::ExportPrompt => ("Export", "WAV file"),
         Mode::ExportConfirm => ("Overwrite", "Replace existing WAV?"),
         Mode::TrackPrompt => ("Track", "Note pattern"),
@@ -1117,11 +1149,12 @@ fn prompt_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSta
                 })
                 .build(app),
         ])
-    } else if matches!(state.mode(), Mode::LoadConfirm) {
+    } else if matches!(state.mode(), Mode::LoadConfirm | Mode::SaveConfirm) {
         space()
     } else {
         let value = match state.mode() {
             Mode::QuitConfirm => "Press Enter to quit".to_string(),
+            Mode::SaveConfirm => "Press Enter to overwrite".to_string(),
             Mode::ExportConfirm => "Press Enter to overwrite".to_string(),
             Mode::TrackSettings { parameter } => settings_text(state, parameter),
             _ => {
@@ -1168,11 +1201,13 @@ fn prompt_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSta
                     .view()
                     .build(app)
                     .height(22.),
-                input.height(if matches!(state.mode(), Mode::LoadConfirm) {
-                    0.
-                } else {
-                    38.
-                }),
+                input.height(
+                    if matches!(state.mode(), Mode::LoadConfirm | Mode::SaveConfirm) {
+                        0.
+                    } else {
+                        38.
+                    },
+                ),
                 if matches!(state.mode(), Mode::LoadConfirm) {
                     row_spaced(
                         PANEL_GAP,
@@ -1201,6 +1236,36 @@ fn prompt_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSta
                                 app,
                             )
                             .width(72.),
+                        ],
+                    )
+                } else if matches!(state.mode(), Mode::SaveConfirm) {
+                    row_spaced(
+                        PANEL_GAP,
+                        vec![
+                            action_button(
+                                binding!(state.cancel_button),
+                                "Cancel",
+                                GuiAction::Cancel,
+                                false,
+                                app,
+                            )
+                            .width(78.),
+                            action_button(
+                                binding!(state.discard_button),
+                                "Save As",
+                                GuiAction::SaveAs,
+                                false,
+                                app,
+                            )
+                            .width(88.),
+                            action_button(
+                                binding!(state.confirm_button),
+                                "Overwrite",
+                                GuiAction::Confirm,
+                                true,
+                                app,
+                            )
+                            .width(92.),
                         ],
                     )
                 } else {
@@ -4310,6 +4375,33 @@ const LOAD_CONFIRM_BINDINGS: &[KeyBinding] = &[
     ),
 ];
 
+const SAVE_CONFIRM_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Enter),
+        GuiAction::Confirm,
+        "enter",
+        "overwrite",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('a'),
+        GuiAction::SaveAs,
+        "a",
+        "save as",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('A'),
+        GuiAction::SaveAs,
+        "a",
+        "save as",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "esc",
+        "cancel",
+    ),
+];
+
 const SETTINGS_BINDINGS: &[KeyBinding] = &[
     KeyBinding::action(
         BindingInput::Character('j'),
@@ -4407,6 +4499,7 @@ fn bindings(state: &GuiState) -> &'static [KeyBinding] {
         Mode::ExportPrompt => EXPORT_TEXT_BINDINGS,
         Mode::TrackPrompt => TRACK_TEXT_BINDINGS,
         Mode::LoadConfirm => LOAD_CONFIRM_BINDINGS,
+        Mode::SaveConfirm => SAVE_CONFIRM_BINDINGS,
         Mode::ExportConfirm | Mode::QuitConfirm => CONFIRM_BINDINGS,
         Mode::TrackSettings { .. } => SETTINGS_BINDINGS,
     }
@@ -4434,6 +4527,7 @@ fn binding_inputs() -> Vec<BindingInput> {
         TRACK_TEXT_BINDINGS,
         CONFIRM_BINDINGS,
         LOAD_CONFIRM_BINDINGS,
+        SAVE_CONFIRM_BINDINGS,
         SETTINGS_BINDINGS,
     ] {
         for binding in bindings {
@@ -4599,6 +4693,7 @@ fn mode_text(state: &GuiState) -> String {
         Mode::SelectMove { origin, .. } => format!("Move selection {}:{}", origin.x, origin.y),
         Mode::CopySelection { origin, .. } => format!("Copy selection {}:{}", origin.x, origin.y),
         Mode::LoadConfirm => "Open".to_string(),
+        Mode::SaveConfirm => "Save".to_string(),
         Mode::ExportPrompt => "Export".to_string(),
         Mode::ExportConfirm => "Overwrite export".to_string(),
         Mode::TrackPrompt => "Track".to_string(),

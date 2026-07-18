@@ -16,8 +16,10 @@ fn main() {
     let filter = patch.insert(Module::Lowpass {
         cutoff: Hertz::new(1_000.0).unwrap(),
     });
-    patch.connect(osc, filter).unwrap();
-    patch.output(filter).unwrap();
+    patch
+        .connect(patch.output_port(osc, 0).unwrap(), filter)
+        .unwrap();
+    patch.output(patch.output_port(filter, 0).unwrap()).unwrap();
     let compiled = CompiledPatch::new(&patch, rate).unwrap();
     let mut engine = PatchEngine::new(compiled);
     let frame = engine.next();

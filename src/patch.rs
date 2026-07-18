@@ -175,7 +175,7 @@ impl EnvPoint {
 pub struct Patch {
     modules: Vec<(ModuleId, Module)>,
     connections: Vec<Connection>,
-    output: Option<ModuleId>,
+    output: Option<OutputPort>,
     next_id: u32,
 }
 
@@ -191,6 +191,7 @@ pub struct Composition {
     name: String,
     patch: Patch,
     inputs: Vec<CompositionInput>,
+    outputs: Vec<CompositionOutput>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,6 +199,12 @@ pub struct CompositionInput {
     label: String,
     kind: InputKind,
     module: ModuleId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompositionOutput {
+    label: String,
+    port: OutputPort,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -216,12 +223,19 @@ pub enum CompositionError {
     InputKindMismatch,
     MissingInput,
     MissingOutput,
+    DuplicateOutput,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct InputPort {
     pub(crate) module: ModuleId,
     pub(crate) input: InputKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct OutputPort {
+    pub(crate) module: ModuleId,
+    pub(crate) output: u16,
 }
 
 impl Patch {
@@ -247,8 +261,7 @@ impl Patch {
         Ok(self.insert(Module::DelayTap(DelayTap { delay, gain })))
     }
 
-    pub fn connect(&mut self, from: ModuleId, to: ModuleId) -> Result<(), ConnectError> {
-        self.module(from).ok_or(ConnectError::MissingModule)?;
+    pub fn connect(&mut self, from: OutputPort, to: ModuleId) -> Result<(), ConnectError> {
         let module = self.module(to).ok_or(ConnectError::MissingModule)?;
         if module.input_count() != 1 {
             return Err(ConnectError::ClosedInput);
@@ -274,9 +287,13 @@ impl Patch {
         Ok(InputPort { module, input })
     }
 
-    pub fn connect_input(&mut self, from: ModuleId, input: InputPort) -> Result<(), ConnectError> {
+    pub fn connect_input(
+        &mut self,
+        from: OutputPort,
+        input: InputPort,
+    ) -> Result<(), ConnectError> {
         let to = input.module;
-        self.module(from).ok_or(ConnectError::MissingModule)?;
+        self.output_port(from.module, from.output)?;
         let target = self.module(to).ok_or(ConnectError::MissingModule)?;
         if target.input_index(input.input).is_none() {
             return Err(ConnectError::ClosedInput);
@@ -292,9 +309,17 @@ impl Patch {
         Ok(())
     }
 
-    pub fn output(&mut self, module: ModuleId) -> Result<(), ConnectError> {
-        self.module(module).ok_or(ConnectError::MissingModule)?;
-        self.output = Some(module);
+    pub fn output_port(&self, module: ModuleId, output: u16) -> Result<OutputPort, ConnectError> {
+        let source = self.module(module).ok_or(ConnectError::MissingModule)?;
+        if output >= source.output_count() {
+            return Err(ConnectError::ClosedInput);
+        }
+        Ok(OutputPort { module, output })
+    }
+
+    pub fn output(&mut self, output: OutputPort) -> Result<(), ConnectError> {
+        self.output_port(output.module, output.output)?;
+        self.output = Some(output);
         Ok(())
     }
 
@@ -302,13 +327,13 @@ impl Patch {
         self.modules.iter().map(|(id, module)| (*id, module))
     }
 
-    pub fn connection_entries(&self) -> impl Iterator<Item = (ModuleId, InputPort)> + '_ {
+    pub fn connection_entries(&self) -> impl Iterator<Item = (OutputPort, InputPort)> + '_ {
         self.connections
             .iter()
             .map(|connection| (connection.from, connection.input))
     }
 
-    pub fn output_module(&self) -> Option<ModuleId> {
+    pub fn output_module(&self) -> Option<OutputPort> {
         self.output
     }
 
@@ -330,7 +355,7 @@ impl Patch {
         &self.connections
     }
 
-    pub(crate) fn output_id(&self) -> Option<ModuleId> {
+    pub(crate) fn output_id(&self) -> Option<OutputPort> {
         self.output
     }
 }
@@ -351,11 +376,22 @@ impl InputPort {
     }
 }
 
+impl OutputPort {
+    pub fn module(self) -> ModuleId {
+        self.module
+    }
+
+    pub fn index(self) -> u16 {
+        self.output
+    }
+}
+
 impl Composition {
     pub fn new(
         name: impl Into<String>,
         patch: Patch,
         inputs: impl IntoIterator<Item = (String, InputKind, ModuleId)>,
+        outputs: impl IntoIterator<Item = (String, OutputPort)>,
     ) -> Result<Self, CompositionError> {
         if patch.output.is_none() {
             return Err(CompositionError::MissingOutput);
@@ -372,6 +408,33 @@ impl Composition {
                 module,
             })
             .collect::<Vec<_>>();
+        let outputs = outputs
+            .into_iter()
+            .map(|(label, port)| CompositionOutput { label, port })
+            .collect::<Vec<_>>();
+        if outputs.is_empty() {
+            return Err(CompositionError::MissingOutput);
+        }
+        for (index, output) in outputs.iter().enumerate() {
+            if output.label.trim().is_empty() {
+                return Err(CompositionError::EmptyLabel);
+            }
+            if outputs[..index]
+                .iter()
+                .any(|candidate| candidate.label == output.label)
+            {
+                return Err(CompositionError::DuplicateLabel);
+            }
+            if outputs[..index]
+                .iter()
+                .any(|candidate| candidate.port == output.port)
+            {
+                return Err(CompositionError::DuplicateOutput);
+            }
+            patch
+                .output_port(output.port.module, output.port.output)
+                .map_err(|_| CompositionError::MissingOutput)?;
+        }
         for (index, input) in inputs.iter().enumerate() {
             if input.label.trim().is_empty() {
                 return Err(CompositionError::EmptyLabel);
@@ -410,7 +473,7 @@ impl Composition {
             let source = patch
                 .modules
                 .iter()
-                .position(|(id, _)| *id == connection.from)
+                .position(|(id, _)| *id == connection.from.module)
                 .ok_or(CompositionError::MissingInput)?;
             let target = patch
                 .modules
@@ -442,6 +505,7 @@ impl Composition {
             name,
             patch,
             inputs,
+            outputs,
         })
     }
 
@@ -459,6 +523,20 @@ impl Composition {
 
     pub fn inputs(&self) -> &[CompositionInput] {
         &self.inputs
+    }
+
+    pub fn outputs(&self) -> &[CompositionOutput] {
+        &self.outputs
+    }
+}
+
+impl CompositionOutput {
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub fn port(&self) -> OutputPort {
+        self.port
     }
 }
 
@@ -487,6 +565,13 @@ impl DelayTap {
 }
 
 impl Module {
+    pub fn output_count(&self) -> u16 {
+        match self {
+            Module::Composition(composition) => composition.outputs.len() as u16,
+            _ => 1,
+        }
+    }
+
     pub fn input_kinds(&self) -> Vec<InputKind> {
         match self {
             Module::Input { .. } => vec![],
@@ -512,7 +597,7 @@ impl Module {
                 InputKind::Damp,
             ],
             Module::Allpass { .. } => vec![InputKind::In, InputKind::Time, InputKind::Feedback],
-            Module::Delay { .. } => vec![InputKind::In, InputKind::Time],
+            Module::Delay { .. } => vec![InputKind::Time, InputKind::In],
             Module::DelayTap(_) => vec![],
             Module::VariableDelay { .. } => {
                 vec![InputKind::In, InputKind::Time, InputKind::Feedback]
@@ -542,7 +627,7 @@ impl Module {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Connection {
-    pub(crate) from: ModuleId,
+    pub(crate) from: OutputPort,
     pub(crate) input: InputPort,
 }
 
@@ -566,7 +651,7 @@ mod tests {
         );
         assert_eq!(patch.connections.len(), 0);
         assert_eq!(
-            patch.connect(source, target),
+            patch.connect(patch.output_port(source, 0).unwrap(), target),
             Err(ConnectError::ClosedInput)
         );
         assert_eq!(patch.connections.len(), 0);
@@ -584,7 +669,7 @@ mod tests {
         ));
 
         assert_eq!(
-            patch.connect(source, target),
+            patch.connect(patch.output_port(source, 0).unwrap(), target),
             Err(ConnectError::ClosedInput)
         );
         assert_eq!(patch.connections.len(), 0);
@@ -602,6 +687,7 @@ mod tests {
         ));
         let port = patch.input_port(target, InputKind::Gain).unwrap();
 
+        let source = patch.output_port(source, 0).unwrap();
         patch.connect_input(source, port).unwrap();
 
         assert_eq!(

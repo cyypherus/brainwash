@@ -858,11 +858,11 @@ fn record_probe_values(
 }
 
 fn record_meter_values(bus: &MeterBus, meters: &MeterRoutes, voice: usize, engine: &PatchEngine) {
-    engine.visit_input_values(|module, input, value| {
-        if let Some(route) = meters.iter().find(|route| route.source == module) {
+    for route in meters.iter() {
+        engine.visit_module_input_values(route.source, |input, value| {
             bus.write(route.slot, voice, input, value.value());
-        }
-    });
+        });
+    }
 }
 
 struct TrackRuntime {
@@ -1130,8 +1130,10 @@ mod tests {
             false,
         ));
         let port = patch.input_port(osc, InputKind::Freq).unwrap();
-        patch.connect_input(freq, port).unwrap();
-        patch.output(osc).unwrap();
+        patch
+            .connect_input(patch.output_port(freq, 0).unwrap(), port)
+            .unwrap();
+        patch.output(patch.output_port(osc, 0).unwrap()).unwrap();
         let compiled = CompiledPatch::new(&patch, rate).unwrap();
         let (_pending_input, pending_output) = RingBuffer::new(2);
         let (retired_input, _retired_output) = RingBuffer::new(2);
@@ -1418,8 +1420,10 @@ mod tests {
         let source = patch.insert(Module::Constant(AudioSample::new(0.25).unwrap()));
         let probe = patch.insert(Module::Probe);
         let port = patch.input_port(probe, InputKind::In).unwrap();
-        patch.connect_input(source, port).unwrap();
-        patch.output(probe).unwrap();
+        patch
+            .connect_input(patch.output_port(source, 0).unwrap(), port)
+            .unwrap();
+        patch.output(patch.output_port(probe, 0).unwrap()).unwrap();
         let probe_bus = Arc::new(ProbeBus::new());
         let meter_bus = Arc::new(MeterBus::new());
         let (_pending_input, pending_output) = RingBuffer::new(2);
@@ -1783,8 +1787,12 @@ mod tests {
             cutoff: Hertz::new(1000.0).unwrap(),
         });
         let port = patch.input_port(lowpass, InputKind::In).unwrap();
-        patch.connect_input(source, port).unwrap();
-        patch.output(lowpass).unwrap();
+        patch
+            .connect_input(patch.output_port(source, 0).unwrap(), port)
+            .unwrap();
+        patch
+            .output(patch.output_port(lowpass, 0).unwrap())
+            .unwrap();
         (
             CompiledPatch::new(&patch, rate).unwrap(),
             MeterRoute::new(lowpass, telemetry_module_id(), 1).unwrap(),
@@ -1827,15 +1835,17 @@ mod tests {
             false,
         ));
         let port = patch.input_port(osc, InputKind::Freq).unwrap();
-        patch.connect_input(freq, port).unwrap();
-        patch.output(osc).unwrap();
+        patch
+            .connect_input(patch.output_port(freq, 0).unwrap(), port)
+            .unwrap();
+        patch.output(patch.output_port(osc, 0).unwrap()).unwrap();
         CompiledPatch::new(&patch, rate).unwrap()
     }
 
     fn constant_patch(value: f32, rate: SampleRate) -> CompiledPatch {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Constant(AudioSample::new(value).unwrap()));
-        patch.output(source).unwrap();
+        patch.output(patch.output_port(source, 0).unwrap()).unwrap();
         CompiledPatch::new(&patch, rate).unwrap()
     }
 
@@ -1847,7 +1857,7 @@ mod tests {
             Unit::ONE,
             false,
         ));
-        patch.output(osc).unwrap();
+        patch.output(patch.output_port(osc, 0).unwrap()).unwrap();
         CompiledPatch::new(&patch, rate).unwrap()
     }
 
@@ -1861,8 +1871,10 @@ mod tests {
             false,
         ));
         let port = patch.input_port(osc, InputKind::Gain).unwrap();
-        patch.connect_input(gate, port).unwrap();
-        patch.output(osc).unwrap();
+        patch
+            .connect_input(patch.output_port(gate, 0).unwrap(), port)
+            .unwrap();
+        patch.output(patch.output_port(osc, 0).unwrap()).unwrap();
         CompiledPatch::new(&patch, rate).unwrap()
     }
 }
