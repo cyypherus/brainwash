@@ -236,6 +236,8 @@ struct AudioNode {
     id: AudioModuleId,
 }
 
+struct OutputDependencies(Vec<ModuleId>);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModuleKind {
     Primitive,
@@ -391,14 +393,14 @@ enum ModuleBody {
         time: TimeParam,
     },
     DelayTap {
-        source: EnumParam,
+        source: DelaySourceParam,
         gain: FloatParam,
     },
     Reverb {
         input: FloatParam,
         room: FloatParam,
         damp: FloatParam,
-        mix: FloatParam,
+        mod_depth: FloatParam,
         diffusion: FloatParam,
     },
     Distortion {
@@ -469,6 +471,7 @@ enum ModuleBody {
     DownJoin,
     CompositionInput {
         label: String,
+        kind: AudioInputKind,
         value: FloatParam,
     },
     Composition {
@@ -506,10 +509,16 @@ struct InputParam {
     connected: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct EnumParam {
     index: usize,
-    options: &'static [&'static str],
+    options: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DelaySourceParam {
+    selected: Option<ModuleId>,
+    options: Vec<ModuleId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -553,7 +562,7 @@ pub enum ParameterValue {
     },
     Enum {
         index: usize,
-        options: &'static [&'static str],
+        options: Vec<String>,
     },
     Text(String),
 }
@@ -732,6 +741,22 @@ fn enum_parameter(name: &'static str, param: EnumParam) -> ModuleParameter {
     }
 }
 
+fn delay_source_parameter(name: &'static str, param: &DelaySourceParam) -> ModuleParameter {
+    ModuleParameter {
+        name: name.to_string(),
+        value: ParameterValue::Enum {
+            index: param
+                .selected
+                .and_then(|selected| param.options.iter().position(|id| *id == selected))
+                .unwrap_or(0),
+            options: (1..=param.options.len())
+                .map(|index| format!("delay {index}"))
+                .collect(),
+        },
+        connected: false,
+    }
+}
+
 fn float_param(min: i32, max: i32, step: i32, value: i32) -> FloatParam {
     FloatParam {
         value,
@@ -759,8 +784,11 @@ fn input_param() -> InputParam {
     InputParam { connected: true }
 }
 
-fn enum_param(options: &'static [&'static str], index: usize) -> EnumParam {
-    EnumParam { index, options }
+fn enum_param(options: &[&str], index: usize) -> EnumParam {
+    EnumParam {
+        index,
+        options: options.iter().map(|option| (*option).to_string()).collect(),
+    }
 }
 
 #[derive(Debug)]
@@ -1101,14 +1129,17 @@ impl ModuleKind {
                 time: time_param(4410, TimeUnit::Samples),
             },
             ModuleKind::DelayTap => ModuleBody::DelayTap {
-                source: enum_param(&["delay 1"], 0),
+                source: DelaySourceParam {
+                    selected: None,
+                    options: Vec::new(),
+                },
                 gain: float_param(0, 70, 5, 50),
             },
             ModuleKind::Reverb => ModuleBody::Reverb {
                 input: float_param(-100, 100, 1, 0),
                 room: float_param(0, 100, 5, 50),
                 damp: float_param(0, 100, 5, 30),
-                mix: float_param(0, 100, 5, 20),
+                mod_depth: float_param(0, 100, 5, 50),
                 diffusion: float_param(0, 100, 5, 50),
             },
             ModuleKind::Distortion => ModuleBody::Distortion {
@@ -1179,6 +1210,7 @@ impl ModuleKind {
             ModuleKind::DownJoin => ModuleBody::DownJoin,
             ModuleKind::CompositionInput => ModuleBody::CompositionInput {
                 label: "Input".to_string(),
+                kind: AudioInputKind::A,
                 value: float_param(-100_000, 100_000, 1, 0),
             },
             ModuleKind::Composition => ModuleBody::Composition {
@@ -1247,17 +1279,39 @@ impl ModuleBody {
     fn duplicate(&self, next_module_id: &mut u32) -> Self {
         match self {
             ModuleBody::Primitive(_) => self.clone(),
-            Self::Composition { name, surface } => Self::Composition {
-                name: name.clone(),
-                surface: PatchSurface {
+            Self::Composition { name, surface } => {
+                let mut duplicate = PatchSurface {
                     cursor: surface.cursor,
                     modules: surface
                         .modules
                         .iter()
                         .map(|module| module.duplicate(module.position, next_module_id))
                         .collect(),
-                },
-            },
+                };
+                let ids = surface
+                    .modules
+                    .iter()
+                    .zip(&duplicate.modules)
+                    .map(|(old, new)| (old.id, new.id))
+                    .collect::<Vec<_>>();
+                for (old, new) in surface.modules.iter().zip(&mut duplicate.modules) {
+                    let ModuleBody::DelayTap { source: old, .. } = &old.body else {
+                        continue;
+                    };
+                    let ModuleBody::DelayTap { source: new, .. } = &mut new.body else {
+                        continue;
+                    };
+                    new.selected = old.selected.and_then(|selected| {
+                        ids.iter()
+                            .find_map(|(old, new)| (*old == selected).then_some(*new))
+                    });
+                }
+                sync_delay_sources(&mut duplicate);
+                Self::Composition {
+                    name: name.clone(),
+                    surface: duplicate,
+                }
+            }
             _ => self.clone(),
         }
     }
@@ -1319,7 +1373,7 @@ impl ModuleBody {
                 float_parameter("St", *semitones),
             ],
             ModuleBody::Osc { wave, frequency } => vec![
-                enum_parameter("Wave", *wave),
+                enum_parameter("Wave", wave.clone()),
                 float_parameter("Hz", *frequency),
             ],
             ModuleBody::Rise { gate, time } | ModuleBody::Fall { gate, time } => {
@@ -1383,23 +1437,21 @@ impl ModuleBody {
             ModuleBody::Delay { input, time } => {
                 vec![float_parameter("In", *input), time_parameter("Time", *time)]
             }
-            ModuleBody::DelayTap { source, gain } => {
-                vec![
-                    enum_parameter("Src", *source),
-                    float_parameter("Gain", *gain),
-                ]
-            }
+            ModuleBody::DelayTap { source, gain } => vec![
+                delay_source_parameter("Src", source),
+                float_parameter("Gain", *gain),
+            ],
             ModuleBody::Reverb {
                 input,
                 room,
                 damp,
-                mix,
+                mod_depth,
                 diffusion,
             } => vec![
                 float_parameter("In", *input),
                 float_parameter("Room", *room),
                 float_parameter("Damp", *damp),
-                float_parameter("Mix", *mix),
+                float_parameter("Mod", *mod_depth),
                 float_parameter("Diff", *diffusion),
             ],
             ModuleBody::Distortion {
@@ -1409,7 +1461,7 @@ impl ModuleBody {
                 asymmetry,
             } => vec![
                 float_parameter("In", *input),
-                enum_parameter("Type", *kind),
+                enum_parameter("Type", kind.clone()),
                 float_parameter("Drive", *drive),
                 float_parameter("Asym", *asymmetry),
             ],
@@ -1492,14 +1544,14 @@ impl ModuleBody {
                 }];
                 parameters.extend(composition_inputs(surface).into_iter().filter_map(|id| {
                     let module = surface.modules.iter().find(|module| module.id == id)?;
-                    let ModuleBody::CompositionInput { label, value } = &module.body else {
+                    let ModuleBody::CompositionInput { label, value, .. } = &module.body else {
                         return None;
                     };
                     Some(float_parameter(label.clone(), *value))
                 }));
                 parameters
             }
-            ModuleBody::CompositionInput { label, value } => vec![
+            ModuleBody::CompositionInput { label, value, .. } => vec![
                 ModuleParameter {
                     name: "Label".to_string(),
                     value: ParameterValue::Text(label.clone()),
@@ -1570,12 +1622,12 @@ impl ModuleBody {
                 AudioInputKind::Feedback,
             ],
             ModuleBody::Delay { .. } => &[AudioInputKind::In, AudioInputKind::Time],
-            ModuleBody::DelayTap { .. } => &[AudioInputKind::In],
+            ModuleBody::DelayTap { .. } => &[],
             ModuleBody::Reverb { .. } => &[
                 AudioInputKind::In,
                 AudioInputKind::Room,
                 AudioInputKind::Damp,
-                AudioInputKind::Mix,
+                AudioInputKind::Mod,
                 AudioInputKind::Diff,
             ],
             ModuleBody::Distortion { .. } => &[
@@ -1704,20 +1756,20 @@ impl ModuleBody {
                     || set_time_param(time, index, 1, &parameter)
             }
             ModuleBody::DelayTap { source, gain } => {
-                set_enum_param(source, index, 0, &parameter)
+                set_delay_source_param(source, index, 0, &parameter)
                     || set_float_param(gain, index, 1, &parameter)
             }
             ModuleBody::Reverb {
                 input,
                 room,
                 damp,
-                mix,
+                mod_depth,
                 diffusion,
             } => {
                 set_float_param(input, index, 0, &parameter)
                     || set_float_param(room, index, 1, &parameter)
                     || set_float_param(damp, index, 2, &parameter)
-                    || set_float_param(mix, index, 3, &parameter)
+                    || set_float_param(mod_depth, index, 3, &parameter)
                     || set_float_param(diffusion, index, 4, &parameter)
             }
             ModuleBody::Distortion {
@@ -1804,7 +1856,7 @@ impl ModuleBody {
                 };
                 set_float_param(value, 0, 0, &parameter)
             }
-            ModuleBody::CompositionInput { label, value } => match index {
+            ModuleBody::CompositionInput { label, value, .. } => match index {
                 0 => set_text_param(label, &parameter),
                 1 => set_float_param(value, index, 1, &parameter),
                 _ => false,
@@ -1930,6 +1982,25 @@ fn set_enum_param(
     } else {
         false
     }
+}
+
+fn set_delay_source_param(
+    target: &mut DelaySourceParam,
+    index: usize,
+    expected: usize,
+    parameter: &ModuleParameter,
+) -> bool {
+    if index != expected {
+        return false;
+    }
+    let ParameterValue::Enum { index, .. } = &parameter.value else {
+        return false;
+    };
+    let Some(selected) = target.options.get(*index).copied() else {
+        return false;
+    };
+    target.selected = Some(selected);
+    true
 }
 
 impl ModuleCategory {
@@ -2155,7 +2226,7 @@ impl ParameterValue {
                 }
             }
             ParameterValue::Enum { index, options } => {
-                options.get(*index).copied().unwrap_or_default().to_string()
+                options.get(*index).cloned().unwrap_or_default()
             }
             ParameterValue::Text(value) => value.clone(),
         }
@@ -2197,7 +2268,7 @@ impl ParameterValue {
             ParameterValue::Input => String::new(),
             ParameterValue::File { path, .. } => path.clone(),
             ParameterValue::Enum { index, options } => {
-                options.get(*index).copied().unwrap_or_default().to_string()
+                options.get(*index).cloned().unwrap_or_default()
             }
             ParameterValue::Text(value) => value.clone(),
         }
@@ -2444,14 +2515,7 @@ fn surface_extent(surface: &PatchSurface) -> (u16, u16) {
                 .saturating_add(module.input_count().max(1))
                 .saturating_add(1),
         );
-        let nested = module
-            .composition_surface()
-            .map(surface_extent)
-            .unwrap_or((1, 1));
-        (
-            extent.0.max(own.0).max(nested.0),
-            extent.1.max(own.1).max(nested.1),
-        )
+        (extent.0.max(own.0), extent.1.max(own.1))
     })
 }
 
@@ -2566,7 +2630,8 @@ impl GuiState {
     }
 
     pub(crate) fn grid_size(&self) -> (u16, u16) {
-        (self.width, self.height)
+        let (width, height) = surface_extent(self.instrument().surface());
+        (self.width.max(width), self.height.max(height))
     }
 
     pub(crate) fn set_grid_view_size(&mut self, size: GridViewSize) {
@@ -2578,9 +2643,10 @@ impl GuiState {
 
     pub(crate) fn grid_view_offset_for_size(&self, size: GridViewSize) -> GridPos {
         let (min, max) = self.active_grid_rect();
+        let (width, height) = self.grid_size();
         GridPos::new(
-            updated_axis_view(self.grid_view.x, min.x, max.x, self.width, size.columns()),
-            updated_axis_view(self.grid_view.y, min.y, max.y, self.height, size.rows()),
+            updated_axis_view(self.grid_view.x, min.x, max.x, width, size.columns()),
+            updated_axis_view(self.grid_view.y, min.y, max.y, height, size.rows()),
         )
     }
 
@@ -3016,7 +3082,14 @@ impl GuiState {
             return primitive.input_kinds().get(port).copied();
         }
         if module.is_composition() {
-            return (port < self.module_input_count(module) as usize).then_some(AudioInputKind::In);
+            let surface = module.composition_surface()?;
+            let id = composition_inputs(surface).get(port).copied()?;
+            return surface.modules.iter().find_map(|module| {
+                (module.id == id).then(|| match &module.body {
+                    ModuleBody::CompositionInput { kind, .. } => *kind,
+                    _ => AudioInputKind::A,
+                })
+            });
         }
         module.body.audio_inputs().get(port).copied()
     }
@@ -3133,8 +3206,9 @@ impl GuiState {
     }
 
     fn bounded_module_position(&self, module: &Module, x: i16, y: i16) -> Option<GridPos> {
-        let max_x = self.width.checked_sub(self.module_width(module))? as i16;
-        let max_y = self.height.checked_sub(self.module_height(module))? as i16;
+        let (width, height) = self.grid_size();
+        let max_x = width.checked_sub(self.module_width(module))? as i16;
+        let max_y = height.checked_sub(self.module_height(module))? as i16;
         Some(GridPos::new(
             x.clamp(0, max_x) as u16,
             y.clamp(0, max_y) as u16,
@@ -3189,6 +3263,28 @@ impl GuiState {
 
     fn surface_connections(&self, modules: &[Module]) -> Vec<Connection> {
         let mut connections = Vec::new();
+        let width = self.width.max(
+            modules
+                .iter()
+                .map(|module| module.position.x + self.module_width(module))
+                .max()
+                .unwrap_or(0),
+        );
+        let height = self.height.max(
+            modules
+                .iter()
+                .map(|module| module.position.y + self.module_height(module))
+                .max()
+                .unwrap_or(0),
+        );
+        let mut occupied = HashMap::new();
+        for module in modules.iter().filter(|module| !module.disabled) {
+            for y in module.position.y..module.position.y + self.module_height(module) {
+                for x in module.position.x..module.position.x + self.module_width(module) {
+                    occupied.insert(GridPos::new(x, y), module);
+                }
+            }
+        }
         for source in modules {
             if source.disabled {
                 continue;
@@ -3199,10 +3295,8 @@ impl GuiState {
                         continue;
                     };
                     let y = source.position.y + source_y;
-                    for x in source.position.x + self.module_width(source)..self.width {
-                        let Some(target) = modules.iter().find(|module| {
-                            !module.disabled && self.module_contains(module, GridPos::new(x, y))
-                        }) else {
+                    for x in source.position.x + self.module_width(source)..width {
+                        let Some(target) = occupied.get(&GridPos::new(x, y)).copied() else {
                             continue;
                         };
                         if target.id == source.id {
@@ -3240,10 +3334,8 @@ impl GuiState {
                         continue;
                     };
                     let x = source.position.x + source_x;
-                    for y in source.position.y + self.module_height(source)..self.height {
-                        let Some(target) = modules.iter().find(|module| {
-                            !module.disabled && self.module_contains(module, GridPos::new(x, y))
-                        }) else {
+                    for y in source.position.y + self.module_height(source)..height {
+                        let Some(target) = occupied.get(&GridPos::new(x, y)).copied() else {
                             continue;
                         };
                         if target.id == source.id {
@@ -3288,7 +3380,8 @@ impl GuiState {
     }
 
     fn area_fits(&self, width: u16, height: u16, position: GridPos, ignored: &[ModuleId]) -> bool {
-        if position.x + width > self.width || position.y + height > self.height {
+        let (grid_width, grid_height) = self.grid_size();
+        if position.x + width > grid_width || position.y + height > grid_height {
             return false;
         }
         !self
@@ -3334,6 +3427,7 @@ impl GuiState {
         if !has_output_signal {
             return Err(AudioPatchError::MissingOutput);
         }
+        let output_dependencies = OutputDependencies(needed.clone());
         for module in root_modules
             .iter()
             .filter(|module| !module.disabled && module.kind() == ModuleKind::Probe)
@@ -3353,27 +3447,7 @@ impl GuiState {
                 collect_audio_inputs(owner.id, &connections, &mut needed);
             }
         }
-        let voice_mode = if root_modules
-            .iter()
-            .any(|module| needed.contains(&module.id) && module_uses_voice_controls(module.kind()))
-            || needed
-                .iter()
-                .filter_map(|id| {
-                    root_modules
-                        .iter()
-                        .find(|module| module.id == *id)
-                        .and_then(Module::composition_surface)
-                })
-                .any(|surface| {
-                    surface
-                        .modules
-                        .iter()
-                        .any(|module| !module.disabled && module_uses_voice_controls(module.kind()))
-                }) {
-            VoiceMode::Polyphonic
-        } else {
-            VoiceMode::Single
-        };
+        let voice_mode = output_voice_mode(root_modules, &output_dependencies);
 
         let mut patch = Patch::new();
         let mut ids = Vec::new();
@@ -3384,7 +3458,7 @@ impl GuiState {
                 .iter()
                 .find(|module| !module.disabled && module.id == id)
                 .ok_or(AudioPatchError::Compile(CompileError::MissingModule))?;
-            if module.is_composition() {
+            if module.is_composition() || module.kind() == ModuleKind::DelayTap {
                 continue;
             }
             let audio = audio_module(module, rate, self.bpm)?;
@@ -3406,6 +3480,22 @@ impl GuiState {
                 id: audio_id,
             });
         }
+        for id in needed.iter().rev().copied() {
+            let Some(module) = root_modules
+                .iter()
+                .find(|module| !module.disabled && module.id == id && module.kind() == ModuleKind::DelayTap)
+            else {
+                continue;
+            };
+            let audio_id = insert_audio_delay_tap(
+                &mut patch,
+                module,
+                root_modules,
+                &ids,
+                |id| AudioKey::Root(id),
+            )?;
+            ids.push(AudioNode { key: AudioKey::Root(id), id: audio_id });
+        }
 
         for (owner_id, composition) in needed
             .iter()
@@ -3421,10 +3511,14 @@ impl GuiState {
             })
         {
             for module in composition.modules.iter().filter(|module| !module.disabled) {
-                if module.is_composition() {
+                if module.kind() == ModuleKind::DelayTap {
                     continue;
                 }
-                let audio = audio_module(module, rate, self.bpm)?;
+                let audio = if module.is_composition() {
+                    gui_composition(self, module, rate, self.bpm)?
+                } else {
+                    audio_module(module, rate, self.bpm)?
+                };
                 let audio_id = patch.insert(audio);
                 if module.kind() == ModuleKind::Probe {
                     probes.push(ProbeRoute {
@@ -3444,6 +3538,21 @@ impl GuiState {
                         owner: owner_id,
                         module: module.id,
                     },
+                    id: audio_id,
+                });
+            }
+            for module in composition.modules.iter().filter(|module| {
+                !module.disabled && module.kind() == ModuleKind::DelayTap
+            }) {
+                let audio_id = insert_audio_delay_tap(
+                    &mut patch,
+                    module,
+                    &composition.modules,
+                    &ids,
+                    |id| AudioKey::Composition { owner: owner_id, module: id },
+                )?;
+                ids.push(AudioNode {
+                    key: AudioKey::Composition { owner: owner_id, module: module.id },
                     id: audio_id,
                 });
             }
@@ -4409,6 +4518,7 @@ impl GuiState {
                         .surface_mut()
                         .modules
                         .retain(|module| module.id != id);
+                    sync_delay_sources(self.instrument_mut().surface_mut());
                     self.commit(before);
                 }
             }
@@ -4813,6 +4923,7 @@ impl GuiState {
                 let mut next_module_id = self.next_module_id;
                 let copy = module.duplicate(position, &mut next_module_id);
                 self.instrument_mut().surface_mut().modules.push(copy);
+                sync_delay_sources(self.instrument_mut().surface_mut());
                 self.next_module_id = next_module_id;
                 self.commit(before);
                 self.mode = Mode::Normal;
@@ -5989,7 +6100,7 @@ impl GuiState {
                 let dx = cursor.x as i16 - origin.x as i16;
                 let dy = cursor.y as i16 - origin.y as i16;
                 let mut next_module_id = self.next_module_id;
-                let copies = self
+                let mut copies = self
                     .modules()
                     .iter()
                     .filter(|module| ids.contains(&module.id))
@@ -6001,10 +6112,29 @@ impl GuiState {
                         module.duplicate(GridPos::new(x as u16, y as u16), &mut next_module_id)
                     })
                     .collect::<Vec<_>>();
+                let copied_ids = self
+                    .modules()
+                    .iter()
+                    .filter(|module| ids.contains(&module.id))
+                    .map(|module| module.id)
+                    .zip(copies.iter().map(|module| module.id))
+                    .collect::<Vec<_>>();
+                for copy in &mut copies {
+                    let ModuleBody::DelayTap { source, .. } = &mut copy.body else {
+                        continue;
+                    };
+                    source.selected = source.selected.and_then(|selected| {
+                        copied_ids
+                            .iter()
+                            .find_map(|(old, new)| (*old == selected).then_some(*new))
+                            .or(Some(selected))
+                    });
+                }
                 let before = self.snapshot();
                 for copy in copies {
                     self.instrument_mut().surface_mut().modules.push(copy);
                 }
+                sync_delay_sources(self.instrument_mut().surface_mut());
                 self.next_module_id = next_module_id;
                 self.commit(before);
                 self.mode = Mode::Normal;
@@ -6073,25 +6203,27 @@ impl GuiState {
 
     fn move_cursor(&mut self, dx: i16, dy: i16) {
         let cursor = self.cursor();
-        let x = (cursor.x as i16 + dx).clamp(0, self.width.saturating_sub(1) as i16);
-        let y = (cursor.y as i16 + dy).clamp(0, self.height.saturating_sub(1) as i16);
+        let (width, height) = self.grid_size();
+        let x = (cursor.x as i16 + dx).clamp(0, width.saturating_sub(1) as i16);
+        let y = (cursor.y as i16 + dy).clamp(0, height.saturating_sub(1) as i16);
         self.instrument_mut().surface_mut().cursor = GridPos::new(x as u16, y as u16);
     }
 
     fn update_grid_view(&mut self) {
         let (min, max) = self.active_grid_rect();
+        let (width, height) = self.grid_size();
         self.grid_view.x = updated_axis_view(
             self.grid_view.x,
             min.x,
             max.x,
-            self.width,
+            width,
             self.grid_view_size.columns(),
         );
         self.grid_view.y = updated_axis_view(
             self.grid_view.y,
             min.y,
             max.y,
-            self.height,
+            height,
             self.grid_view_size.rows(),
         );
     }
@@ -6223,30 +6355,33 @@ impl GuiState {
             body,
             disabled: false,
         };
-        if let Some(surface) = module.composition_surface() {
-            self.width = self.width.max(
-                surface
-                    .modules
-                    .iter()
-                    .map(|module| module.position.x + 2)
-                    .max()
-                    .unwrap_or(1),
-            );
-            self.height = self.height.max(
-                surface
-                    .modules
-                    .iter()
-                    .map(|module| module.position.y + module.input_count().max(1) + 1)
-                    .max()
-                    .unwrap_or(1),
-            );
-        }
         if !self.module_fits(&module, cursor, &[]) {
             self.next_module_id = before.next_module_id;
             return;
         }
         self.instrument_mut().surface_mut().modules.push(module);
+        sync_delay_sources(self.instrument_mut().surface_mut());
         self.commit(before);
+    }
+}
+
+fn sync_delay_sources(surface: &mut PatchSurface) {
+    let delays = surface
+        .modules
+        .iter()
+        .filter(|module| module.kind() == ModuleKind::Delay)
+        .map(|module| module.id)
+        .collect::<Vec<_>>();
+    for module in &mut surface.modules {
+        if let ModuleBody::DelayTap { source, .. } = &mut module.body {
+            source.options = delays.clone();
+            if source.selected.is_none_or(|selected| !delays.contains(&selected)) {
+                source.selected = delays.first().copied();
+            }
+        }
+        if let Some(composition) = module.composition_surface_mut() {
+            sync_delay_sources(composition);
+        }
     }
 }
 
@@ -6292,14 +6427,22 @@ fn composition_body(
         ordered.push(remaining.remove(index));
     }
     let mut modules = Vec::new();
-    let mut ids = Vec::new();
-    let mut y = 0u16;
-    for core_id in ordered {
+    let ids = ordered
+        .iter()
+        .enumerate()
+        .map(|(index, id)| (*id, ModuleId(*next_module_id + index as u32)))
+        .collect::<Vec<_>>();
+    *next_module_id += ids.len() as u32;
+    let mut y = 0;
+    for (node_index, core_id) in ordered.into_iter().enumerate() {
         let node = entries
             .iter()
             .find_map(|(id, module)| (*id == core_id).then_some(module))
             .expect("composition module exists");
-        let projected = ModuleId(*next_module_id);
+        let projected = ids
+            .iter()
+            .find_map(|(id, projected)| (*id == core_id).then_some(*projected))
+            .expect("projected module exists");
         let body = graph
             .inputs()
             .iter()
@@ -6311,6 +6454,7 @@ fn composition_body(
                 };
                 ModuleBody::CompositionInput {
                     label: input.label().to_string(),
+                    kind: input.kind(),
                     value: float_param(-100_000, 100_000, 1, (default * 100.0).round() as i32),
                 }
             })
@@ -6318,21 +6462,49 @@ fn composition_body(
                 AudioModule::Composition(composition) => {
                     composition_body(composition.clone(), next_module_id)
                 }
+                AudioModule::DelayTap(tap) => {
+                    let source = ids
+                        .iter()
+                        .find_map(|(id, projected)| (*id == tap.delay()).then_some(*projected))
+                        .expect("delay tap source exists");
+                    let options = ids
+                        .iter()
+                        .filter_map(|(id, projected)| {
+                            entries
+                                .iter()
+                                .find_map(|(candidate, module)| {
+                                    (*candidate == *id).then_some(module)
+                                })
+                                .is_some_and(|module| matches!(module, AudioModule::Delay { .. }))
+                                .then_some(*projected)
+                        })
+                        .collect();
+                    let mut body = ModuleKind::DelayTap.default_body();
+                    let ModuleBody::DelayTap {
+                        source: selected,
+                        gain,
+                    } = &mut body
+                    else {
+                        unreachable!()
+                    };
+                    selected.selected = Some(source);
+                    selected.options = options;
+                    gain.value = (tap.gain().value() * 100.0).round() as i32;
+                    body
+                }
                 _ => graph_node_body(node),
             });
         modules.push(Module {
             id: projected,
-            position: GridPos::new(2 + ids.len() as u16 * 3, y),
+            position: GridPos::new(2 + node_index as u16 * 2, y),
             orientation: Orientation::Right,
             body,
             disabled: false,
         });
-        ids.push((core_id, projected));
-        *next_module_id += 1;
         y += node.input_kinds().len().max(1) as u16 + 1;
     }
     let output = ModuleId(*next_module_id);
-    let output_position = GridPos::new(2 + ids.len() as u16 * 3, y);
+    let output_position = GridPos::new(2 + ids.len() as u16 * 2, y);
     modules.push(Module {
         id: output,
         position: output_position,
@@ -6425,7 +6597,18 @@ fn composition_body(
 }
 
 fn graph_node_body(module: &AudioModule) -> ModuleBody {
-    ModuleBody::Primitive(module.clone())
+    match module {
+        AudioModule::Delay { time, .. } => ModuleBody::Delay {
+            input: float_param(-100, 100, 1, 0),
+            time: match time {
+                Duration::Samples(samples) => time_param(samples.value() as i32, TimeUnit::Samples),
+                Duration::Seconds(seconds) => {
+                    time_param((seconds.value() * 100.0).round() as i32, TimeUnit::Seconds)
+                }
+            },
+        },
+        _ => ModuleBody::Primitive(module.clone()),
+    }
 }
 
 fn graph_node_label(module: &AudioModule) -> &'static str {
@@ -6438,6 +6621,7 @@ fn graph_node_label(module: &AudioModule) -> &'static str {
         AudioModule::Constant(_) => "Constant",
         AudioModule::Absolute => "Absolute",
         AudioModule::Pass => "Pass",
+        AudioModule::Damp { .. } => "Damping",
         AudioModule::Osc { .. } => "Oscillator",
         AudioModule::Rise { .. } => "Rise",
         AudioModule::Fall { .. } => "Fall",
@@ -6448,6 +6632,7 @@ fn graph_node_label(module: &AudioModule) -> &'static str {
         AudioModule::Comb { .. } => "Comb",
         AudioModule::Allpass { .. } => "Allpass",
         AudioModule::Delay { .. } => "Delay",
+        AudioModule::DelayTap { .. } => "Delay Tap",
         AudioModule::VariableDelay { .. } => "Variable Delay",
         AudioModule::Waveshaper(_) => "Waveshaper",
         AudioModule::Slew { .. } => "Slew",
@@ -6674,11 +6859,13 @@ fn delay_source(module: &Module, modules: &[Module]) -> Result<ProjectModuleId, 
     let ModuleBody::DelayTap { source, .. } = &module.body else {
         return Err(format!("module {} is not a delay tap", module.id.value()));
     };
+    let selected = source
+        .selected
+        .ok_or_else(|| format!("missing delay source {}", module.id.value()))?;
     modules
         .iter()
-        .filter(|module| module.kind() == ModuleKind::Delay)
-        .nth(source.index)
-        .map(|module| ProjectModuleId(module.id.value()))
+        .any(|module| module.id == selected && module.kind() == ModuleKind::Delay)
+        .then_some(ProjectModuleId(selected.value()))
         .ok_or_else(|| format!("missing delay source {}", module.id.value()))
 }
 
@@ -6707,8 +6894,9 @@ fn project_params(
         | ModuleBody::TopSplit
         | ModuleBody::RightJoin
         | ModuleBody::DownJoin => ProjectModuleParams::None,
-        ModuleBody::CompositionInput { label, value } => ProjectModuleParams::CompositionInput {
+        ModuleBody::CompositionInput { label, kind, value } => ProjectModuleParams::CompositionInput {
             label: label.clone(),
+            kind: *kind,
             value: project_float(*value),
             connected: value.connected,
         },
@@ -6817,18 +7005,18 @@ fn project_params(
             input,
             room,
             damp,
-            mix,
+            mod_depth,
             diffusion,
         } => ProjectModuleParams::Reverb {
             room: project_float(*room),
             damp: project_float(*damp),
-            mix: project_float(*mix),
+            mod_depth: project_float(*mod_depth),
             diffusion: project_float(*diffusion),
             connected: connected_mask(&[
                 (0, input.connected),
                 (1, room.connected),
                 (2, damp.connected),
-                (3, mix.connected),
+                (3, mod_depth.connected),
                 (4, diffusion.connected),
             ]),
         },
@@ -7051,10 +7239,10 @@ fn instrument_surface_from_project(project: &Project) -> Result<PatchSurface, St
 }
 
 fn surface_from_project_modules(
-    modules: &[ProjectModuleDef],
+    definitions: &[ProjectModuleDef],
     compositions: &HashMap<u32, &ProjectCompositionDef>,
 ) -> Result<PatchSurface, String> {
-    let modules = modules
+    let mut modules = definitions
         .iter()
         .map(|definition| {
             let (mut module, composition_id) = module_from_project(definition)?;
@@ -7070,6 +7258,28 @@ fn surface_from_project_modules(
             Ok(module)
         })
         .collect::<Result<Vec<_>, String>>()?;
+    for (definition, module) in definitions.iter().zip(&mut modules) {
+        let ProjectModuleKind::Standard(ProjectStandardModule::DelayTap(source_id)) = definition.kind
+        else {
+            continue;
+        };
+        let options = definitions
+            .iter()
+            .filter(|candidate| {
+                matches!(candidate.kind, ProjectModuleKind::Standard(ProjectStandardModule::Delay))
+            })
+            .map(|candidate| ModuleId(candidate.id))
+            .collect::<Vec<_>>();
+        let selected = ModuleId(source_id.0);
+        if !options.contains(&selected) {
+            return Err(format!("missing delay source {}", source_id.0));
+        }
+        let ModuleBody::DelayTap { source, .. } = &mut module.body else {
+            return Err(format!("module {} is not a delay tap", definition.id));
+        };
+        source.selected = Some(selected);
+        source.options = options;
+    }
     Ok(PatchSurface {
         cursor: GridPos::new(0, 0),
         modules,
@@ -7352,13 +7562,13 @@ fn validate_project_params(params: &ProjectModuleParams) -> Result<(), String> {
         ProjectModuleParams::Reverb {
             room,
             damp,
-            mix,
+            mod_depth,
             diffusion,
             ..
         } => {
             validate_finite(*room)?;
             validate_finite(*damp)?;
-            validate_finite(*mix)?;
+            validate_finite(*mod_depth)?;
             validate_finite(*diffusion)
         }
         ProjectModuleParams::Distortion {
@@ -7460,9 +7670,13 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
         | ProjectModuleParams::Composition { .. } => {}
         ProjectModuleParams::CompositionInput {
             label,
+            kind,
             value,
             connected,
         } => {
+            if let ModuleBody::CompositionInput { kind: target, .. } = &mut module.body {
+                *target = *kind;
+            }
             if let Some(parameter) = parameters.get_mut(0) {
                 parameter.value = ParameterValue::Text(label.clone());
             }
@@ -7559,13 +7773,13 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
         ProjectModuleParams::Reverb {
             room,
             damp,
-            mix,
+            mod_depth,
             diffusion,
             connected,
         } => {
             set_float(&mut parameters, 1, *room);
             set_float(&mut parameters, 2, *damp);
-            set_float(&mut parameters, 3, *mix);
+            set_float(&mut parameters, 3, *mod_depth);
             set_float(&mut parameters, 4, *diffusion);
             apply_connected(&mut parameters, *connected);
         }
@@ -7760,6 +7974,9 @@ mod tests {
     fn every_gui_module_kind_has_audio_mapping() {
         let rate = SampleRate::new(44_100).unwrap();
         for kind in all_modules().iter().copied() {
+            if kind == ModuleKind::DelayTap {
+                continue;
+            }
             let module = Module {
                 id: ModuleId(0),
                 position: GridPos::new(0, 0),
@@ -7769,6 +7986,87 @@ mod tests {
             };
             assert!(audio_module(&module, rate, 120).is_ok(), "{kind:?}");
         }
+    }
+
+    #[test]
+    fn delay_tap_audio_mapping_references_delay_state() {
+        let delay = Module {
+            id: ModuleId(1),
+            position: GridPos::new(0, 0),
+            orientation: Orientation::Right,
+            body: ModuleKind::Delay.default_body(),
+            disabled: false,
+        };
+        let mut tap = Module {
+            id: ModuleId(2),
+            position: GridPos::new(0, 0),
+            orientation: Orientation::Right,
+            body: ModuleKind::DelayTap.default_body(),
+            disabled: false,
+        };
+        let ModuleBody::DelayTap { source, .. } = &mut tap.body else {
+            unreachable!()
+        };
+        source.selected = Some(delay.id);
+        source.options.push(delay.id);
+        let mut patch = Patch::new();
+        let delay_id = patch.insert(audio_module(
+            &delay,
+            SampleRate::new(44_100).unwrap(),
+            120,
+        ).unwrap());
+        let ids = [AudioNode { key: AudioKey::Root(delay.id), id: delay_id }];
+
+        assert!(insert_audio_delay_tap(
+            &mut patch,
+            &tap,
+            &[delay.clone(), tap.clone()],
+            &ids,
+            AudioKey::Root,
+        ).is_ok());
+    }
+
+    #[test]
+    fn disconnected_degree_probe_cannot_change_output_voice_mode() {
+        let mut state = GuiState::new(8, 8);
+        state.instrument_mut().root.modules = vec![
+            Module {
+                id: ModuleId(1),
+                position: GridPos::new(2, 1),
+                orientation: Orientation::Right,
+                body: ModuleKind::Osc.default_body(),
+                disabled: false,
+            },
+            Module {
+                id: ModuleId(2),
+                position: GridPos::new(6, 1),
+                orientation: Orientation::Right,
+                body: ModuleKind::Output.default_body(),
+                disabled: false,
+            },
+            Module {
+                id: ModuleId(3),
+                position: GridPos::new(1, 0),
+                orientation: Orientation::Right,
+                body: ModuleKind::DegreeGate.default_body(),
+                disabled: false,
+            },
+            Module {
+                id: ModuleId(4),
+                position: GridPos::new(2, 0),
+                orientation: Orientation::Right,
+                body: ModuleKind::Probe.default_body(),
+                disabled: false,
+            },
+        ];
+
+        assert_eq!(
+            state
+                .compile_gui_audio_patch(SampleRate::new(44_100).unwrap())
+                .unwrap()
+                .voice_mode,
+            VoiceMode::Single
+        );
     }
 
     #[test]
@@ -7876,6 +8174,16 @@ mod tests {
         state.instrument_mut().surface_mut().cursor = state.modules()[0].position;
         state.apply(GuiAction::Delete);
         assert_eq!(state.modules().len(), before - 1);
+    }
+
+    #[test]
+    fn reverb_projection_stays_bounded() {
+        let mut state = GuiState::new(16, 16);
+        state.insert_at_cursor(ModuleKind::Reverb, None);
+        let surface = state.modules()[0].composition_surface().unwrap();
+        assert_eq!(state.grid_size(), (16, 16));
+        assert!(surface.modules.len() < 30);
+        assert!(surface_extent(surface).0 < 20);
     }
 
     #[test]
@@ -8091,6 +8399,34 @@ fn collect_audio_inputs(module: ModuleId, connections: &[Connection], needed: &m
     }
 }
 
+fn output_voice_mode(
+    modules: &[Module],
+    dependencies: &OutputDependencies,
+) -> VoiceMode {
+    if modules.iter().any(|module| {
+        dependencies.0.contains(&module.id) && module_uses_voice_controls(module.kind())
+    }) || dependencies
+        .0
+        .iter()
+        .filter_map(|id| {
+            modules
+                .iter()
+                .find(|module| module.id == *id)
+                .and_then(Module::composition_surface)
+        })
+        .any(|surface| {
+            surface
+                .modules
+                .iter()
+                .any(|module| !module.disabled && module_uses_voice_controls(module.kind()))
+        })
+    {
+        VoiceMode::Polyphonic
+    } else {
+        VoiceMode::Single
+    }
+}
+
 fn module_uses_voice_controls(kind: ModuleKind) -> bool {
     matches!(
         kind,
@@ -8109,6 +8445,116 @@ fn audio_patch_error_message(error: &AudioPatchError) -> &'static str {
         AudioPatchError::Compile(CompileError::MissingModule) => "missing module",
         AudioPatchError::Compile(CompileError::MissingOutput) => "missing output",
     }
+}
+
+fn gui_composition(
+    state: &GuiState,
+    owner: &Module,
+    rate: SampleRate,
+    bpm: u16,
+) -> Result<AudioModule, AudioPatchError> {
+    let ModuleBody::Composition { name, surface } = &owner.body else {
+        return Err(AudioPatchError::InvalidParameter);
+    };
+    let mut patch = Patch::new();
+    let mut ids = Vec::new();
+    for module in surface
+        .modules
+        .iter()
+        .filter(|module| !module.disabled && module.kind() != ModuleKind::DelayTap)
+    {
+        let audio = match &module.body {
+            ModuleBody::CompositionInput { kind, value, .. } => AudioModule::Input {
+                kind: *kind,
+                default: AudioSample::new(value.value as f32 / 100.0)
+                    .ok_or(AudioPatchError::InvalidParameter)?,
+            },
+            ModuleBody::Composition { .. } => gui_composition(state, module, rate, bpm)?,
+            _ => audio_module(module, rate, bpm)?,
+        };
+        ids.push(AudioNode {
+            key: AudioKey::Root(module.id),
+            id: patch.insert(audio),
+        });
+    }
+    for module in surface
+        .modules
+        .iter()
+        .filter(|module| !module.disabled && module.kind() == ModuleKind::DelayTap)
+    {
+        let id = insert_audio_delay_tap(
+            &mut patch,
+            module,
+            &surface.modules,
+            &ids,
+            AudioKey::Root,
+        )?;
+        ids.push(AudioNode {
+            key: AudioKey::Root(module.id),
+            id,
+        });
+    }
+    for connection in state.surface_connections(&surface.modules) {
+        let Some(from) = audio_id(&ids, AudioKey::Root(connection.from)) else {
+            continue;
+        };
+        let Some(to) = audio_id(&ids, AudioKey::Root(connection.to)) else {
+            continue;
+        };
+        let input = connection.audio_input();
+        let port = patch.input_port(to, input).map_err(AudioPatchError::Connect)?;
+        patch
+            .connect_input(from, port)
+            .map_err(AudioPatchError::Connect)?;
+    }
+    let output = surface
+        .modules
+        .iter()
+        .find(|module| module.kind() == ModuleKind::CompositionOutput)
+        .and_then(|module| audio_id(&ids, AudioKey::Root(module.id)))
+        .ok_or(AudioPatchError::MissingOutput)?;
+    patch.output(output).map_err(AudioPatchError::Connect)?;
+    let inputs = composition_inputs(surface)
+        .into_iter()
+        .filter_map(|id| {
+            let module = surface.modules.iter().find(|module| module.id == id)?;
+            let ModuleBody::CompositionInput { label, kind, .. } = &module.body else {
+                return None;
+            };
+            Some((
+                label.clone(),
+                *kind,
+                audio_id(&ids, AudioKey::Root(id))?,
+            ))
+        })
+        .collect::<Vec<_>>();
+    brainwash::patch::Composition::new(name.clone(), patch, inputs)
+        .map(|composition| AudioModule::Composition(Box::new(composition)))
+        .map_err(|_| AudioPatchError::InvalidParameter)
+}
+
+fn insert_audio_delay_tap(
+    patch: &mut Patch,
+    module: &Module,
+    modules: &[Module],
+    ids: &[AudioNode],
+    key: impl Fn(ModuleId) -> AudioKey,
+) -> Result<AudioModuleId, AudioPatchError> {
+    let ModuleBody::DelayTap { source, .. } = &module.body else {
+        return Err(AudioPatchError::InvalidParameter);
+    };
+    let delay = source
+        .selected
+        .and_then(|selected| {
+            modules
+                .iter()
+                .find(|candidate| candidate.id == selected && candidate.kind() == ModuleKind::Delay)
+        })
+        .and_then(|delay| audio_id(ids, key(delay.id)))
+        .ok_or(AudioPatchError::InvalidParameter)?;
+    patch
+        .insert_delay_tap(delay, audio_unit(module, 1)?)
+        .map_err(AudioPatchError::Connect)
 }
 
 fn audio_module(
@@ -8187,7 +8633,7 @@ fn audio_module(
             time: audio_duration(module, 1, rate, bpm)?,
             feedback: Unit::ZERO,
         }),
-        ModuleKind::DelayTap => Ok(brainwash::preset::attenuator(audio_unit(module, 1)?)),
+        ModuleKind::DelayTap => Err(AudioPatchError::InvalidParameter),
         ModuleKind::Reverb => Ok(brainwash::preset::reverb(
             audio_unit(module, 1)?,
             audio_unit(module, 2)?,

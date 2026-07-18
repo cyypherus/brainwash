@@ -113,6 +113,9 @@ enum FileModule {
     Constant(f32),
     Absolute,
     Pass,
+    Damp {
+        coefficient: f32,
+    },
     Osc {
         wave: FileWave,
         frequency: f32,
@@ -148,6 +151,10 @@ enum FileModule {
     Delay {
         time: FileDuration,
         feedback: f32,
+    },
+    DelayTap {
+        delay: u32,
+        gain: f32,
     },
     VariableDelay {
         max_time: FileDuration,
@@ -258,10 +265,28 @@ impl FilePatch {
     fn into_patch_with_ids(self) -> Result<(Patch, HashMap<u32, patch::ModuleId>), LoadError> {
         let mut patch = Patch::new();
         let mut ids = HashMap::new();
+        let mut taps = Vec::new();
         for entry in self.modules {
             let old_id = entry.id;
+            if matches!(entry.module, FileModule::DelayTap { .. }) {
+                taps.push(entry);
+                continue;
+            }
             let new_id = patch.insert(entry.module.into_module()?);
             if ids.insert(old_id, new_id).is_some() {
+                return Err(LoadError::Value);
+            }
+        }
+        for entry in taps {
+            let FileModule::DelayTap { delay, gain } = entry.module else {
+                unreachable!()
+            };
+            let delay = *ids.get(&delay).ok_or(LoadError::Value)?;
+            let gain = Unit::new(gain).ok_or(LoadError::Value)?;
+            let new_id = patch
+                .insert_delay_tap(delay, gain)
+                .map_err(|_| LoadError::Value)?;
+            if ids.insert(entry.id, new_id).is_some() {
                 return Err(LoadError::Value);
             }
         }
@@ -329,6 +354,9 @@ impl FileModule {
             Module::Constant(value) => FileModule::Constant(value.value()),
             Module::Absolute => FileModule::Absolute,
             Module::Pass => FileModule::Pass,
+            Module::Damp { coefficient } => FileModule::Damp {
+                coefficient: coefficient.value(),
+            },
             Module::Osc { wave, frequency } => FileModule::Osc {
                 wave: FileWave::from_wave(wave),
                 frequency: frequency.value(),
@@ -375,6 +403,10 @@ impl FileModule {
             Module::Delay { time, feedback } => FileModule::Delay {
                 time: FileDuration::from_duration(time),
                 feedback: feedback.value(),
+            },
+            Module::DelayTap(tap) => FileModule::DelayTap {
+                delay: tap.delay().0,
+                gain: tap.gain().value(),
             },
             Module::VariableDelay { max_time } => FileModule::VariableDelay {
                 max_time: FileDuration::from_duration(max_time),
@@ -431,6 +463,9 @@ impl FileModule {
             }
             FileModule::Absolute => Module::Absolute,
             FileModule::Pass => Module::Pass,
+            FileModule::Damp { coefficient } => Module::Damp {
+                coefficient: Unit::new(coefficient).ok_or(LoadError::Value)?,
+            },
             FileModule::Osc { wave, frequency } => Module::Osc {
                 wave: wave.into_wave(),
                 frequency: Hertz::new(frequency).ok_or(LoadError::Value)?,
@@ -482,6 +517,7 @@ impl FileModule {
                 time: time.into_duration()?,
                 feedback: Unit::new(feedback).ok_or(LoadError::Value)?,
             },
+            FileModule::DelayTap { .. } => return Err(LoadError::Value),
             FileModule::VariableDelay { max_time } => Module::VariableDelay {
                 max_time: max_time.into_duration()?,
             },
@@ -697,5 +733,33 @@ mod tests {
         let decoded = module_from_str(&encoded).unwrap();
 
         assert_eq!(decoded, module);
+    }
+
+    #[test]
+    fn delay_tap_round_trip_preserves_delay_identity() {
+        let mut patch = Patch::new();
+        let delay = patch.insert(Module::Delay {
+            time: Duration::Samples(Samples::new(2)),
+            feedback: Unit::ZERO,
+        });
+        let tap = patch
+            .insert_delay_tap(delay, Unit::new(0.5).unwrap())
+            .unwrap();
+        patch.output(tap).unwrap();
+
+        let decoded = from_str(&to_string(&patch).unwrap()).unwrap();
+        let (_, Module::DelayTap(tap)) = decoded
+            .module_entries()
+            .find(|(_, module)| matches!(module, Module::DelayTap(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+
+        assert!(matches!(
+            decoded.module_by_id(tap.delay()),
+            Some(Module::Delay { .. })
+        ));
+        assert_eq!(tap.gain(), Unit::new(0.5).unwrap());
     }
 }

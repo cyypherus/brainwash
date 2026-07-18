@@ -2049,7 +2049,7 @@ fn gui_reverb_emits_a_wet_tail_after_an_impulse() {
         gate: 1.0,
         degree: 0,
     });
-    let tail = (0..2_000)
+    let tail = (0..12_000)
         .map(|_| {
             compiled
                 .next_with_controls(PatchControls {
@@ -2063,7 +2063,7 @@ fn gui_reverb_emits_a_wet_tail_after_an_impulse() {
         })
         .fold(0.0_f32, f32::max);
 
-    assert!(tail > 0.1, "reverb tail peak was {tail}");
+    assert!(tail > 0.02, "reverb tail peak was {tail}");
 }
 
 #[test]

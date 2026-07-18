@@ -223,7 +223,7 @@ pub enum ModuleParams {
     Reverb {
         room: f32,
         damp: f32,
-        mix: f32,
+        mod_depth: f32,
         diffusion: f32,
         connected: u8,
     },
@@ -288,6 +288,7 @@ pub enum ModuleParams {
     },
     CompositionInput {
         label: String,
+        kind: brainwash::patch::InputKind,
         value: f32,
         connected: bool,
     },

@@ -1,7 +1,7 @@
 use crate::delay::Delay;
 use crate::effect::Distortion;
 use crate::osc::Oscillator;
-use crate::patch::{BinaryOp, EnvPoint, Module, Patch};
+use crate::patch::{BinaryOp, EnvPoint, InputKind, Module, Patch};
 use crate::sample::{Frame, Sample, Unit};
 use crate::time::{Duration, Hertz, SampleRate};
 use std::collections::VecDeque;
@@ -63,6 +63,10 @@ enum Node {
     Constant(Sample),
     Absolute,
     Pass,
+    Damp {
+        coefficient: Unit,
+        value: f32,
+    },
     Osc {
         osc: Oscillator,
         frequency: Hertz,
@@ -78,6 +82,10 @@ enum Node {
     Comb(Comb),
     Allpass(Allpass),
     Delay(Delay),
+    DelayTap {
+        delay: usize,
+        gain: Unit,
+    },
     VariableDelay(VariableDelay),
     Waveshaper(Distortion),
     Slew(Slew),
@@ -204,7 +212,20 @@ impl CompiledPatch {
         rate: SampleRate,
         composition: Option<&crate::patch::Composition>,
     ) -> Result<Self, CompileError> {
-        let order = compile_order(patch)?;
+        let order = compile_order(patch)?
+            .into_iter()
+            .filter(|module_index| {
+                !matches!(patch.modules()[*module_index].1, Module::Pass)
+                    || patch
+                        .connections()
+                        .iter()
+                        .filter(|connection| {
+                            connection.input.module == patch.modules()[*module_index].0
+                        })
+                        .count()
+                        != 1
+            })
+            .collect::<Vec<_>>();
         let mut rank_by_module = Vec::with_capacity(order.len());
         for (rank, module_index) in order.iter().copied().enumerate() {
             rank_by_module.push((patch.modules()[module_index].0, rank));
@@ -216,9 +237,16 @@ impl CompiledPatch {
         }
 
         for connection in patch.connections() {
+            let source_id = resolve_pass_source(patch, connection.from)?;
+            if !order
+                .iter()
+                .any(|module_index| patch.modules()[*module_index].0 == connection.input.module)
+            {
+                continue;
+            }
             let source = rank_by_module
                 .iter()
-                .find_map(|(id, rank)| (*id == connection.from).then_some(*rank))
+                .find_map(|(id, rank)| (*id == source_id).then_some(*rank))
                 .ok_or(CompileError::MissingModule)?;
             let target = rank_by_module
                 .iter()
@@ -260,15 +288,32 @@ impl CompiledPatch {
 
         let mut nodes = Vec::with_capacity(order.len());
         for module_index in order.iter().copied() {
-            nodes.push(create_node(
-                &patch.modules()[module_index].1,
-                rate,
-                composition,
-                patch.modules()[module_index].0,
-            )?);
+            let module = &patch.modules()[module_index].1;
+            if let Module::DelayTap(tap) = module {
+                let delay = rank_by_module
+                    .iter()
+                    .find_map(|(id, rank)| (*id == tap.delay()).then_some(*rank))
+                    .ok_or(CompileError::InvalidInput)?;
+                if !matches!(patch.module_by_id(tap.delay()), Some(Module::Delay { .. })) {
+                    return Err(CompileError::InvalidInput);
+                }
+                nodes.push(Node::DelayTap {
+                    delay,
+                    gain: tap.gain(),
+                });
+            } else {
+                nodes.push(create_node(
+                    module,
+                    rate,
+                    composition,
+                    patch.modules()[module_index].0,
+                )?);
+            }
         }
         let output = patch
             .output_id()
+            .map(|id| resolve_pass_source(patch, id))
+            .transpose()?
             .and_then(|id| {
                 rank_by_module
                     .iter()
@@ -299,6 +344,18 @@ impl CompiledPatch {
 
     fn next_with_inputs(&mut self, controls: PatchControls, external: &[Option<Sample>]) -> Frame {
         for idx in 0..self.nodes.len() {
+            if let Node::DelayTap { delay, gain } = self.nodes[idx] {
+                let seconds = self.inputs[delay]
+                    .get(1)
+                    .copied()
+                    .flatten()
+                    .and_then(|source| self.values.get(source).copied());
+                self.values[idx] = match &self.nodes[delay] {
+                    Node::Delay(delay) => delay.tap(seconds).attenuate(gain),
+                    _ => Sample::ZERO,
+                };
+                continue;
+            }
             for (value, source) in self.input_values[idx]
                 .iter_mut()
                 .zip(self.inputs[idx].iter().copied())
@@ -328,6 +385,33 @@ impl CompiledPatch {
                 );
             }
         }
+    }
+}
+
+fn resolve_pass_source(
+    patch: &Patch,
+    mut module: crate::patch::ModuleId,
+) -> Result<crate::patch::ModuleId, CompileError> {
+    loop {
+        let definition = patch
+            .modules()
+            .iter()
+            .find_map(|(id, definition)| (*id == module).then_some(definition))
+            .ok_or(CompileError::MissingModule)?;
+        if !matches!(definition, Module::Pass) {
+            return Ok(module);
+        }
+        let mut incoming = patch
+            .connections()
+            .iter()
+            .filter(|connection| connection.input.module == module);
+        let Some(connection) = incoming.next() else {
+            return Ok(module);
+        };
+        if incoming.next().is_some() {
+            return Ok(module);
+        }
+        module = connection.from;
     }
 }
 
@@ -424,6 +508,15 @@ impl Node {
             Node::Constant(value) => *value,
             Node::Absolute => Sample::raw(in0.value().abs()),
             Node::Pass => Sample::raw(inputs.iter().flatten().map(|input| input.value()).sum()),
+            Node::Damp { coefficient, value } => {
+                if let Some(input) = inputs.get(1).copied().flatten()
+                    && let Some(next) = Unit::new(input.value() * 0.5)
+                {
+                    *coefficient = next;
+                }
+                *value = in0.value() * (1.0 - coefficient.value()) + *value * coefficient.value();
+                Sample::raw(*value)
+            }
             Node::Osc { osc, frequency } => {
                 let frequency = inputs
                     .first()
@@ -456,8 +549,16 @@ impl Node {
                 filter.highpass(in0)
             }
             Node::Comb(comb) => Sample::raw(comb.next(in0.value())),
-            Node::Allpass(allpass) => Sample::raw(allpass.next(in0.value())),
-            Node::Delay(delay) => delay.process(in0),
+            Node::Allpass(allpass) => {
+                if let Some(feedback) = inputs.get(2).copied().flatten()
+                    && let Some(feedback) = Unit::new(feedback.value())
+                {
+                    allpass.feedback = feedback;
+                }
+                Sample::raw(allpass.next(in0.value()))
+            }
+            Node::Delay(delay) => delay.process_at(in0, inputs.get(1).copied().flatten()),
+            Node::DelayTap { .. } => Sample::ZERO,
             Node::VariableDelay(delay) => Sample::raw(delay.next(
                 in0.value(),
                 inputs.get(1).copied().flatten().map_or(0.0, Sample::value),
@@ -663,7 +764,7 @@ impl Allpass {
 
     fn next(&mut self, input: f32) -> f32 {
         let delayed = self.buffer[self.index];
-        let output = -input + delayed;
+        let output = delayed - self.feedback.value() * input;
         self.buffer[self.index] = input + delayed * self.feedback.value();
         self.index = (self.index + 1) % self.buffer.len();
         output
@@ -729,6 +830,21 @@ fn compile_order(patch: &Patch) -> Result<Vec<usize>, CompileError> {
         outgoing[source].push(target);
         indegree[target] += 1;
     }
+    for (tap_index, (_, module)) in patch.modules().iter().enumerate() {
+        let Module::DelayTap(tap) = module else {
+            continue;
+        };
+        let Some(connection) = patch.connections().iter().find(|connection| {
+            connection.input.module == tap.delay() && connection.input.input == InputKind::Time
+        }) else {
+            continue;
+        };
+        let source = module_index(patch, connection.from)?;
+        if !outgoing[source].contains(&tap_index) {
+            outgoing[source].push(tap_index);
+            indegree[tap_index] += 1;
+        }
+    }
 
     let mut ready = indegree
         .iter()
@@ -781,6 +897,10 @@ fn create_node(
         Module::Constant(value) => Node::Constant(*value),
         Module::Absolute => Node::Absolute,
         Module::Pass => Node::Pass,
+        Module::Damp { coefficient } => Node::Damp {
+            coefficient: *coefficient,
+            value: 0.0,
+        },
         Module::Osc { wave, frequency } => Node::Osc {
             osc: Oscillator::new(*wave, rate, *frequency),
             frequency: *frequency,
@@ -810,6 +930,7 @@ fn create_node(
         Module::Delay { time, feedback } => {
             Node::Delay(Delay::new(rate, *time, *feedback).ok_or(CompileError::InvalidDelay)?)
         }
+        Module::DelayTap(_) => return Err(CompileError::InvalidInput),
         Module::VariableDelay { max_time } => {
             Node::VariableDelay(VariableDelay::new(rate, *max_time))
         }
@@ -934,6 +1055,55 @@ mod tests {
             CompiledPatch::new(&patch, rate),
             Err(CompileError::MissingOutput)
         );
+    }
+
+    #[test]
+    fn delay_tap_requires_a_delay_signal() {
+        let mut patch = Patch::new();
+        let signal = patch.insert(Module::Constant(Sample::ZERO));
+
+        assert_eq!(
+            patch.insert_delay_tap(signal, Unit::ONE),
+            Err(crate::patch::ConnectError::MissingModule)
+        );
+    }
+
+    #[test]
+    fn delay_tap_reads_and_scales_delay_output() {
+        let mut patch = Patch::new();
+        let signal = patch.insert(Module::Constant(Sample::new(1.0).unwrap()));
+        let delay = patch.insert(Module::Delay {
+            time: Duration::Samples(crate::time::Samples::new(2)),
+            feedback: Unit::ZERO,
+        });
+        let tap = patch
+            .insert_delay_tap(delay, Unit::new(0.5).unwrap())
+            .unwrap();
+        patch
+            .connect_input(signal, patch.input_port(delay, InputKind::In).unwrap())
+            .unwrap();
+        patch.output(tap).unwrap();
+        let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+
+        assert_eq!(compiled.next().left(), Sample::ZERO);
+        assert_eq!(compiled.next().left(), Sample::ZERO);
+        assert_eq!(compiled.next().left(), Sample::new(0.5).unwrap());
+    }
+
+    #[test]
+    fn routing_passes_are_elided_from_the_runtime_plan() {
+        let mut patch = Patch::new();
+        let source = patch.insert(Module::Constant(Sample::new(0.25).unwrap()));
+        let first = patch.insert(Module::Pass);
+        let second = patch.insert(Module::Pass);
+        patch.connect(source, first).unwrap();
+        patch.connect(first, second).unwrap();
+        patch.output(second).unwrap();
+
+        let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+
+        assert_eq!(compiled.nodes.len(), 1);
+        assert_eq!(compiled.next().left(), Sample::new(0.25).unwrap());
     }
 
     #[test]

@@ -459,6 +459,8 @@ fn grid_view<'a>(
             0,
             &hidden,
             preview.is_none_or(|preview| preview.copy),
+            view,
+            size,
         )
         .offset(inset_x - pixel_x, inset_y - pixel_y),
     ];
@@ -492,11 +494,15 @@ fn grid_content<'a>(
     id_offset: u64,
     hidden: &[ModuleId],
     show_selection: bool,
+    view: GridPos,
+    size: GridViewSize,
 ) -> View<'a, GuiState> {
     let (columns, rows) = state.grid_size();
-    let row_views = (0..rows)
+    let visible_x = visible_axis(view.x, size.columns(), columns);
+    let visible_y = visible_axis(view.y, size.rows(), rows);
+    let row_views = visible_y
         .map(|y| {
-            let cells = (0..columns)
+            let cells = visible_x.clone()
                 .map(|x| grid_cell(state, GridPos::new(x, y), id_offset, show_selection, app))
                 .collect::<Vec<_>>();
             row_spaced(GAP, cells).height(CELL)
@@ -506,9 +512,12 @@ fn grid_content<'a>(
     stack_aligned(
         Align::TopLeading,
         vec![
-            column_spaced(GAP, row_views),
-            connection_layer(state, app, id_offset, hidden),
-            module_layer(state, app, id_offset, hidden),
+            column_spaced(GAP, row_views).offset(
+                view.x as f32 * (CELL + GAP),
+                view.y as f32 * (CELL + GAP),
+            ),
+            connection_layer(state, app, id_offset, hidden, view, size),
+            module_layer(state, app, id_offset, hidden, view, size),
             rect(id_offset + 72_000)
                 .fill(Color::TRANSPARENT)
                 .stroke(Color::from_rgb8(248, 250, 252), Stroke::new(3.))
@@ -525,6 +534,10 @@ fn grid_content<'a>(
     .width(grid_span(columns))
     .height(grid_span(rows))
     .inert()
+}
+
+fn visible_axis(origin: u16, visible: u16, total: u16) -> std::ops::Range<u16> {
+    origin.min(total)..origin.saturating_add(visible).min(total)
 }
 
 #[derive(Clone, Copy)]
@@ -666,6 +679,8 @@ fn connection_layer<'a>(
     app: &mut PaneState,
     id_offset: u64,
     hidden: &[ModuleId],
+    view: GridPos,
+    size: GridViewSize,
 ) -> View<'a, GuiState> {
     let mut layers = Vec::new();
     let modules = state.grid_render_modules();
@@ -689,6 +704,17 @@ fn connection_layer<'a>(
         let Some(segment) = connection_segment(source, target, connection) else {
             continue;
         };
+        let left = view.x as f32 * (CELL + GAP);
+        let top = view.y as f32 * (CELL + GAP);
+        let right = left + grid_span(size.columns());
+        let bottom = top + grid_span(size.rows());
+        if segment.x + segment.width < left
+            || segment.x > right
+            || segment.y + segment.height < top
+            || segment.y > bottom
+        {
+            continue;
+        }
         layers.push(
             rect(id)
                 .fill(accent().with_alpha(0.62))
@@ -806,13 +832,20 @@ fn module_layer<'a>(
     app: &mut PaneState,
     id_offset: u64,
     hidden: &[ModuleId],
+    view: GridPos,
+    size: GridViewSize,
 ) -> View<'a, GuiState> {
+    let max = GridPos::new(
+        view.x.saturating_add(size.columns()),
+        view.y.saturating_add(size.rows()),
+    );
     stack_aligned(
         Align::TopLeading,
         state
             .grid_render_modules()
             .into_iter()
             .filter(|module| !hidden.contains(&module.module.id()))
+            .filter(|module| module_overlaps_rect(module, view, max))
             .map(|module| {
                 let position = module.module.position();
                 module_tile(id_offset + cell_id(position), &module, 1., app).offset(
@@ -4669,5 +4702,11 @@ mod tests {
             grid_position(Point::new(98., 68.), GridPos::new(0, 0), size, area),
             None
         );
+    }
+
+    #[test]
+    fn visible_axis_does_not_build_offscreen_cells() {
+        assert_eq!(visible_axis(240, 12, 400), 240..252);
+        assert_eq!(visible_axis(395, 12, 400), 395..400);
     }
 }

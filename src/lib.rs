@@ -17,4 +17,8 @@ pub mod time;
 pub mod track;
 pub mod voice;
 
+#[cfg(test)]
+#[allow(dead_code)]
+mod reverb;
+
 pub use scale::Scale;

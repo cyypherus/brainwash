@@ -34,7 +34,7 @@ pub enum InputKind {
     Feedback,
     Damp,
     Room,
-    Mix,
+    Mod,
     Diff,
     Drive,
     Asym,
@@ -93,6 +93,9 @@ pub enum Module {
     Constant(Sample),
     Absolute,
     Pass,
+    Damp {
+        coefficient: Unit,
+    },
     Osc {
         wave: Wave,
         frequency: Hertz,
@@ -129,6 +132,7 @@ pub enum Module {
         time: Duration,
         feedback: Unit,
     },
+    DelayTap(DelayTap),
     VariableDelay {
         max_time: Duration,
     },
@@ -196,6 +200,12 @@ pub struct CompositionInput {
     module: ModuleId,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DelayTap {
+    delay: ModuleId,
+    gain: Unit,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompositionError {
     Cycle,
@@ -224,6 +234,17 @@ impl Patch {
         self.next_id += 1;
         self.modules.push((id, module));
         id
+    }
+
+    pub fn insert_delay_tap(
+        &mut self,
+        delay: ModuleId,
+        gain: Unit,
+    ) -> Result<ModuleId, ConnectError> {
+        if !matches!(self.module(delay), Some(Module::Delay { .. })) {
+            return Err(ConnectError::MissingModule);
+        }
+        Ok(self.insert(Module::DelayTap(DelayTap { delay, gain })))
     }
 
     pub fn connect(&mut self, from: ModuleId, to: ModuleId) -> Result<(), ConnectError> {
@@ -295,6 +316,10 @@ impl Patch {
         self.modules
             .iter()
             .find_map(|(module_id, module)| (*module_id == id).then_some(module))
+    }
+
+    pub(crate) fn module_by_id(&self, id: ModuleId) -> Option<&Module> {
+        self.module(id)
     }
 
     pub(crate) fn modules(&self) -> &[(ModuleId, Module)] {
@@ -451,6 +476,16 @@ impl CompositionInput {
     }
 }
 
+impl DelayTap {
+    pub fn delay(self) -> ModuleId {
+        self.delay
+    }
+
+    pub fn gain(self) -> Unit {
+        self.gain
+    }
+}
+
 impl Module {
     pub fn input_kinds(&self) -> Vec<InputKind> {
         match self {
@@ -461,6 +496,7 @@ impl Module {
             | Module::DegreeGate { .. }
             | Module::Constant(_) => vec![],
             Module::Absolute => vec![InputKind::In],
+            Module::Damp { .. } => vec![InputKind::In, InputKind::Damp],
             Module::Random => vec![InputKind::Gate],
             Module::Pass | Module::Probe => vec![InputKind::In],
             Module::Rise { .. } | Module::Fall { .. } => vec![InputKind::Gate, InputKind::Time],
@@ -477,6 +513,7 @@ impl Module {
             ],
             Module::Allpass { .. } => vec![InputKind::In, InputKind::Time, InputKind::Feedback],
             Module::Delay { .. } => vec![InputKind::In, InputKind::Time],
+            Module::DelayTap(_) => vec![],
             Module::VariableDelay { .. } => {
                 vec![InputKind::In, InputKind::Time, InputKind::Feedback]
             }
