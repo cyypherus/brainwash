@@ -559,6 +559,7 @@ dependencies = [
  "brainwash-grid",
  "cpal",
  "haven-ui",
+ "hound",
  "rfd",
  "rtrb",
 ]

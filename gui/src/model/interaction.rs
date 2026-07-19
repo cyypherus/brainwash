@@ -505,6 +505,9 @@ impl GuiState {
             GuiAction::OpenModules => {
                 self.open_modules_requested = true;
             }
+            GuiAction::SaveModule => {
+                self.save_module_requested = self.instrument().editing_composition.is_some();
+            }
             GuiAction::TrackSettings => {
                 self.mode = Mode::TrackSettings { parameter: 0 };
             }
@@ -728,6 +731,7 @@ impl GuiState {
             | GuiAction::ToggleMeters
             | GuiAction::Quit
             | GuiAction::OpenModules
+            | GuiAction::SaveModule
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
@@ -865,6 +869,7 @@ impl GuiState {
             | GuiAction::Palette(_)
             | GuiAction::Quit
             | GuiAction::OpenModules
+            | GuiAction::SaveModule
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
@@ -981,6 +986,7 @@ impl GuiState {
             | GuiAction::Palette(_)
             | GuiAction::Quit
             | GuiAction::OpenModules
+            | GuiAction::SaveModule
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
@@ -1205,6 +1211,7 @@ impl GuiState {
             | GuiAction::Instrument(_)
             | GuiAction::Quit
             | GuiAction::OpenModules
+            | GuiAction::SaveModule
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
@@ -1367,6 +1374,7 @@ impl GuiState {
             | GuiAction::ToggleMeters
             | GuiAction::Quit
             | GuiAction::OpenModules
+            | GuiAction::SaveModule
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
@@ -1561,6 +1569,7 @@ impl GuiState {
             | GuiAction::Palette(_)
             | GuiAction::Quit
             | GuiAction::OpenModules
+            | GuiAction::SaveModule
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
@@ -1886,6 +1895,7 @@ impl GuiState {
             | GuiAction::Palette(_)
             | GuiAction::Quit
             | GuiAction::OpenModules
+            | GuiAction::SaveModule
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
@@ -2022,6 +2032,7 @@ impl GuiState {
             | GuiAction::Palette(_)
             | GuiAction::Quit
             | GuiAction::OpenModules
+            | GuiAction::SaveModule
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load
@@ -2209,6 +2220,7 @@ impl GuiState {
             | GuiAction::Palette(_)
             | GuiAction::Quit
             | GuiAction::OpenModules
+            | GuiAction::SaveModule
             | GuiAction::Save
             | GuiAction::SaveAs
             | GuiAction::Load

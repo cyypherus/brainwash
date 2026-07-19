@@ -287,24 +287,13 @@ fn project_params(
             points: points.iter().map(project_env_point).collect(),
             connected: connected_mask(&[(0, phase.connected)]),
         },
-        ModuleBody::Lowpass {
-            input,
-            frequency,
-            q,
+        ModuleBody::Lowpass { input, frequency } | ModuleBody::Highpass { input, frequency } => {
+            ProjectModuleParams::Filter {
+                freq: project_float(*frequency),
+                q: 0.7,
+                connected: connected_mask(&[(0, input.connected), (1, frequency.connected)]),
+            }
         }
-        | ModuleBody::Highpass {
-            input,
-            frequency,
-            q,
-        } => ProjectModuleParams::Filter {
-            freq: project_float(*frequency),
-            q: project_float(*q),
-            connected: connected_mask(&[
-                (0, input.connected),
-                (1, frequency.connected),
-                (2, q.connected),
-            ]),
-        },
         ModuleBody::Comb {
             input,
             time,
@@ -383,12 +372,13 @@ fn project_params(
         }
         ModuleBody::Sample {
             file_name,
+            samples,
             position,
             ..
         } => ProjectModuleParams::Sample {
             file_idx: 0,
             file_name: file_name.clone(),
-            samples: Arc::new(Vec::new()),
+            samples: Arc::new(samples.iter().map(|sample| sample.value()).collect()),
             connected: connected_mask(&[(1, position.connected)]),
         },
         ModuleBody::Probe { input } => ProjectModuleParams::Probe {
@@ -695,9 +685,10 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             }
             apply_connected(&mut parameters, *connected);
         }
-        ProjectModuleParams::Filter { freq, q, connected } => {
+        ProjectModuleParams::Filter {
+            freq, connected, ..
+        } => {
             set_float(&mut parameters, 1, *freq);
-            set_float(&mut parameters, 2, *q);
             apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Comb {
@@ -739,17 +730,25 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
         }
         ProjectModuleParams::Sample {
             file_name,
+            samples,
             connected,
             ..
         } => {
             if let ModuleBody::Sample {
                 file_name: target,
                 file_missing,
+                samples: target_samples,
                 ..
             } = &mut module.body
             {
                 *target = file_name.clone();
                 *file_missing = false;
+                *target_samples = Arc::new(
+                    samples
+                        .iter()
+                        .filter_map(|sample| AudioSample::new(*sample))
+                        .collect(),
+                );
             }
             apply_connected(&mut parameters, *connected);
         }

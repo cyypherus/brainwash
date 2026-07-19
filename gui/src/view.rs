@@ -1,6 +1,6 @@
 use crate::model::{
     EnvPointerPhase, GridPointerPhase, GridPos, GridRenderModule, GridViewSize, GuiAction,
-    GuiState, Mode, ModuleCategory, ModuleId, ModuleKind, Orientation, PaletteModule,
+    GuiState, Mode, Module, ModuleCategory, ModuleId, ModuleKind, Orientation, PaletteModule,
     ParameterValue,
 };
 use brainwash_grid::bounded_delta;
@@ -111,71 +111,79 @@ fn binding_surface(
 }
 
 fn toolbar<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
-    row_spaced_aligned(
-        PANEL_GAP,
-        Align::TopLeading,
-        vec![
-            action_button(
-                binding!(state.play_button),
-                if state.playing() { "Pause" } else { "Play" },
-                GuiAction::TogglePlay,
-                state.playing(),
-                app,
-            )
-            .width(50.),
-            action_button(
-                binding!(state.meters_button),
-                "Meters",
-                GuiAction::ToggleMeters,
-                state.show_meters(),
-                app,
+    let mut actions = vec![
+        action_button(
+            binding!(state.play_button),
+            if state.playing() { "Pause" } else { "Play" },
+            GuiAction::TogglePlay,
+            state.playing(),
+            app,
+        )
+        .width(50.),
+        action_button(
+            binding!(state.meters_button),
+            "Meters",
+            GuiAction::ToggleMeters,
+            state.show_meters(),
+            app,
+        ),
+        action_button(
+            binding!(state.load_button),
+            "Open",
+            GuiAction::Load,
+            false,
+            app,
+        ),
+        action_button(
+            binding!(state.save_button),
+            "Save",
+            GuiAction::Save,
+            false,
+            app,
+        ),
+    ];
+    if state.composition_depth() > 0 && matches!(state.mode(), Mode::Normal) {
+        actions.push(action_button(
+            binding!(state.save_module_button),
+            "Save Module",
+            GuiAction::SaveModule,
+            false,
+            app,
+        ));
+    }
+    actions.extend([
+        action_button(
+            binding!(state.export_button),
+            "Export",
+            GuiAction::Export,
+            false,
+            app,
+        ),
+        action_button(
+            binding!(state.modules_button),
+            "Modules",
+            GuiAction::OpenModules,
+            false,
+            app,
+        ),
+        action_button(
+            binding!(state.track_button),
+            "Track",
+            GuiAction::TrackEdit,
+            false,
+            app,
+        ),
+        status_chip(
+            format!(
+                "{} / {}",
+                state.active_instrument() + 1,
+                state.instrument_count()
             ),
-            action_button(
-                binding!(state.load_button),
-                "Open",
-                GuiAction::Load,
-                false,
-                app,
-            ),
-            action_button(
-                binding!(state.save_button),
-                "Save",
-                GuiAction::Save,
-                false,
-                app,
-            ),
-            action_button(
-                binding!(state.export_button),
-                "Export",
-                GuiAction::Export,
-                false,
-                app,
-            ),
-            action_button(
-                binding!(state.modules_button),
-                "Modules",
-                GuiAction::OpenModules,
-                false,
-                app,
-            ),
-            action_button(
-                binding!(state.track_button),
-                "Track",
-                GuiAction::TrackEdit,
-                false,
-                app,
-            ),
-            status_chip(
-                format!(
-                    "{} / {}",
-                    state.active_instrument() + 1,
-                    state.instrument_count()
-                ),
-                panel(),
-                app,
-            ),
-        ],
-    )
+            panel(),
+            app,
+        ),
+    ]);
+    row_spaced_aligned(PANEL_GAP, Align::TopLeading, actions)
 }
 
 fn document_bar<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
@@ -926,7 +934,7 @@ fn edit_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState
                                 .build(app)
                         })
                         .label(|_, app| {
-                            text(3_202, "Relink sample")
+                            text(3_202, "Choose sample")
                                 .font_size(12)
                                 .fill(fg())
                                 .view()
@@ -964,7 +972,7 @@ fn edit_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState
         }
         (Mode::SampleView { zoom, offset, .. }, Some(module)) => {
             rows.push(editor_header(500, module.label(), "Sample window", app));
-            rows.push(sample_editor(zoom, offset, app));
+            rows.push(sample_editor(module, zoom, offset, app));
         }
         _ => {
             rows.push(
@@ -1497,32 +1505,24 @@ fn probe_editor<'a>(history: Vec<f32>, len: u32, app: &mut PaneState) -> View<'a
     ])
 }
 
-fn sample_editor<'a>(zoom: u16, offset: u16, app: &mut PaneState) -> View<'a, GuiState> {
-    let visible = (100 / zoom.max(1)).max(1) as f32 / 100.;
-    let start = offset as f32 / 100.;
+fn sample_editor<'a>(
+    module: &Module,
+    zoom: u16,
+    offset: u16,
+    app: &mut PaneState,
+) -> View<'a, GuiState> {
+    let (waveform, start, visible) = module.sample_waveform(zoom, offset);
     stack(vec![
         rect(920)
             .fill(field())
             .stroke(line(), Stroke::new(1.))
             .corner_rounding(6.)
             .build(app),
-        row_spaced(
-            4.,
-            (0..24)
-                .map(|index| {
-                    let height = 14. + ((index * 37) % 48) as f32;
-                    rect(930 + index as u64)
-                        .fill(Color::from_rgb8(80, 125, 202))
-                        .corner_rounding(3.)
-                        .build(app)
-                        .width(7.)
-                        .height(height)
-                        .align(Align::Bottom)
-                })
-                .collect(),
-        )
-        .pad_x(16.)
-        .pad_y(16.),
+        path(921, move |area| sample_path(area, &waveform))
+            .stroke(Color::from_rgb8(96, 160, 235), Stroke::new(1.5))
+            .build(app)
+            .pad_x(16.)
+            .pad_y(16.),
         column_spaced(
             6.,
             vec![
@@ -1539,6 +1539,26 @@ fn sample_editor<'a>(zoom: u16, offset: u16, app: &mut PaneState) -> View<'a, Gu
         )
         .pad(10.),
     ])
+}
+
+fn sample_path(area: Area, samples: &[f32]) -> BezPath {
+    let mut path = BezPath::new();
+    if samples.is_empty() {
+        let y = area.y + area.height * 0.5;
+        path.move_to((area.x as f64, y as f64));
+        path.line_to(((area.x + area.width) as f64, y as f64));
+        return path;
+    }
+    for (index, sample) in samples.iter().copied().enumerate() {
+        let x = area.x + index as f32 / (samples.len() - 1).max(1) as f32 * area.width;
+        let y = area.y + (1.0 - (sample.clamp(-1.0, 1.0) + 1.0) * 0.5) * area.height;
+        if index == 0 {
+            path.move_to((x as f64, y as f64));
+        } else {
+            path.line_to((x as f64, y as f64));
+        }
+    }
+    path
 }
 
 fn meter_bar<'a>(
@@ -2680,6 +2700,7 @@ fn binding_group(binding: &KeyBinding) -> u8 {
             | GuiAction::Load
             | GuiAction::Export
             | GuiAction::OpenModules
+            | GuiAction::SaveModule
             | GuiAction::Quit,
         ) => 3,
         BindingEffect::Action(
@@ -4595,6 +4616,7 @@ fn action_id(action: GuiAction) -> u64 {
         GuiAction::SaveAs => 61,
         GuiAction::Export => 62,
         GuiAction::OpenModules => 72,
+        GuiAction::SaveModule => 73,
         GuiAction::TrackSettings => 67,
         GuiAction::TrackEdit => 68,
         GuiAction::Search => 69,
@@ -4798,5 +4820,14 @@ mod tests {
     fn visible_axis_does_not_build_offscreen_cells() {
         assert_eq!(visible_axis(240, 12, 400), 240..252);
         assert_eq!(visible_axis(395, 12, 400), 395..400);
+    }
+
+    #[test]
+    fn sample_path_reflects_loaded_amplitudes() {
+        let area = Area::new(0., 0., 100., 100.);
+        assert_ne!(
+            sample_path(area, &[-1.0, 1.0]),
+            sample_path(area, &[1.0, -1.0])
+        );
     }
 }

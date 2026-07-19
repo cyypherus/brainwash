@@ -101,6 +101,7 @@ pub enum GuiAction {
     Load,
     Export,
     OpenModules,
+    SaveModule,
     TrackSettings,
     TrackEdit,
     Search,
@@ -375,12 +376,10 @@ enum ModuleBody {
     Lowpass {
         input: FloatParam,
         frequency: FloatParam,
-        q: FloatParam,
     },
     Highpass {
         input: FloatParam,
         frequency: FloatParam,
-        q: FloatParam,
     },
     Comb {
         input: FloatParam,
@@ -455,6 +454,7 @@ enum ModuleBody {
     Sample {
         file_name: String,
         file_missing: bool,
+        samples: Arc<Vec<AudioSample>>,
         position: InputParam,
     },
     Probe {
@@ -699,22 +699,55 @@ fn mark_missing_sample(module: &mut Module, base: &Path, missing: &mut Vec<Strin
     let ModuleBody::Sample {
         file_name,
         file_missing,
+        samples,
         ..
     } = &mut module.body
     else {
         return;
     };
     let path = Path::new(file_name);
-    *file_missing = file_name != "none"
-        && !(if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            base.join(path)
-        })
-        .is_file();
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    };
+    if file_name == "none" {
+        *file_missing = false;
+        *samples = Arc::new(Vec::new());
+    } else if let Ok(loaded) = load_sample(&path) {
+        *file_missing = false;
+        *samples = loaded;
+    } else {
+        *file_missing = true;
+        *samples = Arc::new(Vec::new());
+    }
     if *file_missing && !missing.contains(file_name) {
         missing.push(file_name.clone());
     }
+}
+
+fn load_sample(path: &Path) -> Result<Arc<Vec<AudioSample>>, hound::Error> {
+    let mut reader = hound::WavReader::open(path)?;
+    let channels = usize::from(reader.spec().channels);
+    let values = match reader.spec().sample_format {
+        hound::SampleFormat::Float => reader
+            .samples::<f32>()
+            .map(|sample| sample.map(|value| value.clamp(-1.0, 1.0)))
+            .collect::<Result<Vec<_>, _>>()?,
+        hound::SampleFormat::Int => {
+            let scale = 2_f32.powi(i32::from(reader.spec().bits_per_sample) - 1);
+            reader
+                .samples::<i32>()
+                .map(|sample| sample.map(|value| (value as f32 / scale).clamp(-1.0, 1.0)))
+                .collect::<Result<Vec<_>, _>>()?
+        }
+    };
+    Ok(Arc::new(
+        values
+            .chunks(channels)
+            .map(|frame| AudioSample::new(frame.iter().sum::<f32>() / frame.len() as f32).unwrap())
+            .collect(),
+    ))
 }
 
 fn mark_missing_samples_in_surface(
@@ -827,6 +860,7 @@ pub struct GuiState {
     relink_sample_request: Option<ModuleId>,
     export_loops: u16,
     open_modules_requested: bool,
+    save_module_requested: bool,
     user_compositions: Vec<brainwash::patch::Composition>,
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
@@ -836,6 +870,7 @@ pub struct GuiState {
     pub(crate) save_button: ButtonState,
     pub(crate) export_button: ButtonState,
     pub(crate) modules_button: ButtonState,
+    pub(crate) save_module_button: ButtonState,
     pub(crate) track_button: ButtonState,
     pub(crate) cancel_button: ButtonState,
     pub(crate) confirm_button: ButtonState,
@@ -1055,7 +1090,7 @@ impl ModuleKind {
                 semitones: float_param(-2400, 2400, 100, 0),
             },
             ModuleKind::Osc => ModuleBody::Osc {
-                wave: enum_param(&["sin", "square", "tri", "saw", "rsaw", "noise"], 0),
+                wave: enum_param(&["sin", "square", "tri", "saw", "noise"], 0),
                 frequency: float_param(1, 200_000, 100, 44_000),
             },
             ModuleKind::Rise => ModuleBody::Rise {
@@ -1094,12 +1129,10 @@ impl ModuleKind {
             ModuleKind::Lowpass => ModuleBody::Lowpass {
                 input: float_param(-100, 100, 1, 0),
                 frequency: float_param(0, 99, 1, 25),
-                q: float_param(10, 1000, 10, 70),
             },
             ModuleKind::Highpass => ModuleBody::Highpass {
                 input: float_param(-100, 100, 1, 0),
                 frequency: float_param(0, 100, 1, 25),
-                q: float_param(10, 1000, 10, 70),
             },
             ModuleKind::Comb => ModuleBody::Comb {
                 input: float_param(-100, 100, 1, 0),
@@ -1121,7 +1154,7 @@ impl ModuleKind {
                     selected: None,
                     options: Vec::new(),
                 },
-                gain: float_param(0, 70, 5, 50),
+                gain: float_param(0, 100, 5, 50),
             },
             ModuleKind::Reverb => ModuleBody::Reverb {
                 input: float_param(-100, 100, 1, 0),
@@ -1132,7 +1165,7 @@ impl ModuleKind {
             },
             ModuleKind::Distortion => ModuleBody::Distortion {
                 input: float_param(-100, 100, 1, 0),
-                kind: enum_param(&["tube", "tape", "fuzz", "fold", "clip"], 0),
+                kind: enum_param(&["soft", "fold", "clip"], 0),
                 drive: float_param(10, 2000, 10, 200),
                 asymmetry: float_param(-100, 100, 5, 0),
             },
@@ -1151,8 +1184,8 @@ impl ModuleKind {
                 feedback: float_param(0, 95, 5, 35),
             },
             ModuleKind::Multiply => ModuleBody::Multiply {
-                a: float_param(0, 10_000, 5, 100),
-                b: float_param(0, 10_000, 5, 100),
+                a: float_param(-100_000, 100_000, 5, 100),
+                b: float_param(-100_000, 100_000, 5, 100),
             },
             ModuleKind::Add => ModuleBody::Add {
                 a: float_param(-100_000, 100_000, 5, 0),
@@ -1177,6 +1210,7 @@ impl ModuleKind {
             ModuleKind::Sample => ModuleBody::Sample {
                 file_name: "none".to_string(),
                 file_missing: false,
+                samples: Arc::new(Vec::new()),
                 position: input_param(),
             },
             ModuleKind::Probe => ModuleBody::Probe {
@@ -1388,19 +1422,10 @@ impl ModuleBody {
                 float_parameter("Sus", *sustain),
             ],
             ModuleBody::Envelope { phase, .. } => vec![float_parameter("Phase", *phase)],
-            ModuleBody::Lowpass {
-                input,
-                frequency,
-                q,
-            }
-            | ModuleBody::Highpass {
-                input,
-                frequency,
-                q,
-            } => vec![
+            ModuleBody::Lowpass { input, frequency }
+            | ModuleBody::Highpass { input, frequency } => vec![
                 float_parameter("In", *input),
                 float_parameter("Freq", *frequency),
-                float_parameter("Q", *q),
             ],
             ModuleBody::Comb {
                 input,
@@ -1497,6 +1522,7 @@ impl ModuleBody {
                 file_name,
                 file_missing,
                 position,
+                ..
             } => {
                 vec![
                     file_parameter("File", file_name, *file_missing),
@@ -1705,19 +1731,10 @@ impl ModuleBody {
                     || set_float_param(sustain, index, 3, &parameter)
             }
             ModuleBody::Envelope { phase, .. } => set_float_param(phase, index, 0, &parameter),
-            ModuleBody::Lowpass {
-                input,
-                frequency,
-                q,
-            }
-            | ModuleBody::Highpass {
-                input,
-                frequency,
-                q,
-            } => {
+            ModuleBody::Lowpass { input, frequency }
+            | ModuleBody::Highpass { input, frequency } => {
                 set_float_param(input, index, 0, &parameter)
                     || set_float_param(frequency, index, 1, &parameter)
-                    || set_float_param(q, index, 2, &parameter)
             }
             ModuleBody::Comb {
                 input,
@@ -2092,6 +2109,29 @@ impl Module {
         self.body.env_points()
     }
 
+    pub(crate) fn sample_waveform(&self, zoom: u16, offset: u16) -> (Vec<f32>, f32, f32) {
+        let ModuleBody::Sample { samples, .. } = &self.body else {
+            return (Vec::new(), 0.0, 1.0);
+        };
+        let visible = 1.0 / zoom.max(1) as f32;
+        let start = offset as f32 / 100.0 * (1.0 - visible);
+        let first = (start * samples.len() as f32) as usize;
+        let end = ((start + visible) * samples.len() as f32).ceil() as usize;
+        let end = end.min(samples.len());
+        let window = &samples[first.min(end)..end];
+        let stride = window.len().div_ceil(512).max(1);
+        (
+            window
+                .chunks(stride)
+                .map(|chunk| {
+                    chunk.iter().map(|sample| sample.value()).sum::<f32>() / chunk.len() as f32
+                })
+                .collect(),
+            start,
+            visible,
+        )
+    }
+
     pub fn disabled(&self) -> bool {
         self.disabled
     }
@@ -2423,6 +2463,20 @@ fn composition_surface(surface: &PatchSurface, owner: ModuleId) -> Option<&Patch
     None
 }
 
+fn find_module(surface: &PatchSurface, id: ModuleId) -> Option<&Module> {
+    for module in &surface.modules {
+        if module.id == id {
+            return Some(module);
+        }
+        if let Some(surface) = module.composition_surface()
+            && let Some(module) = find_module(surface, id)
+        {
+            return Some(module);
+        }
+    }
+    None
+}
+
 fn composition_surface_mut(
     surface: &mut PatchSurface,
     owner: ModuleId,
@@ -2619,6 +2673,7 @@ impl GuiState {
             relink_sample_request: None,
             export_loops: 1,
             open_modules_requested: false,
+            save_module_requested: false,
             user_compositions: Vec::new(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -2628,6 +2683,7 @@ impl GuiState {
             save_button: ButtonState::default(),
             export_button: ButtonState::default(),
             modules_button: ButtonState::default(),
+            save_module_button: ButtonState::default(),
             track_button: ButtonState::default(),
             cancel_button: ButtonState::default(),
             confirm_button: ButtonState::default(),
@@ -2830,6 +2886,27 @@ impl GuiState {
         std::mem::take(&mut self.open_modules_requested)
     }
 
+    pub fn take_save_module_request(
+        &mut self,
+    ) -> Option<Result<brainwash::patch::Composition, String>> {
+        if !std::mem::take(&mut self.save_module_requested) {
+            return None;
+        }
+        let Some(owner) = self.instrument().editing_composition else {
+            return Some(Err("not editing a composition".to_string()));
+        };
+        let Some(module) = find_module(&self.instrument().root, owner) else {
+            return Some(Err("composition is missing".to_string()));
+        };
+        let graph =
+            audio_patch::gui_composition(self, module, SampleRate::new(44_100).unwrap(), self.bpm)
+                .map_err(|error| format!("{error:?}"));
+        Some(graph.and_then(|graph| match graph {
+            AudioModule::Composition(composition) => Ok(*composition),
+            _ => Err("module is not a composition".to_string()),
+        }))
+    }
+
     pub fn take_relink_sample_request(&mut self) -> Option<ModuleId> {
         self.relink_sample_request.take()
     }
@@ -2878,6 +2955,13 @@ impl GuiState {
         self.user_compositions = compositions;
     }
 
+    pub fn report_module_save(&mut self, result: Result<&Path, &str>) {
+        self.document_status = match result {
+            Ok(path) => format!("Saved module {}", path.display()),
+            Err(error) => format!("Module save failed: {error}"),
+        };
+    }
+
     pub fn palette_modules(&self) -> Vec<PaletteModule> {
         self.palette_modules_for(self.palette_category)
     }
@@ -2887,6 +2971,12 @@ impl GuiState {
             .iter()
             .copied()
             .filter(|kind| kind.category() == category)
+            .filter(|kind| {
+                !matches!(
+                    kind,
+                    ModuleKind::CompositionInput | ModuleKind::CompositionOutput
+                ) || self.composition_depth() > 0
+            })
             .map(|kind| PaletteModule {
                 kind,
                 name: kind.label().to_string(),
@@ -3607,6 +3697,10 @@ impl GuiState {
     }
 
     pub fn relink_sample(&mut self, module: ModuleId, path: &Path) -> bool {
+        let Ok(loaded) = load_sample(path) else {
+            self.document_status = format!("Could not read sample {}", path.display());
+            return false;
+        };
         let before = self.snapshot();
         let changed = {
             let Some(module) = self
@@ -3621,6 +3715,7 @@ impl GuiState {
             let ModuleBody::Sample {
                 file_name,
                 file_missing,
+                samples,
                 ..
             } = &mut module.body
             else {
@@ -3628,6 +3723,7 @@ impl GuiState {
             };
             *file_name = path.to_string_lossy().into_owned();
             *file_missing = false;
+            *samples = loaded;
             true
         };
         if changed {
@@ -3964,6 +4060,91 @@ mod tests {
     }
 
     #[test]
+    fn composition_ports_only_appear_inside_compositions() {
+        let mut state = GuiState::new(8, 8);
+        state.palette_category = ModuleCategory::Composition;
+        assert!(state.palette_modules().iter().all(|module| !matches!(
+            module.kind(),
+            ModuleKind::CompositionInput | ModuleKind::CompositionOutput
+        )));
+
+        state.instrument_mut().root.modules.push(Module {
+            id: ModuleId::new(1),
+            position: GridPos::new(0, 0),
+            orientation: Orientation::Right,
+            body: ModuleKind::Composition.default_body(),
+            disabled: false,
+        });
+        state.instrument_mut().editing_composition = Some(ModuleId::new(1));
+        let kinds = state
+            .palette_modules()
+            .into_iter()
+            .map(|module| module.kind())
+            .collect::<Vec<_>>();
+        assert!(kinds.contains(&ModuleKind::CompositionInput));
+        assert!(kinds.contains(&ModuleKind::CompositionOutput));
+    }
+
+    #[test]
+    fn sample_audio_mapping_keeps_loaded_samples() {
+        let expected = AudioSample::new(0.25).unwrap();
+        let module = Module {
+            id: ModuleId::new(0),
+            position: GridPos::new(0, 0),
+            orientation: Orientation::Right,
+            body: ModuleBody::Sample {
+                file_name: "sample.wav".to_string(),
+                file_missing: false,
+                samples: Arc::new(vec![expected]),
+                position: input_param(),
+            },
+            disabled: false,
+        };
+        let AudioModule::Sample { samples } =
+            audio_module(&module, SampleRate::new(44_100).unwrap(), 120).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(samples.as_slice(), &[expected]);
+    }
+
+    #[test]
+    fn relinking_sample_decodes_wav_audio() {
+        let path = std::env::temp_dir().join(format!(
+            "brainwash-sample-{}.wav",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        writer.write_sample(i16::MAX).unwrap();
+        writer.finalize().unwrap();
+
+        let mut state = GuiState::new(8, 8);
+        state.instrument_mut().root.modules.push(Module {
+            id: ModuleId::new(1),
+            position: GridPos::new(0, 0),
+            orientation: Orientation::Right,
+            body: ModuleKind::Sample.default_body(),
+            disabled: false,
+        });
+        assert!(state.relink_sample(ModuleId::new(1), &path));
+        let ModuleBody::Sample { samples, .. } = &state.instrument().root.modules[0].body else {
+            panic!()
+        };
+        assert_eq!(samples.len(), 1);
+        assert!(samples[0].value() > 0.99);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn delay_tap_audio_mapping_references_delay_state() {
         let delay = Module {
             id: ModuleId::new(1),
@@ -4132,6 +4313,40 @@ mod tests {
 
         assert_eq!(state.modules()[0].label(), "My Module");
         assert!(state.modules()[0].composition_surface().is_some());
+    }
+
+    #[test]
+    fn edited_composition_can_be_exported_as_a_module() {
+        let mut patch = Patch::new();
+        let input = patch.insert(AudioModule::Input {
+            kind: AudioInputKind::In,
+            default: AudioSample::ZERO,
+        });
+        let output = patch.output_port(input, 0).unwrap();
+        patch.output(output).unwrap();
+        let composition = brainwash::patch::Composition::new(
+            "My Module",
+            patch,
+            [("Signal".to_string(), AudioInputKind::In, input)],
+            [("Output".to_string(), output)],
+        )
+        .unwrap();
+        let mut state = GuiState::new(16, 16);
+        state.set_user_compositions(vec![composition]);
+        state.palette_category = ModuleCategory::Composition;
+        let choice = state
+            .palette_modules()
+            .into_iter()
+            .find(|module| module.label() == "My Module")
+            .unwrap();
+        state.insert_palette_module(choice);
+        state.apply(GuiAction::EditComposition);
+        state.apply(GuiAction::SaveModule);
+
+        let saved = state.take_save_module_request().unwrap().unwrap();
+        assert_eq!(saved.name(), "My Module");
+        assert_eq!(saved.inputs().len(), 1);
+        assert_eq!(saved.outputs().len(), 1);
     }
 
     #[test]

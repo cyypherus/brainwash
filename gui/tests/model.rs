@@ -1036,6 +1036,25 @@ fn haven_palette_lays_out_categories_horizontally_and_modules_vertically() {
 }
 
 #[test]
+fn haven_save_module_button_only_renders_inside_a_composition() {
+    let mut state = GuiState::new(8, 8);
+    let mut pane = PaneBuilder::new("main", main_view).build();
+    pane.redraw(&mut state, 760, 560, 1.0);
+    let save = pane.location(3_060).unwrap();
+    let export = pane.location(3_062).unwrap();
+    pane.click(&mut state, Point::new((save.x + export.x) * 0.5, save.y));
+    assert!(state.take_save_module_request().is_none());
+
+    place_module_kind(&mut state, ModuleKind::Composition);
+    state.apply(GuiAction::EditComposition);
+    pane.redraw(&mut state, 760, 560, 1.0);
+    let save = pane.location(3_060).unwrap();
+    let export = pane.location(3_062).unwrap();
+    pane.click(&mut state, Point::new((save.x + export.x) * 0.5, save.y));
+    assert!(state.take_save_module_request().is_some());
+}
+
+#[test]
 fn haven_palette_background_stays_top_aligned_when_switching_tabs() {
     let panel_area = |pane: &Pane<GuiState>, frame: &Frame| {
         let center = pane.location(200).unwrap();
@@ -3044,7 +3063,18 @@ fn loading_restores_sample_path_and_relink_clears_missing_state() {
     assert!(state.document_status().contains("missing sample files"));
 
     let relinked = project_path("relinked-sample");
-    fs::write(&relinked, b"sample").unwrap();
+    let mut writer = hound::WavWriter::create(
+        &relinked,
+        hound::WavSpec {
+            channels: 1,
+            sample_rate: 44_100,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        },
+    )
+    .unwrap();
+    writer.write_sample(0_i16).unwrap();
+    writer.finalize().unwrap();
     let module = state.modules()[0].id();
     assert!(state.relink_sample(module, &relinked));
     assert_eq!(

@@ -83,10 +83,50 @@ fn frame(state: &mut GuiState, app: &mut PaneState) {
         }
         return;
     }
+    if let Some(composition) = state.take_save_module_request() {
+        let composition = match composition {
+            Ok(composition) => composition,
+            Err(error) => {
+                state.report_module_save(Err(&error));
+                app.redraw();
+                return;
+            }
+        };
+        let Some(directory) = user_modules_dir() else {
+            state.report_module_save(Err("modules directory unavailable"));
+            return;
+        };
+        let name = composition
+            .name()
+            .chars()
+            .map(|character| {
+                if character.is_alphanumeric() || matches!(character, ' ' | '-' | '_') {
+                    character
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>();
+        let path = directory.join(format!("{name}.bwm"));
+        match std::fs::create_dir_all(&directory)
+            .map_err(|error| error.to_string())
+            .and_then(|()| {
+                brainwash::persist::save_composition(&path, &composition)
+                    .map_err(|error| format!("{error:?}"))
+            }) {
+            Ok(()) => {
+                state.set_user_compositions(load_modules(&directory));
+                state.report_module_save(Ok(&path));
+            }
+            Err(error) => state.report_module_save(Err(&error)),
+        }
+        app.redraw();
+        return;
+    }
     if let Some(module) = state.take_relink_sample_request() {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("WAV audio", &["wav", "wave"])
-            .set_title("Relink Sample")
+            .set_title("Choose Sample")
             .pick_file()
         {
             state.relink_sample(module, &path);

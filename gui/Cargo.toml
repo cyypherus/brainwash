@@ -9,6 +9,7 @@ brainwash = { path = ".." }
 brainwash-grid = { path = "../grid" }
 cpal = "0.15"
 haven = { package = "haven-ui", path = "../../haven", default-features = false, features = ["renderer-skia"] }
+hound = "3.5"
 rfd = "0.15"
 rtrb = "0.3.4"
 

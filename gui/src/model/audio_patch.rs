@@ -671,9 +671,14 @@ pub(super) fn audio_module(
             b: audio_sample(module, 2)?,
         }),
         ModuleKind::Random => Ok(AudioModule::Random),
-        ModuleKind::Sample => Ok(AudioModule::Sample {
-            samples: Arc::new(Vec::new()),
-        }),
+        ModuleKind::Sample => {
+            let ModuleBody::Sample { samples, .. } = &module.body else {
+                unreachable!();
+            };
+            Ok(AudioModule::Sample {
+                samples: Arc::clone(samples),
+            })
+        }
         ModuleKind::Probe => Ok(AudioModule::Probe),
         ModuleKind::RightJoin | ModuleKind::DownJoin => Ok(AudioModule::Binary {
             op: BinaryOp::Add,
@@ -784,8 +789,8 @@ fn audio_wave(module: &Module) -> Result<Wave, AudioPatchError> {
         0 => Ok(Wave::Sine),
         1 => Ok(Wave::Square),
         2 => Ok(Wave::Triangle),
-        3 | 4 => Ok(Wave::Saw),
-        5 => Ok(Wave::Noise),
+        3 => Ok(Wave::Saw),
+        4 => Ok(Wave::Noise),
         _ => Err(AudioPatchError::InvalidParameter),
     }
 }
@@ -911,9 +916,9 @@ fn audio_distortion(module: &Module) -> Result<AudioDistortion, AudioPatchError>
         return Err(AudioPatchError::InvalidParameter);
     };
     match index {
-        0 | 1 | 2 => Ok(AudioDistortion::Tanh),
-        3 => Ok(AudioDistortion::Fold),
-        4 => Ok(AudioDistortion::Clip),
+        0 => Ok(AudioDistortion::Tanh),
+        1 => Ok(AudioDistortion::Fold),
+        2 => Ok(AudioDistortion::Clip),
         _ => Err(AudioPatchError::InvalidParameter),
     }
 }
