@@ -1,6 +1,6 @@
 use brainwash::compile::{CompiledPatch, PatchEngine};
 use brainwash::osc::Wave;
-use brainwash::patch::{Module, Patch};
+use brainwash::patch::{Module, Patch, Resonance};
 use brainwash::sample::Unit;
 use brainwash::time::{Hertz, SampleRate};
 
@@ -15,6 +15,7 @@ fn main() {
     ));
     let filter = patch.insert(Module::Lowpass {
         cutoff: Hertz::new(1_000.0).unwrap(),
+        resonance: Resonance::new(0.707).unwrap(),
     });
     patch
         .connect(patch.output_port(osc, 0).unwrap(), filter)

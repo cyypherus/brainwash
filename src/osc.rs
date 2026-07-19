@@ -7,6 +7,7 @@ pub enum Wave {
     Square,
     Triangle,
     Saw,
+    ReverseSaw,
     Noise,
 }
 
@@ -42,6 +43,7 @@ impl Oscillator {
             }
             Wave::Triangle => 1.0 - 4.0 * (self.phase - 0.5).abs(),
             Wave::Saw => self.phase * 2.0 - 1.0,
+            Wave::ReverseSaw => 1.0 - self.phase * 2.0,
             Wave::Noise => self.noise(),
         };
         self.advance();
@@ -62,5 +64,21 @@ impl Oscillator {
         self.noise ^= self.noise >> 17;
         self.noise ^= self.noise << 5;
         (self.noise as f32 / u32::MAX as f32) * 2.0 - 1.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reverse_saw_is_the_inverse_of_saw() {
+        let rate = SampleRate::new(4).unwrap();
+        let frequency = Hertz::new(1.0).unwrap();
+        let mut saw = Oscillator::new(Wave::Saw, rate, frequency);
+        let mut reverse = Oscillator::new(Wave::ReverseSaw, rate, frequency);
+        for _ in 0..4 {
+            assert!((saw.next().value() + reverse.next().value()).abs() < f32::EPSILON);
+        }
     }
 }

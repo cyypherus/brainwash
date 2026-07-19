@@ -149,9 +149,13 @@ enum FileModule {
     },
     Lowpass {
         cutoff: f32,
+        #[serde(default = "default_resonance")]
+        resonance: f32,
     },
     Highpass {
         cutoff: f32,
+        #[serde(default = "default_resonance")]
+        resonance: f32,
     },
     Comb {
         time: FileDuration,
@@ -230,14 +234,22 @@ enum FileWave {
     Square,
     Triangle,
     Saw,
+    ReverseSaw,
     Noise,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 enum FileDistortion {
+    Tube,
+    Tape,
+    Fuzz,
     Clip,
     Tanh,
     Fold,
+}
+
+fn default_resonance() -> f32 {
+    0.707
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -430,11 +442,13 @@ impl FileModule {
                     })
                     .collect(),
             },
-            Module::Lowpass { cutoff } => FileModule::Lowpass {
+            Module::Lowpass { cutoff, resonance } => FileModule::Lowpass {
                 cutoff: cutoff.value(),
+                resonance: resonance.value(),
             },
-            Module::Highpass { cutoff } => FileModule::Highpass {
+            Module::Highpass { cutoff, resonance } => FileModule::Highpass {
                 cutoff: cutoff.value(),
+                resonance: resonance.value(),
             },
             Module::Comb {
                 time,
@@ -543,11 +557,13 @@ impl FileModule {
                         .collect::<Result<Vec<_>, LoadError>>()?,
                 ),
             },
-            FileModule::Lowpass { cutoff } => Module::Lowpass {
+            FileModule::Lowpass { cutoff, resonance } => Module::Lowpass {
                 cutoff: Hertz::new(cutoff).ok_or(LoadError::Value)?,
+                resonance: crate::patch::Resonance::new(resonance).ok_or(LoadError::Value)?,
             },
-            FileModule::Highpass { cutoff } => Module::Highpass {
+            FileModule::Highpass { cutoff, resonance } => Module::Highpass {
                 cutoff: Hertz::new(cutoff).ok_or(LoadError::Value)?,
+                resonance: crate::patch::Resonance::new(resonance).ok_or(LoadError::Value)?,
             },
             FileModule::Comb {
                 time,
@@ -627,6 +643,7 @@ impl FileWave {
             Wave::Square => FileWave::Square,
             Wave::Triangle => FileWave::Triangle,
             Wave::Saw => FileWave::Saw,
+            Wave::ReverseSaw => FileWave::ReverseSaw,
             Wave::Noise => FileWave::Noise,
         }
     }
@@ -637,6 +654,7 @@ impl FileWave {
             FileWave::Square => Wave::Square,
             FileWave::Triangle => Wave::Triangle,
             FileWave::Saw => Wave::Saw,
+            FileWave::ReverseSaw => Wave::ReverseSaw,
             FileWave::Noise => Wave::Noise,
         }
     }
@@ -645,16 +663,20 @@ impl FileWave {
 impl FileDistortion {
     fn from_distortion(kind: Distortion) -> Self {
         match kind {
+            Distortion::Tube => FileDistortion::Tube,
+            Distortion::Tape => FileDistortion::Tape,
+            Distortion::Fuzz => FileDistortion::Fuzz,
             Distortion::Clip => FileDistortion::Clip,
-            Distortion::Tanh => FileDistortion::Tanh,
             Distortion::Fold => FileDistortion::Fold,
         }
     }
 
     fn into_distortion(self) -> Distortion {
         match self {
+            FileDistortion::Tube | FileDistortion::Tanh => Distortion::Tube,
+            FileDistortion::Tape => Distortion::Tape,
+            FileDistortion::Fuzz => Distortion::Fuzz,
             FileDistortion::Clip => Distortion::Clip,
-            FileDistortion::Tanh => Distortion::Tanh,
             FileDistortion::Fold => Distortion::Fold,
         }
     }
@@ -797,15 +819,21 @@ mod tests {
 
     #[test]
     fn module_round_trips_without_a_patch_wrapper() {
-        let module = Module::Osc {
-            wave: Wave::Triangle,
-            frequency: Hertz::new(220.0).unwrap(),
-        };
-
-        let encoded = module_to_string(&module).unwrap();
-        let decoded = module_from_str(&encoded).unwrap();
-
-        assert_eq!(decoded, module);
+        for module in [
+            Module::Osc {
+                wave: Wave::ReverseSaw,
+                frequency: Hertz::new(220.0).unwrap(),
+            },
+            Module::Waveshaper(Distortion::Tape),
+            Module::Lowpass {
+                cutoff: Hertz::new(1_000.0).unwrap(),
+                resonance: crate::patch::Resonance::new(8.0).unwrap(),
+            },
+        ] {
+            let encoded = module_to_string(&module).unwrap();
+            let decoded = module_from_str(&encoded).unwrap();
+            assert_eq!(decoded, module);
+        }
     }
 
     #[test]

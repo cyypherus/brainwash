@@ -592,9 +592,13 @@ pub(super) fn audio_module(
         }),
         ModuleKind::Lowpass => Ok(AudioModule::Lowpass {
             cutoff: filter_cutoff(audio_float(module, 1)?)?,
+            resonance: Resonance::new(audio_float(module, 2)?)
+                .ok_or(AudioPatchError::InvalidParameter)?,
         }),
         ModuleKind::Highpass => Ok(AudioModule::Highpass {
             cutoff: filter_cutoff(audio_float(module, 1)?)?,
+            resonance: Resonance::new(audio_float(module, 2)?)
+                .ok_or(AudioPatchError::InvalidParameter)?,
         }),
         ModuleKind::Comb => Ok(AudioModule::Comb {
             time: audio_duration(module, 1, rate, bpm)?,
@@ -790,7 +794,8 @@ fn audio_wave(module: &Module) -> Result<Wave, AudioPatchError> {
         1 => Ok(Wave::Square),
         2 => Ok(Wave::Triangle),
         3 => Ok(Wave::Saw),
-        4 => Ok(Wave::Noise),
+        4 => Ok(Wave::ReverseSaw),
+        5 => Ok(Wave::Noise),
         _ => Err(AudioPatchError::InvalidParameter),
     }
 }
@@ -916,9 +921,11 @@ fn audio_distortion(module: &Module) -> Result<AudioDistortion, AudioPatchError>
         return Err(AudioPatchError::InvalidParameter);
     };
     match index {
-        0 => Ok(AudioDistortion::Tanh),
-        1 => Ok(AudioDistortion::Fold),
-        2 => Ok(AudioDistortion::Clip),
+        0 => Ok(AudioDistortion::Tube),
+        1 => Ok(AudioDistortion::Tape),
+        2 => Ok(AudioDistortion::Fuzz),
+        3 => Ok(AudioDistortion::Fold),
+        4 => Ok(AudioDistortion::Clip),
         _ => Err(AudioPatchError::InvalidParameter),
     }
 }

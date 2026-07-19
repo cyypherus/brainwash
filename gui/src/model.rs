@@ -5,6 +5,7 @@ use brainwash::osc::Wave;
 use brainwash::patch::{
     BinaryOp, CompressorRatio, ConnectError, EnvPoint as AudioEnvPoint, Gain,
     InputKind as AudioInputKind, Module as AudioModule, ModuleId as AudioModuleId, Patch,
+    Resonance,
 };
 use brainwash::sample::Sample;
 use brainwash::sample::{Sample as AudioSample, Unit};
@@ -376,10 +377,12 @@ enum ModuleBody {
     Lowpass {
         input: FloatParam,
         frequency: FloatParam,
+        resonance: FloatParam,
     },
     Highpass {
         input: FloatParam,
         frequency: FloatParam,
+        resonance: FloatParam,
     },
     Comb {
         input: FloatParam,
@@ -1090,7 +1093,7 @@ impl ModuleKind {
                 semitones: float_param(-2400, 2400, 100, 0),
             },
             ModuleKind::Osc => ModuleBody::Osc {
-                wave: enum_param(&["sin", "square", "tri", "saw", "noise"], 0),
+                wave: enum_param(&["sin", "square", "tri", "saw", "rsaw", "noise"], 0),
                 frequency: float_param(1, 200_000, 100, 44_000),
             },
             ModuleKind::Rise => ModuleBody::Rise {
@@ -1129,10 +1132,12 @@ impl ModuleKind {
             ModuleKind::Lowpass => ModuleBody::Lowpass {
                 input: float_param(-100, 100, 1, 0),
                 frequency: float_param(0, 99, 1, 25),
+                resonance: float_param(10, 2000, 10, 71),
             },
             ModuleKind::Highpass => ModuleBody::Highpass {
                 input: float_param(-100, 100, 1, 0),
                 frequency: float_param(0, 100, 1, 25),
+                resonance: float_param(10, 2000, 10, 71),
             },
             ModuleKind::Comb => ModuleBody::Comb {
                 input: float_param(-100, 100, 1, 0),
@@ -1165,7 +1170,7 @@ impl ModuleKind {
             },
             ModuleKind::Distortion => ModuleBody::Distortion {
                 input: float_param(-100, 100, 1, 0),
-                kind: enum_param(&["soft", "fold", "clip"], 0),
+                kind: enum_param(&["tube", "tape", "fuzz", "fold", "clip"], 0),
                 drive: float_param(10, 2000, 10, 200),
                 asymmetry: float_param(-100, 100, 5, 0),
             },
@@ -1422,10 +1427,19 @@ impl ModuleBody {
                 float_parameter("Sus", *sustain),
             ],
             ModuleBody::Envelope { phase, .. } => vec![float_parameter("Phase", *phase)],
-            ModuleBody::Lowpass { input, frequency }
-            | ModuleBody::Highpass { input, frequency } => vec![
+            ModuleBody::Lowpass {
+                input,
+                frequency,
+                resonance,
+            }
+            | ModuleBody::Highpass {
+                input,
+                frequency,
+                resonance,
+            } => vec![
                 float_parameter("In", *input),
                 float_parameter("Freq", *frequency),
+                float_parameter("Q", *resonance),
             ],
             ModuleBody::Comb {
                 input,
@@ -1731,10 +1745,19 @@ impl ModuleBody {
                     || set_float_param(sustain, index, 3, &parameter)
             }
             ModuleBody::Envelope { phase, .. } => set_float_param(phase, index, 0, &parameter),
-            ModuleBody::Lowpass { input, frequency }
-            | ModuleBody::Highpass { input, frequency } => {
+            ModuleBody::Lowpass {
+                input,
+                frequency,
+                resonance,
+            }
+            | ModuleBody::Highpass {
+                input,
+                frequency,
+                resonance,
+            } => {
                 set_float_param(input, index, 0, &parameter)
                     || set_float_param(frequency, index, 1, &parameter)
+                    || set_float_param(resonance, index, 2, &parameter)
             }
             ModuleBody::Comb {
                 input,
@@ -4057,6 +4080,77 @@ mod tests {
             };
             assert!(audio_module(&module, rate, 120).is_ok(), "{kind:?}");
         }
+    }
+
+    #[test]
+    fn restored_options_map_to_distinct_dsp_variants() {
+        let rate = SampleRate::new(44_100).unwrap();
+        let mut oscillator = Module {
+            id: ModuleId::new(0),
+            position: GridPos::new(0, 0),
+            orientation: Orientation::Right,
+            body: ModuleKind::Osc.default_body(),
+            disabled: false,
+        };
+        let ModuleBody::Osc { wave, .. } = &mut oscillator.body else {
+            panic!()
+        };
+        assert_eq!(wave.options[4], "rsaw");
+        wave.index = 4;
+        assert!(matches!(
+            audio_module(&oscillator, rate, 120).unwrap(),
+            AudioModule::Osc {
+                wave: Wave::ReverseSaw,
+                ..
+            }
+        ));
+
+        for (index, expected) in [
+            AudioDistortion::Tube,
+            AudioDistortion::Tape,
+            AudioDistortion::Fuzz,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut distortion = Module {
+                id: ModuleId::new(0),
+                position: GridPos::new(0, 0),
+                orientation: Orientation::Right,
+                body: ModuleKind::Distortion.default_body(),
+                disabled: false,
+            };
+            let ModuleBody::Distortion { kind, .. } = &mut distortion.body else {
+                panic!()
+            };
+            assert_eq!(kind.options[index], ["tube", "tape", "fuzz"][index]);
+            kind.index = index;
+            let AudioModule::Composition(composition) =
+                audio_module(&distortion, rate, 120).unwrap()
+            else {
+                panic!()
+            };
+            assert!(composition.patch().module_entries().any(
+                |(_, module)| matches!(module, AudioModule::Waveshaper(kind) if *kind == expected)
+            ));
+        }
+
+        let mut lowpass = Module {
+            id: ModuleId::new(0),
+            position: GridPos::new(0, 0),
+            orientation: Orientation::Right,
+            body: ModuleKind::Lowpass.default_body(),
+            disabled: false,
+        };
+        let ModuleBody::Lowpass { resonance, .. } = &mut lowpass.body else {
+            panic!()
+        };
+        resonance.value = 800;
+        let AudioModule::Lowpass { resonance, .. } = audio_module(&lowpass, rate, 120).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(resonance, Resonance::new(8.0).unwrap());
     }
 
     #[test]

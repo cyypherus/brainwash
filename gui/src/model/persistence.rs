@@ -287,13 +287,24 @@ fn project_params(
             points: points.iter().map(project_env_point).collect(),
             connected: connected_mask(&[(0, phase.connected)]),
         },
-        ModuleBody::Lowpass { input, frequency } | ModuleBody::Highpass { input, frequency } => {
-            ProjectModuleParams::Filter {
-                freq: project_float(*frequency),
-                q: 0.7,
-                connected: connected_mask(&[(0, input.connected), (1, frequency.connected)]),
-            }
+        ModuleBody::Lowpass {
+            input,
+            frequency,
+            resonance,
         }
+        | ModuleBody::Highpass {
+            input,
+            frequency,
+            resonance,
+        } => ProjectModuleParams::Filter {
+            freq: project_float(*frequency),
+            q: project_float(*resonance),
+            connected: connected_mask(&[
+                (0, input.connected),
+                (1, frequency.connected),
+                (2, resonance.connected),
+            ]),
+        },
         ModuleBody::Comb {
             input,
             time,
@@ -685,10 +696,9 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             }
             apply_connected(&mut parameters, *connected);
         }
-        ProjectModuleParams::Filter {
-            freq, connected, ..
-        } => {
+        ProjectModuleParams::Filter { freq, q, connected } => {
             set_float(&mut parameters, 1, *freq);
+            set_float(&mut parameters, 2, *q);
             apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Comb {

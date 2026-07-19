@@ -996,7 +996,7 @@ mod tests {
     use crate::model::{GuiAction, GuiState, ModuleCategory};
     use assert_no_alloc::assert_no_alloc;
     use brainwash::osc::Wave;
-    use brainwash::patch::{InputKind, Module, Patch};
+    use brainwash::patch::{InputKind, Module, Patch, Resonance};
     use brainwash::sample::{Sample as AudioSample, Unit};
     use brainwash::scale::cmin;
 
@@ -1785,6 +1785,7 @@ mod tests {
         let source = patch.insert(Module::Constant(AudioSample::new(0.5).unwrap()));
         let lowpass = patch.insert(Module::Lowpass {
             cutoff: Hertz::new(1000.0).unwrap(),
+            resonance: Resonance::new(0.707).unwrap(),
         });
         let port = patch.input_port(lowpass, InputKind::In).unwrap();
         patch

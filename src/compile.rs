@@ -77,8 +77,8 @@ enum Node {
     Envelope {
         points: Arc<Vec<EnvPoint>>,
     },
-    Lowpass(OnePole),
-    Highpass(OnePole),
+    Lowpass(StateVariable),
+    Highpass(StateVariable),
     Comb(Comb),
     Allpass(Allpass),
     Delay(Delay),
@@ -148,10 +148,12 @@ struct Ramp {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct OnePole {
+struct StateVariable {
     rate: SampleRate,
     cutoff: Hertz,
-    value: f32,
+    resonance: crate::patch::Resonance,
+    integrator_1: f32,
+    integrator_2: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -751,6 +753,11 @@ impl Node {
                 {
                     filter.cutoff = cutoff;
                 }
+                if let Some(resonance) = input(inputs, values, 2)
+                    .and_then(|input| crate::patch::Resonance::new(input.value()))
+                {
+                    filter.resonance = resonance;
+                }
                 filter.lowpass(in0)
             }
             Node::Highpass(filter) => {
@@ -758,6 +765,11 @@ impl Node {
                     input(inputs, values, 1).and_then(|input| filter_cutoff(input.value()))
                 {
                     filter.cutoff = cutoff;
+                }
+                if let Some(resonance) = input(inputs, values, 2)
+                    .and_then(|input| crate::patch::Resonance::new(input.value()))
+                {
+                    filter.resonance = resonance;
                 }
                 filter.highpass(in0)
             }
@@ -924,15 +936,28 @@ impl Ramp {
     }
 }
 
-impl OnePole {
+impl StateVariable {
+    fn outputs(&mut self, input: Sample) -> (Sample, Sample) {
+        let frequency = self.cutoff.value().min(self.rate.value() as f32 * 0.49);
+        let g = (std::f32::consts::PI * frequency / self.rate.value() as f32).tan();
+        let k = 1.0 / self.resonance.value();
+        let a1 = 1.0 / (1.0 + g * (g + k));
+        let a2 = g * a1;
+        let a3 = g * a2;
+        let v3 = input.value() - self.integrator_2;
+        let v1 = a1 * self.integrator_1 + a2 * v3;
+        let v2 = self.integrator_2 + a2 * self.integrator_1 + a3 * v3;
+        self.integrator_1 = 2.0 * v1 - self.integrator_1;
+        self.integrator_2 = 2.0 * v2 - self.integrator_2;
+        (Sample::raw(v2), Sample::raw(input.value() - k * v1 - v2))
+    }
+
     fn lowpass(&mut self, input: Sample) -> Sample {
-        let alpha = (self.cutoff.value() / self.rate.value() as f32).clamp(0.0, 1.0);
-        self.value += (input.value() - self.value) * alpha;
-        Sample::raw(self.value)
+        self.outputs(input).0
     }
 
     fn highpass(&mut self, input: Sample) -> Sample {
-        input.sub(self.lowpass(input))
+        self.outputs(input).1
     }
 }
 
@@ -1114,15 +1139,19 @@ fn create_node(
         Module::Envelope { points } => Node::Envelope {
             points: Arc::clone(points),
         },
-        Module::Lowpass { cutoff } => Node::Lowpass(OnePole {
+        Module::Lowpass { cutoff, resonance } => Node::Lowpass(StateVariable {
             rate,
             cutoff: *cutoff,
-            value: 0.0,
+            resonance: *resonance,
+            integrator_1: 0.0,
+            integrator_2: 0.0,
         }),
-        Module::Highpass { cutoff } => Node::Highpass(OnePole {
+        Module::Highpass { cutoff, resonance } => Node::Highpass(StateVariable {
             rate,
             cutoff: *cutoff,
-            value: 0.0,
+            resonance: *resonance,
+            integrator_1: 0.0,
+            integrator_2: 0.0,
         }),
         Module::Comb {
             time,
@@ -1238,6 +1267,33 @@ mod tests {
     use crate::patch::InputKind;
     use crate::patch::{Composition, Module, Patch};
     use crate::time::Hertz;
+
+    #[test]
+    fn filter_resonance_changes_the_impulse_response() {
+        fn peak(resonance: f32) -> f32 {
+            let mut filter = StateVariable {
+                rate: SampleRate::new(44_100).unwrap(),
+                cutoff: Hertz::new(1_000.0).unwrap(),
+                resonance: crate::patch::Resonance::new(resonance).unwrap(),
+                integrator_1: 0.0,
+                integrator_2: 0.0,
+            };
+            (0..512)
+                .map(|index| {
+                    filter
+                        .lowpass(if index == 0 {
+                            Sample::new(1.0).unwrap()
+                        } else {
+                            Sample::ZERO
+                        })
+                        .value()
+                        .abs()
+                })
+                .fold(0.0, f32::max)
+        }
+
+        assert!(peak(8.0) > peak(0.5) * 2.0);
+    }
 
     fn patch(rate: f32) -> Patch {
         let mut patch = Patch::new();
@@ -1428,6 +1484,7 @@ mod tests {
         let source = patch.insert(Module::Constant(Sample::new(0.25).unwrap()));
         let lowpass = patch.insert(Module::Lowpass {
             cutoff: Hertz::new(1000.0).unwrap(),
+            resonance: crate::patch::Resonance::new(0.707).unwrap(),
         });
         let port = patch.input_port(lowpass, InputKind::In).unwrap();
         patch

@@ -58,6 +58,9 @@ pub struct Gain(f32);
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
 pub struct CompressorRatio(f32);
 
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+pub struct Resonance(f32);
+
 impl Gain {
     pub fn new(value: f32) -> Option<Self> {
         (value.is_finite() && value >= 0.0).then_some(Self(value))
@@ -74,6 +77,16 @@ impl CompressorRatio {
     }
 
     pub(crate) fn value(self) -> f32 {
+        self.0
+    }
+}
+
+impl Resonance {
+    pub fn new(value: f32) -> Option<Self> {
+        (value.is_finite() && (0.1..=20.0).contains(&value)).then_some(Self(value))
+    }
+
+    pub fn value(self) -> f32 {
         self.0
     }
 }
@@ -115,9 +128,11 @@ pub enum Module {
     },
     Lowpass {
         cutoff: Hertz,
+        resonance: Resonance,
     },
     Highpass {
         cutoff: Hertz,
+        resonance: Resonance,
     },
     Comb {
         time: Duration,
@@ -706,7 +721,8 @@ mod tests {
     fn module_inputs_are_semantic_shape() {
         assert_eq!(
             Module::Lowpass {
-                cutoff: Hertz::new(1000.0).unwrap()
+                cutoff: Hertz::new(1000.0).unwrap(),
+                resonance: Resonance::new(0.707).unwrap(),
             }
             .input_kinds(),
             &[InputKind::In, InputKind::Freq, InputKind::Q]
