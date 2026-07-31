@@ -505,6 +505,34 @@ impl CompiledPatch {
         Frame::mono(self.values[self.output].clipped())
     }
 
+    fn continue_gate_state_from(&mut self, previous: &Self) {
+        if self.output != previous.output
+            || self.inputs != previous.inputs
+            || self.nodes.len() != previous.nodes.len()
+            || self
+                .nodes
+                .iter()
+                .zip(&previous.nodes)
+                .any(|(next, previous)| {
+                    std::mem::discriminant(next) != std::mem::discriminant(previous)
+                })
+        {
+            return;
+        }
+        for (next, previous) in self.nodes.iter_mut().zip(&previous.nodes) {
+            match (next, previous) {
+                (Node::Rise(next), Node::Rise(previous))
+                | (Node::Fall(next), Node::Fall(previous)) => {
+                    next.elapsed = (previous.value * next.samples as f32).round() as u64;
+                    next.value = previous.value;
+                    next.last_gate = previous.last_gate;
+                    next.active = previous.active;
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn probe_values(&self) -> impl Iterator<Item = (crate::patch::ModuleId, Sample)> + '_ {
         self.probes
             .iter()
@@ -627,13 +655,14 @@ impl PatchEngine {
         }
     }
 
-    pub fn replace(&mut self, next: CompiledPatch) -> Result<(), UpdateRejected> {
+    pub fn replace(&mut self, mut next: CompiledPatch) -> Result<(), UpdateRejected> {
         if self.transition.is_some() {
             return Err(UpdateRejected::Busy(next));
         }
         if self.retired.is_some() {
             return Err(UpdateRejected::RetiredPatchPending(next));
         }
+        next.continue_gate_state_from(&self.active);
         let old = std::mem::replace(&mut self.active, next);
         self.transition = Some(Transition { old, position: 0 });
         Ok(())
@@ -868,7 +897,10 @@ impl GateRamp {
             mode,
             samples: time.samples(rate).value().max(1),
             elapsed: 0,
-            value: 0.0,
+            value: match mode {
+                GateRampMode::Rise => 0.0,
+                GateRampMode::Fall => 1.0,
+            },
             last_gate: 0.0,
             active: false,
         }
@@ -1267,6 +1299,7 @@ mod tests {
     use crate::patch::InputKind;
     use crate::patch::{Composition, Module, Patch};
     use crate::time::Hertz;
+    use assert_no_alloc::assert_no_alloc;
 
     #[test]
     fn filter_resonance_changes_the_impulse_response() {
@@ -1642,5 +1675,61 @@ mod tests {
         };
         assert!(engine.take_retired().is_some());
         assert!(engine.replace(pending).is_ok());
+    }
+
+    #[test]
+    fn parameter_update_preserves_release_edge_without_allocation() {
+        let rate = SampleRate::new(1_000).unwrap();
+        let mut patch = Patch::new();
+        let gate = patch.insert(Module::Gate);
+        let fall = patch.insert(Module::Fall {
+            time: Duration::Samples(crate::time::Samples::new(1_024)),
+        });
+        let release = patch.insert(Module::Binary {
+            op: BinaryOp::Subtract,
+            a: Sample::new(1.0).unwrap(),
+            b: Sample::ZERO,
+        });
+        patch
+            .connect_input(
+                patch.output_port(gate, 0).unwrap(),
+                patch.input_port(fall, InputKind::Gate).unwrap(),
+            )
+            .unwrap();
+        patch
+            .connect_input(
+                patch.output_port(fall, 0).unwrap(),
+                patch.input_port(release, InputKind::B).unwrap(),
+            )
+            .unwrap();
+        patch
+            .output(patch.output_port(release, 0).unwrap())
+            .unwrap();
+
+        let mut engine = PatchEngine::new(CompiledPatch::new(&patch, rate).unwrap());
+        engine.next_with_controls(PatchControls {
+            gate: 1.0,
+            ..PatchControls::default()
+        });
+        let mut next = CompiledPatch::new(&patch, rate).unwrap();
+        let Node::Fall(fall) = next
+            .nodes
+            .iter_mut()
+            .find(|node| matches!(node, Node::Fall(_)))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        fall.samples = 2_048;
+        let mut output = Sample::ZERO;
+
+        assert_no_alloc(|| {
+            engine.replace(next).unwrap();
+            for _ in 0..UPDATE_FADE_FRAMES {
+                output = engine.next().left();
+            }
+        });
+
+        assert!(output.value() > 0.8 && output.value() < 0.99, "{output:?}");
     }
 }

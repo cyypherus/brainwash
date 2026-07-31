@@ -194,9 +194,12 @@ fn patch_controls_drive_oscillator_frequency() {
 fn track_play_into_does_not_allocate() {
     let mut track = Track::parse("(0/2/4/7)", &cmin()).unwrap();
     let mut events = [None; 64];
+    track.play_into(0.24, &mut events);
 
     assert_no_alloc(|| {
-        let count = track.play_into(0.25, &mut events);
+        let count = track.play_into(0.26, &mut events);
+        assert!(count > 0);
+        let count = track.play_into(0.27, &mut events);
         assert!(count > 0);
     });
 }

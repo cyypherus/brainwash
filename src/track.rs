@@ -245,9 +245,23 @@ pub enum NoteEvent {
     Release { pitch: u8 },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TimelineEdge {
+    Start { pitch: u8, degree: i32 },
+    End { pitch: u8, degree: i32 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TimedEdge {
+    phase: f32,
+    edge: TimelineEdge,
+    joined: bool,
+}
+
 pub struct Track {
     playhead: f32,
-    note_timeline: Vec<TimelineNote>,
+    timeline: Vec<TimedEdge>,
+    pending: Vec<NoteEvent>,
     bar_count: usize,
 }
 
@@ -284,11 +298,55 @@ impl Track {
             }
         }
 
-        events.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
+        let mut timeline = Vec::with_capacity(events.len() * 2);
+        for note in events {
+            timeline.push(TimedEdge {
+                phase: note.start,
+                edge: TimelineEdge::Start {
+                    pitch: note.pitch,
+                    degree: note.degree,
+                },
+                joined: false,
+            });
+            timeline.push(TimedEdge {
+                phase: note.end,
+                edge: TimelineEdge::End {
+                    pitch: note.pitch,
+                    degree: note.degree,
+                },
+                joined: false,
+            });
+        }
+        timeline.sort_by(|a, b| {
+            a.phase
+                .partial_cmp(&b.phase)
+                .unwrap()
+                .then_with(|| match (a.edge, b.edge) {
+                    (TimelineEdge::End { .. }, TimelineEdge::Start { .. }) => {
+                        std::cmp::Ordering::Less
+                    }
+                    (TimelineEdge::Start { .. }, TimelineEdge::End { .. }) => {
+                        std::cmp::Ordering::Greater
+                    }
+                    _ => std::cmp::Ordering::Equal,
+                })
+        });
+        for index in 0..timeline.len() {
+            let timed = timeline[index];
+            timeline[index].joined = timeline.iter().any(|candidate| {
+                same_boundary(candidate.phase, timed.phase)
+                    && matches!(
+                        (timed.edge, candidate.edge),
+                        (TimelineEdge::Start { .. }, TimelineEdge::End { .. })
+                            | (TimelineEdge::End { .. }, TimelineEdge::Start { .. })
+                    )
+            });
+        }
 
         Ok(Track {
             playhead: 0.0,
-            note_timeline: events,
+            pending: Vec::with_capacity(timeline.len()),
+            timeline,
             bar_count,
         })
     }
@@ -362,83 +420,22 @@ impl Track {
         events: &mut [Option<NoteEvent>],
     ) -> usize {
         let from = self.playhead;
-
         let mut count = 0;
-        for note in &self.note_timeline {
-            let note_start = note.start;
-            let note_end = note.end;
-            // dbg!(note_start, note_end, from, to);
-            if forward {
-                if to < from {
-                    // looped around
-                    // range of track: 0---1
-                    // range between from..to: ===
-                    // range of note start..end: s###e
-                    // 0---------------------1
-                    // ###e==t---------f==s###
-                    if note_start >= from || note_start < to {
-                        push_event(
-                            events,
-                            &mut count,
-                            NoteEvent::Press {
-                                pitch: note.pitch,
-                                degree: note.degree,
-                            },
-                        );
-                    }
-                    // ======t------s##f##e===
-                    if note_end >= from || note_end < to {
-                        push_event(events, &mut count, NoteEvent::Release { pitch: note.pitch });
-                    }
-                } else {
-                    // ------f=s#######t##e----
-                    if note_start >= from && note_start < to {
-                        push_event(
-                            events,
-                            &mut count,
-                            NoteEvent::Press {
-                                pitch: note.pitch,
-                                degree: note.degree,
-                            },
-                        );
-                    }
-                    // ----s##f#####e==t------
-                    if note_end >= from && note_end < to {
-                        push_event(events, &mut count, NoteEvent::Release { pitch: note.pitch });
-                    }
-                }
+        for event in self.pending.drain(..) {
+            push_event(events, &mut count, event);
+        }
+        if forward {
+            if to < from {
+                self.emit_forward(from, 1.0, false, events, &mut count);
+                self.emit_forward(0.0, to, true, events, &mut count);
             } else {
-                if to > from {
-                    // looped around
-                    if note_start <= from || note_start > to {
-                        push_event(
-                            events,
-                            &mut count,
-                            NoteEvent::Press {
-                                pitch: note.pitch,
-                                degree: note.degree,
-                            },
-                        );
-                    }
-                    if note_end <= from || note_end > to {
-                        push_event(events, &mut count, NoteEvent::Release { pitch: note.pitch });
-                    }
-                } else {
-                    if note_start <= from && note_start >= to {
-                        push_event(
-                            events,
-                            &mut count,
-                            NoteEvent::Press {
-                                pitch: note.pitch,
-                                degree: note.degree,
-                            },
-                        );
-                    }
-                    if note_end < from && note_end > to {
-                        push_event(events, &mut count, NoteEvent::Release { pitch: note.pitch });
-                    }
-                }
+                self.emit_forward(from, to, false, events, &mut count);
             }
+        } else if to > from {
+            self.emit_backward(from, 0.0, false, events, &mut count);
+            self.emit_backward(1.0, to, true, events, &mut count);
+        } else {
+            self.emit_backward(from, to, false, events, &mut count);
         }
         self.playhead = to;
         count
@@ -468,6 +465,70 @@ impl Track {
         // self.playhead = to;
         // events
     }
+
+    fn emit_forward(
+        &mut self,
+        from: f32,
+        to: f32,
+        cycle_boundary: bool,
+        events: &mut [Option<NoteEvent>],
+        count: &mut usize,
+    ) {
+        for index in 0..self.timeline.len() {
+            let timed = self.timeline[index];
+            match timed.edge {
+                TimelineEdge::Start { pitch, degree }
+                    if timed.phase >= from && timed.phase < to =>
+                {
+                    let event = NoteEvent::Press { pitch, degree };
+                    if timed.joined
+                        && (timed.phase > from || (cycle_boundary && timed.phase == 0.0))
+                    {
+                        self.pending.push(event);
+                    } else {
+                        push_event(events, count, event);
+                    }
+                }
+                TimelineEdge::End { pitch, .. } if timed.phase > from && timed.phase <= to => {
+                    push_event(events, count, NoteEvent::Release { pitch });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn emit_backward(
+        &mut self,
+        from: f32,
+        to: f32,
+        cycle_boundary: bool,
+        events: &mut [Option<NoteEvent>],
+        count: &mut usize,
+    ) {
+        for index in (0..self.timeline.len()).rev() {
+            let timed = self.timeline[index];
+            match timed.edge {
+                TimelineEdge::Start { pitch, .. } if timed.phase < from && timed.phase >= to => {
+                    push_event(events, count, NoteEvent::Release { pitch });
+                }
+                TimelineEdge::End { pitch, degree } if timed.phase <= from && timed.phase > to => {
+                    let event = NoteEvent::Press { pitch, degree };
+                    if timed.joined
+                        && (timed.phase < from || (cycle_boundary && timed.phase == 1.0))
+                    {
+                        self.pending.push(event);
+                    } else {
+                        push_event(events, count, event);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn same_boundary(a: f32, b: f32) -> bool {
+    a == b || (a == 0.0 && b == 1.0) || (a == 1.0 && b == 0.0)
 }
 
 fn push_event(events: &mut [Option<NoteEvent>], count: &mut usize, event: NoteEvent) {
@@ -732,8 +793,8 @@ mod tests {
     fn test_debug_timeline() {
         let scale = crate::scale::cmaj();
         let track = Track::parse("(0)", &scale).unwrap();
-        assert!(!track.note_timeline.is_empty(), "Timeline is empty!");
-        assert_eq!(track.note_timeline.len(), 1);
+        assert!(!track.timeline.is_empty(), "Timeline is empty!");
+        assert_eq!(track.timeline.len(), 2);
     }
 
     #[test]
@@ -781,7 +842,7 @@ mod tests {
     fn test_track_simple_note_press() {
         let scale = crate::scale::cmaj();
         let mut track = Track::parse("(0)", &scale).unwrap();
-        assert!(!track.note_timeline.is_empty(), "Timeline is empty!");
+        assert!(!track.timeline.is_empty(), "Timeline is empty!");
         let events = track.play(0.5);
         assert_eq!(events.len(), 1);
         assert!(matches!(events[0], NoteEvent::Press { .. }));
@@ -796,9 +857,11 @@ mod tests {
         assert!(matches!(events1[0], NoteEvent::Press { .. }));
 
         let events2 = track.play(0.75);
-        assert_eq!(events2.len(), 2);
+        assert_eq!(events2.len(), 1);
         assert!(matches!(events2[0], NoteEvent::Release { .. }));
-        assert!(matches!(events2[1], NoteEvent::Press { .. }));
+        let events3 = track.play(0.8);
+        assert_eq!(events3.len(), 1);
+        assert!(matches!(events3[0], NoteEvent::Press { .. }));
     }
 
     #[test]
@@ -811,14 +874,13 @@ mod tests {
         assert!(matches!(events1[0], NoteEvent::Press { .. }));
 
         let events2 = track.play(0.4);
-        assert_eq!(events2.len(), 2);
+        assert_eq!(events2.len(), 1);
         assert!(matches!(events2[0], NoteEvent::Release { .. }));
-        assert!(matches!(events2[1], NoteEvent::Press { .. }));
 
         let events3 = track.play(0.7);
         assert_eq!(events3.len(), 2);
-        assert!(matches!(events3[0], NoteEvent::Release { .. }));
-        assert!(matches!(events3[1], NoteEvent::Press { .. }));
+        assert!(matches!(events3[0], NoteEvent::Press { .. }));
+        assert!(matches!(events3[1], NoteEvent::Release { .. }));
     }
 
     #[test]
@@ -875,41 +937,62 @@ mod tests {
     }
 
     #[test]
-    fn test_spec_play_1_to_0_note_0_to_1_reversed() {
-        // Play 1.0 -> 0.0 reversed
-        // Note 0.0 -> 1.0
-        // Expected: 1 Press, 0 Release
+    fn equal_boundaries_are_one_tick_apart_in_both_directions() {
         let scale = crate::scale::cmaj();
-        let mut track = Track::parse("(0)", &scale).unwrap();
-        track.advance_with_direction(1.0f32.next_down(), false);
-        let events = track.advance_with_direction(0.0, false);
-        assert_eq!(events.len(), 1, "Expected 1 Press");
-        assert!(matches!(events[0], NoteEvent::Press { .. }));
+        let mut forward = Track::parse("(6/6)", &scale).unwrap();
+        forward.advance_with_direction(0.49, true);
+        let release = forward.advance_with_direction(0.5, true);
+        let press = forward.advance_with_direction(0.51, true);
+        assert!(matches!(release.as_slice(), [NoteEvent::Release { .. }]));
+        assert!(matches!(press.as_slice(), [NoteEvent::Press { .. }]));
+
+        let mut backward = Track::parse("(6/6)", &scale).unwrap();
+        backward.set_playhead(0.75);
+        let release = backward.advance_with_direction(0.5, false);
+        let press = backward.advance_with_direction(0.49, false);
+        assert!(matches!(release.as_slice(), [NoteEvent::Release { .. }]));
+        assert!(matches!(press.as_slice(), [NoteEvent::Press { .. }]));
     }
 
     #[test]
-    fn test_spec_play_0_5_to_1_note_0_to_0_5() {
-        // Play 0.5 -> 1.0
-        // Note 0.0 -> 0.5
-        // Expected: 0 Press, 1 Release
+    fn repeated_six_after_polyphony_retriggers_on_the_next_tick() {
         let scale = crate::scale::cmaj();
-        let mut track = Track::parse("(0/_)", &scale).unwrap();
-        track.advance_with_direction(0.5, true);
-        let events = track.advance_with_direction(1.0, true);
-        assert_eq!(events.len(), 1, "Expected 1 Release");
-        assert!(matches!(events[0], NoteEvent::Release { .. }));
+        let pitch = scale.note(6) as u8;
+        let mut track =
+            Track::parse("(0/2/4/7)(6/7/4/6)(8/9/8/2)({8&7}/{7&6}/6/4)", &scale).unwrap();
+        track.play(0.874);
+
+        let release = track.play(0.875);
+        let press = track.play(0.876);
+
+        assert!(
+            release
+                .iter()
+                .any(|event| *event == NoteEvent::Release { pitch })
+        );
+        assert!(
+            press
+                .iter()
+                .any(|event| { *event == NoteEvent::Press { pitch, degree: 6 } })
+        );
     }
 
     #[test]
-    fn test_spec_play_1_to_0_5_note_0_to_0_5_reversed() {
-        // Play 1.0 -> 0.5 reversed
-        // Note 0.0 -> 0.5
-        // Expected: 0 Press, 0 Release
+    fn cycle_boundary_is_one_tick_apart_in_both_directions() {
         let scale = crate::scale::cmaj();
-        let mut track = Track::parse("(0)", &scale).unwrap();
-        track.advance_with_direction(1.0, true);
-        let events = track.advance_with_direction(0.5, false);
-        assert_eq!(events.len(), 0, "Expected 0 events");
+        let mut forward = Track::parse("(6)", &scale).unwrap();
+        forward.advance_with_direction(0.99, true);
+        let release = forward.advance_with_direction(0.01, true);
+        let press = forward.advance_with_direction(0.02, true);
+        assert!(matches!(release.as_slice(), [NoteEvent::Release { .. }]));
+        assert!(matches!(press.as_slice(), [NoteEvent::Press { .. }]));
+
+        let mut backward = Track::parse("(6)", &scale).unwrap();
+        backward.set_playhead(0.01);
+        let release = backward.advance_with_direction(0.99, false);
+        let press = backward.advance_with_direction(0.98, false);
+        assert!(matches!(release.as_slice(), [NoteEvent::Release { .. }]));
+        assert!(matches!(press.as_slice(), [NoteEvent::Press { .. }]));
     }
 
     #[test]
@@ -935,7 +1018,7 @@ mod tests {
         assert!(matches!(events1[0], NoteEvent::Press { .. }));
 
         let events2 = track.play(0.5);
-        assert_eq!(events2.len(), 2);
+        assert_eq!(events2.len(), 1);
 
         let events3 = track.play(0.85);
         assert_eq!(events3.len(), 2);
@@ -950,7 +1033,7 @@ mod tests {
         assert!(matches!(events1[0], NoteEvent::Press { .. }));
 
         let events2 = track.play(0.3);
-        assert_eq!(events2.len(), 2);
+        assert_eq!(events2.len(), 1);
 
         let events3 = track.play(0.6);
         assert_eq!(events3.len(), 2);
