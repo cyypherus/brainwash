@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 #[test]
 fn module_inventory_has_expected_surface_count() {
-    assert_eq!(all_modules().len(), 40);
+    assert_eq!(all_modules().len(), 56);
     assert_eq!(all_modules()[0], ModuleKind::Osc);
     assert_eq!(all_modules()[1], ModuleKind::Output);
     assert_eq!(

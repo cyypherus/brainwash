@@ -157,6 +157,20 @@ fn project_kind(
     }
     Ok(match module.kind() {
         ModuleKind::Primitive => ProjectModuleKind::Standard(ProjectStandardModule::Primitive),
+        ModuleKind::Constant
+        | ModuleKind::Absolute
+        | ModuleKind::Sine
+        | ModuleKind::Tanh
+        | ModuleKind::Atan
+        | ModuleKind::Exp
+        | ModuleKind::Sign
+        | ModuleKind::Subtract
+        | ModuleKind::Divide
+        | ModuleKind::Power
+        | ModuleKind::Remainder
+        | ModuleKind::Minimum
+        | ModuleKind::Maximum => unreachable!(),
+        ModuleKind::Damp | ModuleKind::VariableDelay | ModuleKind::Slew => unreachable!(),
         ModuleKind::TurnRightDown => ProjectModuleKind::Routing(ProjectRoutingModule::TurnRD),
         ModuleKind::TurnDownRight => ProjectModuleKind::Routing(ProjectRoutingModule::TurnDR),
         ModuleKind::LeftSplit => ProjectModuleKind::Routing(ProjectRoutingModule::LSplit),

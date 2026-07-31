@@ -1,6 +1,7 @@
-use crate::effect::{Distortion, Drive};
 use crate::osc::Wave;
-use crate::patch::{BinaryOp, Composition, CompressorRatio, Gain, InputKind, Module, Patch};
+use crate::patch::{
+    BinaryOp, Composition, CompressorRatio, Gain, InputKind, Module, Patch, UnaryOp,
+};
 use crate::sample::{Sample, Unit};
 use crate::time::{Duration, Hertz, Seconds};
 
@@ -87,7 +88,7 @@ pub fn attenuator(gain: Unit) -> Module {
     composition("Attenuator", patch, [("Input", InputKind::In, signal)])
 }
 
-pub fn distortion(kind: Distortion, drive: Drive, asymmetry: Sample) -> Module {
+pub fn distortion(drive: Sample, asymmetry: Sample) -> Module {
     let mut patch = Patch::new();
     let signal = input(&mut patch, InputKind::In, 0.0);
     let drive_input = input(&mut patch, InputKind::Drive, drive.value());
@@ -98,7 +99,7 @@ pub fn distortion(kind: Distortion, drive: Drive, asymmetry: Sample) -> Module {
     let driven = binary(&mut patch, BinaryOp::Multiply, 0.0, drive.value());
     connect(&mut patch, offset, driven, InputKind::A);
     connect(&mut patch, drive_input, driven, InputKind::B);
-    let shaped = patch.insert(Module::Waveshaper(kind));
+    let shaped = patch.insert(tube());
     connect(&mut patch, driven, shaped, InputKind::In);
     set_output(&mut patch, shaped);
     composition(
@@ -110,6 +111,95 @@ pub fn distortion(kind: Distortion, drive: Drive, asymmetry: Sample) -> Module {
             ("Asymmetry", InputKind::Asym, asymmetry_input),
         ],
     )
+}
+
+pub fn tube() -> Module {
+    let mut patch = Patch::new();
+    let signal = input(&mut patch, InputKind::In, 0.0);
+    let positive = binary(&mut patch, BinaryOp::GreaterThan, 0.0, 0.0);
+    connect(&mut patch, signal, positive, InputKind::A);
+    let positive_curve = patch.insert(Module::Unary(UnaryOp::HyperbolicTangent));
+    connect(&mut patch, signal, positive_curve, InputKind::In);
+    let negative_drive = binary(&mut patch, BinaryOp::Multiply, 0.0, 1.25);
+    connect(&mut patch, signal, negative_drive, InputKind::A);
+    let negative_curve = patch.insert(Module::Unary(UnaryOp::HyperbolicTangent));
+    connect(&mut patch, negative_drive, negative_curve, InputKind::In);
+    let negative_level = binary(&mut patch, BinaryOp::Multiply, 0.0, 0.8);
+    connect(&mut patch, negative_curve, negative_level, InputKind::A);
+    let output = patch.insert(Module::Switch {
+        a: Sample::ZERO,
+        b: Sample::ZERO,
+    });
+    connect(&mut patch, positive, output, InputKind::Select);
+    connect(&mut patch, negative_level, output, InputKind::A);
+    connect(&mut patch, positive_curve, output, InputKind::B);
+    set_output(&mut patch, output);
+    composition("Tube", patch, [("Input", InputKind::In, signal)])
+}
+
+pub fn tape() -> Module {
+    let mut patch = Patch::new();
+    let signal = input(&mut patch, InputKind::In, 0.0);
+    let driven = binary(&mut patch, BinaryOp::Multiply, 0.0, 1.5);
+    connect(&mut patch, signal, driven, InputKind::A);
+    let curve = patch.insert(Module::Unary(UnaryOp::Arctangent));
+    connect(&mut patch, driven, curve, InputKind::In);
+    let normalized = binary(&mut patch, BinaryOp::Divide, 0.0, 1.5_f32.atan());
+    connect(&mut patch, curve, normalized, InputKind::A);
+    let upper = binary(&mut patch, BinaryOp::Minimum, 0.0, 1.0);
+    connect(&mut patch, normalized, upper, InputKind::A);
+    let output = binary(&mut patch, BinaryOp::Maximum, 0.0, -1.0);
+    connect(&mut patch, upper, output, InputKind::A);
+    set_output(&mut patch, output);
+    composition("Tape", patch, [("Input", InputKind::In, signal)])
+}
+
+pub fn fuzz() -> Module {
+    let mut patch = Patch::new();
+    let signal = input(&mut patch, InputKind::In, 0.0);
+    let sign = patch.insert(Module::Unary(UnaryOp::Sign));
+    connect(&mut patch, signal, sign, InputKind::In);
+    let magnitude = patch.insert(Module::Unary(UnaryOp::Absolute));
+    connect(&mut patch, signal, magnitude, InputKind::In);
+    let scaled = binary(&mut patch, BinaryOp::Multiply, 0.0, -3.0);
+    connect(&mut patch, magnitude, scaled, InputKind::A);
+    let exponential = patch.insert(Module::Unary(UnaryOp::Exponential));
+    connect(&mut patch, scaled, exponential, InputKind::In);
+    let saturated = binary(&mut patch, BinaryOp::Subtract, 1.0, 0.0);
+    connect(&mut patch, exponential, saturated, InputKind::B);
+    let output = binary(&mut patch, BinaryOp::Multiply, 0.0, 0.0);
+    connect(&mut patch, sign, output, InputKind::A);
+    connect(&mut patch, saturated, output, InputKind::B);
+    set_output(&mut patch, output);
+    composition("Fuzz", patch, [("Input", InputKind::In, signal)])
+}
+
+pub fn clip() -> Module {
+    let mut patch = Patch::new();
+    let signal = input(&mut patch, InputKind::In, 0.0);
+    let upper = binary(&mut patch, BinaryOp::Minimum, 0.0, 1.0);
+    connect(&mut patch, signal, upper, InputKind::A);
+    let output = binary(&mut patch, BinaryOp::Maximum, 0.0, -1.0);
+    connect(&mut patch, upper, output, InputKind::A);
+    set_output(&mut patch, output);
+    composition("Clip", patch, [("Input", InputKind::In, signal)])
+}
+
+pub fn fold() -> Module {
+    let mut patch = Patch::new();
+    let signal = input(&mut patch, InputKind::In, 0.0);
+    let offset = binary(&mut patch, BinaryOp::Add, 0.0, 1.0);
+    connect(&mut patch, signal, offset, InputKind::A);
+    let wrapped = binary(&mut patch, BinaryOp::Remainder, 0.0, 4.0);
+    connect(&mut patch, offset, wrapped, InputKind::A);
+    let centered = binary(&mut patch, BinaryOp::Subtract, 0.0, 2.0);
+    connect(&mut patch, wrapped, centered, InputKind::A);
+    let magnitude = patch.insert(Module::Unary(UnaryOp::Absolute));
+    connect(&mut patch, centered, magnitude, InputKind::In);
+    let output = binary(&mut patch, BinaryOp::Subtract, 0.0, 1.0);
+    connect(&mut patch, magnitude, output, InputKind::A);
+    set_output(&mut patch, output);
+    composition("Fold", patch, [("Input", InputKind::In, signal)])
 }
 
 pub fn compressor(
@@ -144,7 +234,7 @@ pub fn compressor(
         kind: InputKind::Gain,
         default: Sample::new(makeup.value()).unwrap(),
     });
-    let absolute = patch.insert(Module::Absolute);
+    let absolute = patch.insert(Module::Unary(UnaryOp::Absolute));
     let envelope = patch.insert(Module::Slew {
         rise: attack,
         fall: release,
@@ -1006,5 +1096,29 @@ mod tests {
         let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
 
         assert!(compiled.next().left().value().is_finite());
+    }
+
+    #[test]
+    fn transfer_presets_are_composed_from_scalar_units() {
+        let expected = [
+            2.0_f32.tanh(),
+            (3.0_f32.atan() / 1.5_f32.atan()).min(1.0),
+            1.0 - (-6.0_f32).exp(),
+            0.0,
+            1.0,
+        ];
+        for (module, expected) in [tube(), tape(), fuzz(), fold(), clip()]
+            .into_iter()
+            .zip(expected)
+        {
+            let mut patch = Patch::new();
+            let signal = patch.insert(Module::Constant(Sample::new(2.0).unwrap()));
+            let curve = patch.insert(module);
+            connect(&mut patch, signal, curve, InputKind::In);
+            set_output(&mut patch, curve);
+            let mut compiled =
+                CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+            assert!((compiled.next().left().value() - expected).abs() < 0.001);
+        }
     }
 }

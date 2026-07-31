@@ -1,6 +1,5 @@
-use crate::effect::Distortion;
 use crate::osc::Wave;
-use crate::patch::{self, BinaryOp, Composition, EnvPoint, InputKind, Module, Patch};
+use crate::patch::{self, BinaryOp, Composition, EnvPoint, InputKind, Module, Patch, UnaryOp};
 use crate::sample::{Sample, Unit};
 use crate::time::{Duration, Hertz, Samples, Seconds};
 use serde::{Deserialize, Serialize};
@@ -125,7 +124,7 @@ enum FileModule {
         target: i32,
     },
     Constant(f32),
-    Absolute,
+    Unary(FileUnaryOp),
     Pass,
     Damp {
         coefficient: f32,
@@ -177,7 +176,6 @@ enum FileModule {
     VariableDelay {
         max_time: FileDuration,
     },
-    Waveshaper(FileDistortion),
     Slew {
         rise: f32,
         fall: f32,
@@ -224,8 +222,21 @@ enum FileBinaryOp {
     Subtract,
     Divide,
     Power,
+    Remainder,
+    Minimum,
+    Maximum,
     GreaterThan,
     LessThan,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+enum FileUnaryOp {
+    Absolute,
+    Sine,
+    HyperbolicTangent,
+    Arctangent,
+    Exponential,
+    Sign,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -236,16 +247,6 @@ enum FileWave {
     Saw,
     ReverseSaw,
     Noise,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-enum FileDistortion {
-    Tube,
-    Tape,
-    Fuzz,
-    Clip,
-    Tanh,
-    Fold,
 }
 
 fn default_resonance() -> f32 {
@@ -413,7 +414,14 @@ impl FileModule {
             Module::Degree => FileModule::Degree,
             Module::DegreeGate { target } => FileModule::DegreeGate { target },
             Module::Constant(value) => FileModule::Constant(value.value()),
-            Module::Absolute => FileModule::Absolute,
+            Module::Unary(op) => FileModule::Unary(match op {
+                UnaryOp::Absolute => FileUnaryOp::Absolute,
+                UnaryOp::Sine => FileUnaryOp::Sine,
+                UnaryOp::HyperbolicTangent => FileUnaryOp::HyperbolicTangent,
+                UnaryOp::Arctangent => FileUnaryOp::Arctangent,
+                UnaryOp::Exponential => FileUnaryOp::Exponential,
+                UnaryOp::Sign => FileUnaryOp::Sign,
+            }),
             Module::Pass => FileModule::Pass,
             Module::Damp { coefficient } => FileModule::Damp {
                 coefficient: coefficient.value(),
@@ -474,9 +482,6 @@ impl FileModule {
             Module::VariableDelay { max_time } => FileModule::VariableDelay {
                 max_time: FileDuration::from_duration(max_time),
             },
-            Module::Waveshaper(kind) => {
-                FileModule::Waveshaper(FileDistortion::from_distortion(kind))
-            }
             Module::Slew { rise, fall } => FileModule::Slew {
                 rise: rise.value(),
                 fall: fall.value(),
@@ -524,7 +529,14 @@ impl FileModule {
             FileModule::Constant(value) => {
                 Module::Constant(Sample::new(value).ok_or(LoadError::Value)?)
             }
-            FileModule::Absolute => Module::Absolute,
+            FileModule::Unary(op) => Module::Unary(match op {
+                FileUnaryOp::Absolute => UnaryOp::Absolute,
+                FileUnaryOp::Sine => UnaryOp::Sine,
+                FileUnaryOp::HyperbolicTangent => UnaryOp::HyperbolicTangent,
+                FileUnaryOp::Arctangent => UnaryOp::Arctangent,
+                FileUnaryOp::Exponential => UnaryOp::Exponential,
+                FileUnaryOp::Sign => UnaryOp::Sign,
+            }),
             FileModule::Pass => Module::Pass,
             FileModule::Damp { coefficient } => Module::Damp {
                 coefficient: Unit::new(coefficient).ok_or(LoadError::Value)?,
@@ -586,7 +598,6 @@ impl FileModule {
             FileModule::VariableDelay { max_time } => Module::VariableDelay {
                 max_time: max_time.into_duration()?,
             },
-            FileModule::Waveshaper(kind) => Module::Waveshaper(kind.into_distortion()),
             FileModule::Slew { rise, fall } => Module::Slew {
                 rise: Seconds::new(rise).ok_or(LoadError::Value)?,
                 fall: Seconds::new(fall).ok_or(LoadError::Value)?,
@@ -660,28 +671,6 @@ impl FileWave {
     }
 }
 
-impl FileDistortion {
-    fn from_distortion(kind: Distortion) -> Self {
-        match kind {
-            Distortion::Tube => FileDistortion::Tube,
-            Distortion::Tape => FileDistortion::Tape,
-            Distortion::Fuzz => FileDistortion::Fuzz,
-            Distortion::Clip => FileDistortion::Clip,
-            Distortion::Fold => FileDistortion::Fold,
-        }
-    }
-
-    fn into_distortion(self) -> Distortion {
-        match self {
-            FileDistortion::Tube | FileDistortion::Tanh => Distortion::Tube,
-            FileDistortion::Tape => Distortion::Tape,
-            FileDistortion::Fuzz => Distortion::Fuzz,
-            FileDistortion::Clip => Distortion::Clip,
-            FileDistortion::Fold => Distortion::Fold,
-        }
-    }
-}
-
 impl FileBinaryOp {
     fn from_binary_op(op: BinaryOp) -> Self {
         match op {
@@ -690,6 +679,9 @@ impl FileBinaryOp {
             BinaryOp::Subtract => FileBinaryOp::Subtract,
             BinaryOp::Divide => FileBinaryOp::Divide,
             BinaryOp::Power => FileBinaryOp::Power,
+            BinaryOp::Remainder => FileBinaryOp::Remainder,
+            BinaryOp::Minimum => FileBinaryOp::Minimum,
+            BinaryOp::Maximum => FileBinaryOp::Maximum,
             BinaryOp::GreaterThan => FileBinaryOp::GreaterThan,
             BinaryOp::LessThan => FileBinaryOp::LessThan,
         }
@@ -702,6 +694,9 @@ impl FileBinaryOp {
             FileBinaryOp::Subtract => BinaryOp::Subtract,
             FileBinaryOp::Divide => BinaryOp::Divide,
             FileBinaryOp::Power => BinaryOp::Power,
+            FileBinaryOp::Remainder => BinaryOp::Remainder,
+            FileBinaryOp::Minimum => BinaryOp::Minimum,
+            FileBinaryOp::Maximum => BinaryOp::Maximum,
             FileBinaryOp::GreaterThan => BinaryOp::GreaterThan,
             FileBinaryOp::LessThan => BinaryOp::LessThan,
         }
@@ -824,7 +819,7 @@ mod tests {
                 wave: Wave::ReverseSaw,
                 frequency: Hertz::new(220.0).unwrap(),
             },
-            Module::Waveshaper(Distortion::Tape),
+            crate::preset::tape(),
             Module::Lowpass {
                 cutoff: Hertz::new(1_000.0).unwrap(),
                 resonance: crate::patch::Resonance::new(8.0).unwrap(),

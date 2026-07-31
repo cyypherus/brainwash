@@ -1,7 +1,8 @@
 use crate::delay::Delay;
-use crate::effect::Distortion;
 use crate::osc::Oscillator;
-use crate::patch::{BinaryOp, EnvPoint, InputKind, InputPort, Module, ModuleId, OutputPort, Patch};
+use crate::patch::{
+    BinaryOp, EnvPoint, InputKind, InputPort, Module, ModuleId, OutputPort, Patch, UnaryOp,
+};
 use crate::sample::{Frame, Sample, Unit};
 use crate::time::{Duration, Hertz, SampleRate};
 use std::collections::HashMap;
@@ -61,7 +62,7 @@ enum Node {
         target: i32,
     },
     Constant(Sample),
-    Absolute,
+    Unary(UnaryOp),
     Pass,
     Damp {
         coefficient: Unit,
@@ -87,7 +88,6 @@ enum Node {
         gain: Unit,
     },
     VariableDelay(VariableDelay),
-    Waveshaper(Distortion),
     Slew(Slew),
     Binary {
         op: BinaryOp,
@@ -747,7 +747,14 @@ impl Node {
                 }
             }
             Node::Constant(value) => *value,
-            Node::Absolute => Sample::raw(in0.value().abs()),
+            Node::Unary(op) => Sample::raw(match op {
+                UnaryOp::Absolute => in0.value().abs(),
+                UnaryOp::Sine => in0.value().sin(),
+                UnaryOp::HyperbolicTangent => in0.value().tanh(),
+                UnaryOp::Arctangent => in0.value().atan(),
+                UnaryOp::Exponential => in0.value().exp(),
+                UnaryOp::Sign => in0.value().signum(),
+            }),
             Node::Pass => Sample::raw(
                 inputs
                     .iter()
@@ -821,7 +828,6 @@ impl Node {
                 input(inputs, values, 1).map_or(0.0, Sample::value),
                 input(inputs, values, 2).map_or(0.0, Sample::value),
             )),
-            Node::Waveshaper(kind) => kind.process(in0),
             Node::Slew(slew) => {
                 if let Some(rise) = input(inputs, values, 1) {
                     slew.rise = crate::time::Seconds::new(rise.value())
@@ -848,6 +854,15 @@ impl Node {
                         }
                     }
                     BinaryOp::Power => a.max(0.0).powf(b),
+                    BinaryOp::Remainder => {
+                        if b == 0.0 {
+                            0.0
+                        } else {
+                            a.rem_euclid(b)
+                        }
+                    }
+                    BinaryOp::Minimum => a.min(b),
+                    BinaryOp::Maximum => a.max(b),
                     BinaryOp::GreaterThan => {
                         if a > b {
                             1.0
@@ -1155,7 +1170,7 @@ fn create_node(
         Module::Degree => Node::Degree,
         Module::DegreeGate { target } => Node::DegreeGate { target: *target },
         Module::Constant(value) => Node::Constant(*value),
-        Module::Absolute => Node::Absolute,
+        Module::Unary(op) => Node::Unary(*op),
         Module::Pass => Node::Pass,
         Module::Damp { coefficient } => Node::Damp {
             coefficient: *coefficient,
@@ -1198,7 +1213,6 @@ fn create_node(
         Module::VariableDelay { max_time } => {
             Node::VariableDelay(VariableDelay::new(rate, *max_time))
         }
-        Module::Waveshaper(kind) => Node::Waveshaper(*kind),
         Module::Slew { rise, fall } => Node::Slew(Slew {
             rate,
             rise: *rise,
@@ -1411,7 +1425,7 @@ mod tests {
 
     #[test]
     fn composition_boundaries_are_elided_from_the_runtime_plan() {
-        let mut module = Module::Absolute;
+        let mut module = Module::Unary(UnaryOp::Absolute);
         for depth in 0..16 {
             let mut patch = Patch::new();
             let input = patch.insert(Module::Input {

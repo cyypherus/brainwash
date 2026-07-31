@@ -3,7 +3,6 @@ static A: rlsf::GlobalTlsf = rlsf::GlobalTlsf::new();
 
 pub mod compile;
 pub mod delay;
-pub mod effect;
 pub mod env;
 pub mod filter;
 pub mod live;

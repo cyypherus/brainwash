@@ -542,7 +542,21 @@ pub(super) fn audio_module(
         return Ok(module.clone());
     }
     match module.kind() {
-        ModuleKind::Primitive => unreachable!(),
+        ModuleKind::Primitive
+        | ModuleKind::Constant
+        | ModuleKind::Absolute
+        | ModuleKind::Sine
+        | ModuleKind::Tanh
+        | ModuleKind::Atan
+        | ModuleKind::Exp
+        | ModuleKind::Sign
+        | ModuleKind::Subtract
+        | ModuleKind::Divide
+        | ModuleKind::Power
+        | ModuleKind::Remainder
+        | ModuleKind::Minimum
+        | ModuleKind::Maximum => unreachable!(),
+        ModuleKind::Damp | ModuleKind::VariableDelay | ModuleKind::Slew => unreachable!(),
         ModuleKind::Freq => Ok(AudioModule::Freq),
         ModuleKind::Gate => Ok(AudioModule::Gate),
         ModuleKind::Degree => Ok(AudioModule::Degree),
@@ -633,9 +647,8 @@ pub(super) fn audio_module(
             audio_unit(module, 4)?,
         )),
         ModuleKind::Distortion => Ok(brainwash::preset::distortion(
-            audio_distortion(module)?,
-            Drive::new(audio_float(module, 2)?).ok_or(AudioPatchError::InvalidParameter)?,
-            Sample::new(audio_float(module, 3)?).ok_or(AudioPatchError::InvalidParameter)?,
+            Sample::new(audio_float(module, 1)?).ok_or(AudioPatchError::InvalidParameter)?,
+            Sample::new(audio_float(module, 2)?).ok_or(AudioPatchError::InvalidParameter)?,
         )),
         ModuleKind::Compressor => Ok(brainwash::preset::compressor(
             audio_unit(module, 1)?,
@@ -914,20 +927,6 @@ fn audio_unit(module: &Module, parameter: usize) -> Result<Unit, AudioPatchError
 fn filter_cutoff(value: f32) -> Result<Hertz, AudioPatchError> {
     Hertz::new(20.0 * 1000.0_f32.powf(value.clamp(0.0, 1.0)))
         .ok_or(AudioPatchError::InvalidParameter)
-}
-
-fn audio_distortion(module: &Module) -> Result<AudioDistortion, AudioPatchError> {
-    let Some(ParameterValue::Enum { index, .. }) = module.parameter(1).map(|p| p.value) else {
-        return Err(AudioPatchError::InvalidParameter);
-    };
-    match index {
-        0 => Ok(AudioDistortion::Tube),
-        1 => Ok(AudioDistortion::Tape),
-        2 => Ok(AudioDistortion::Fuzz),
-        3 => Ok(AudioDistortion::Fold),
-        4 => Ok(AudioDistortion::Clip),
-        _ => Err(AudioPatchError::InvalidParameter),
-    }
 }
 
 pub(super) fn scale_from_index(index: usize) -> Scale {

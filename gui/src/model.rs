@@ -1,6 +1,5 @@
 use crate::audio::{AudioHandle, MeterRoute, ProbeRoute, VoiceMode};
 use brainwash::compile::{CompileError, CompiledPatch};
-use brainwash::effect::{Distortion as AudioDistortion, Drive};
 use brainwash::osc::Wave;
 use brainwash::patch::{
     BinaryOp, CompressorRatio, ConnectError, EnvPoint as AudioEnvPoint, Gain,
@@ -248,6 +247,13 @@ struct OutputDependencies(Vec<ModuleId>);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModuleKind {
     Primitive,
+    Constant,
+    Absolute,
+    Sine,
+    Tanh,
+    Atan,
+    Exp,
+    Sign,
     Freq,
     Gate,
     Degree,
@@ -273,6 +279,15 @@ pub enum ModuleKind {
     Probe,
     Multiply,
     Add,
+    Subtract,
+    Divide,
+    Power,
+    Remainder,
+    Minimum,
+    Maximum,
+    Damp,
+    VariableDelay,
+    Slew,
     GreaterThan,
     LessThan,
     Switch,
@@ -307,6 +322,17 @@ pub struct PaletteModule {
     kind: ModuleKind,
     name: String,
     user: Option<usize>,
+    preset: Option<CurvePreset>,
+    category: ModuleCategory,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CurvePreset {
+    Tube,
+    Tape,
+    Fuzz,
+    Fold,
+    Clip,
 }
 
 impl PaletteModule {
@@ -319,7 +345,7 @@ impl PaletteModule {
     }
 
     pub fn category(&self) -> ModuleCategory {
-        self.kind.category()
+        self.category
     }
 }
 
@@ -412,7 +438,6 @@ enum ModuleBody {
     },
     Distortion {
         input: FloatParam,
-        kind: EnumParam,
         drive: FloatParam,
         asymmetry: FloatParam,
     },
@@ -998,17 +1023,32 @@ impl ModuleKind {
             | ModuleKind::Ramp
             | ModuleKind::Adsr
             | ModuleKind::Envelope => ModuleCategory::Shape,
-            ModuleKind::Lowpass | ModuleKind::Highpass => ModuleCategory::Filter,
+            ModuleKind::Slew => ModuleCategory::Shape,
+            ModuleKind::Lowpass | ModuleKind::Highpass | ModuleKind::Damp => ModuleCategory::Filter,
             ModuleKind::Comb
             | ModuleKind::Allpass
             | ModuleKind::Delay
             | ModuleKind::DelayTap
+            | ModuleKind::VariableDelay
             | ModuleKind::Reverb
             | ModuleKind::Distortion
             | ModuleKind::Compressor
             | ModuleKind::Flanger => ModuleCategory::Effect,
-            ModuleKind::Multiply
+            ModuleKind::Constant
+            | ModuleKind::Absolute
+            | ModuleKind::Sine
+            | ModuleKind::Tanh
+            | ModuleKind::Atan
+            | ModuleKind::Exp
+            | ModuleKind::Sign
+            | ModuleKind::Multiply
             | ModuleKind::Add
+            | ModuleKind::Subtract
+            | ModuleKind::Divide
+            | ModuleKind::Power
+            | ModuleKind::Remainder
+            | ModuleKind::Minimum
+            | ModuleKind::Maximum
             | ModuleKind::GreaterThan
             | ModuleKind::LessThan
             | ModuleKind::Switch
@@ -1029,6 +1069,13 @@ impl ModuleKind {
     pub fn label(self) -> &'static str {
         match self {
             ModuleKind::Primitive => "Unit",
+            ModuleKind::Constant => "Constant",
+            ModuleKind::Absolute => "Absolute",
+            ModuleKind::Sine => "Sine",
+            ModuleKind::Tanh => "Tanh",
+            ModuleKind::Atan => "Atan",
+            ModuleKind::Exp => "Exp",
+            ModuleKind::Sign => "Sign",
             ModuleKind::Freq => "Freq",
             ModuleKind::Gate => "Gate",
             ModuleKind::Degree => "Degree",
@@ -1054,6 +1101,15 @@ impl ModuleKind {
             ModuleKind::Probe => "Probe",
             ModuleKind::Multiply => "Mul",
             ModuleKind::Add => "Add",
+            ModuleKind::Subtract => "Subtract",
+            ModuleKind::Divide => "Divide",
+            ModuleKind::Power => "Power",
+            ModuleKind::Remainder => "Remainder",
+            ModuleKind::Minimum => "Minimum",
+            ModuleKind::Maximum => "Maximum",
+            ModuleKind::Damp => "Damp",
+            ModuleKind::VariableDelay => "Variable Delay",
+            ModuleKind::Slew => "Slew",
             ModuleKind::GreaterThan => "GT",
             ModuleKind::LessThan => "LT",
             ModuleKind::Switch => "Switch",
@@ -1079,6 +1135,25 @@ impl ModuleKind {
     fn default_body(self) -> ModuleBody {
         match self {
             ModuleKind::Primitive => ModuleBody::Primitive(AudioModule::Pass),
+            ModuleKind::Constant => ModuleBody::Primitive(AudioModule::Constant(AudioSample::ZERO)),
+            ModuleKind::Absolute => {
+                ModuleBody::Primitive(AudioModule::Unary(brainwash::patch::UnaryOp::Absolute))
+            }
+            ModuleKind::Sine => {
+                ModuleBody::Primitive(AudioModule::Unary(brainwash::patch::UnaryOp::Sine))
+            }
+            ModuleKind::Tanh => ModuleBody::Primitive(AudioModule::Unary(
+                brainwash::patch::UnaryOp::HyperbolicTangent,
+            )),
+            ModuleKind::Atan => {
+                ModuleBody::Primitive(AudioModule::Unary(brainwash::patch::UnaryOp::Arctangent))
+            }
+            ModuleKind::Exp => {
+                ModuleBody::Primitive(AudioModule::Unary(brainwash::patch::UnaryOp::Exponential))
+            }
+            ModuleKind::Sign => {
+                ModuleBody::Primitive(AudioModule::Unary(brainwash::patch::UnaryOp::Sign))
+            }
             ModuleKind::Freq => ModuleBody::Freq,
             ModuleKind::Gate => ModuleBody::Gate,
             ModuleKind::Degree => ModuleBody::Degree,
@@ -1170,7 +1245,6 @@ impl ModuleKind {
             },
             ModuleKind::Distortion => ModuleBody::Distortion {
                 input: float_param(-100, 100, 1, 0),
-                kind: enum_param(&["tube", "tape", "fuzz", "fold", "clip"], 0),
                 drive: float_param(10, 2000, 10, 200),
                 asymmetry: float_param(-100, 100, 5, 0),
             },
@@ -1196,6 +1270,46 @@ impl ModuleKind {
                 a: float_param(-100_000, 100_000, 5, 0),
                 b: float_param(-100_000, 100_000, 5, 0),
             },
+            ModuleKind::Subtract => ModuleBody::Primitive(AudioModule::Binary {
+                op: BinaryOp::Subtract,
+                a: AudioSample::ZERO,
+                b: AudioSample::ZERO,
+            }),
+            ModuleKind::Divide => ModuleBody::Primitive(AudioModule::Binary {
+                op: BinaryOp::Divide,
+                a: AudioSample::ZERO,
+                b: AudioSample::new(1.0).unwrap(),
+            }),
+            ModuleKind::Power => ModuleBody::Primitive(AudioModule::Binary {
+                op: BinaryOp::Power,
+                a: AudioSample::ZERO,
+                b: AudioSample::new(1.0).unwrap(),
+            }),
+            ModuleKind::Remainder => ModuleBody::Primitive(AudioModule::Binary {
+                op: BinaryOp::Remainder,
+                a: AudioSample::ZERO,
+                b: AudioSample::new(1.0).unwrap(),
+            }),
+            ModuleKind::Minimum => ModuleBody::Primitive(AudioModule::Binary {
+                op: BinaryOp::Minimum,
+                a: AudioSample::ZERO,
+                b: AudioSample::ZERO,
+            }),
+            ModuleKind::Maximum => ModuleBody::Primitive(AudioModule::Binary {
+                op: BinaryOp::Maximum,
+                a: AudioSample::ZERO,
+                b: AudioSample::ZERO,
+            }),
+            ModuleKind::Damp => ModuleBody::Primitive(AudioModule::Damp {
+                coefficient: Unit::new(0.5).unwrap(),
+            }),
+            ModuleKind::VariableDelay => ModuleBody::Primitive(AudioModule::VariableDelay {
+                max_time: Duration::Seconds(Seconds::new(1.0).unwrap()),
+            }),
+            ModuleKind::Slew => ModuleBody::Primitive(AudioModule::Slew {
+                rise: Seconds::new(0.01).unwrap(),
+                fall: Seconds::new(0.1).unwrap(),
+            }),
             ModuleKind::GreaterThan => ModuleBody::GreaterThan {
                 a: float_param(-100_000, 100_000, 5, 0),
                 b: float_param(-100_000, 100_000, 5, 0),
@@ -1250,6 +1364,20 @@ impl ModuleKind {
     fn special_editor(self) -> Option<SpecialEditor> {
         match self {
             ModuleKind::Primitive => None,
+            ModuleKind::Constant
+            | ModuleKind::Absolute
+            | ModuleKind::Sine
+            | ModuleKind::Tanh
+            | ModuleKind::Atan
+            | ModuleKind::Exp
+            | ModuleKind::Sign
+            | ModuleKind::Subtract
+            | ModuleKind::Divide
+            | ModuleKind::Power
+            | ModuleKind::Remainder
+            | ModuleKind::Minimum
+            | ModuleKind::Maximum => None,
+            ModuleKind::Damp | ModuleKind::VariableDelay | ModuleKind::Slew => None,
             ModuleKind::Adsr => Some(SpecialEditor::Adsr),
             ModuleKind::Envelope => Some(SpecialEditor::Envelope),
             ModuleKind::Probe => Some(SpecialEditor::Probe),
@@ -1391,6 +1519,44 @@ impl ModuleBody {
 
     fn parameters(&self) -> Vec<ModuleParameter> {
         match self {
+            ModuleBody::Primitive(AudioModule::Constant(value)) => vec![float_parameter(
+                "Value",
+                float_param(-2000, 2000, 1, (value.value() * 100.0).round() as i32),
+            )],
+            ModuleBody::Primitive(AudioModule::Binary { a, b, .. }) => vec![
+                float_parameter(
+                    "A",
+                    float_param(-2000, 2000, 1, (a.value() * 100.0).round() as i32),
+                ),
+                float_parameter(
+                    "B",
+                    float_param(-2000, 2000, 1, (b.value() * 100.0).round() as i32),
+                ),
+            ],
+            ModuleBody::Primitive(AudioModule::Damp { coefficient }) => vec![float_parameter(
+                "Damp",
+                float_param(0, 100, 1, (coefficient.value() * 100.0).round() as i32),
+            )],
+            ModuleBody::Primitive(AudioModule::VariableDelay { max_time }) => {
+                let seconds = match max_time {
+                    Duration::Seconds(value) => value.value(),
+                    Duration::Samples(value) => value.value() as f32 / 44_100.0,
+                };
+                vec![float_parameter(
+                    "Max",
+                    float_param(1, 1000, 1, (seconds * 100.0).round() as i32),
+                )]
+            }
+            ModuleBody::Primitive(AudioModule::Slew { rise, fall }) => vec![
+                float_parameter(
+                    "Rise",
+                    float_param(0, 1000, 1, (rise.value() * 100.0).round() as i32),
+                ),
+                float_parameter(
+                    "Fall",
+                    float_param(0, 1000, 1, (fall.value() * 100.0).round() as i32),
+                ),
+            ],
             ModuleBody::Primitive(_) => Vec::new(),
             ModuleBody::Freq | ModuleBody::Gate | ModuleBody::Degree => Vec::new(),
             ModuleBody::DegreeGate { degree } => vec![int_parameter("Deg", *degree)],
@@ -1483,12 +1649,10 @@ impl ModuleBody {
             ],
             ModuleBody::Distortion {
                 input,
-                kind,
                 drive,
                 asymmetry,
             } => vec![
                 float_parameter("In", *input),
-                enum_parameter("Type", kind.clone()),
                 float_parameter("Drive", *drive),
                 float_parameter("Asym", *asymmetry),
             ],
@@ -1714,6 +1878,81 @@ impl ModuleBody {
 
     fn set_parameter(&mut self, index: usize, parameter: ModuleParameter) -> bool {
         match self {
+            ModuleBody::Primitive(AudioModule::Constant(value)) => {
+                let ParameterValue::Float { value: next, .. } = parameter.value else {
+                    return false;
+                };
+                if index != 0 {
+                    return false;
+                }
+                let Some(next) = AudioSample::new(next as f32 / 100.0) else {
+                    return false;
+                };
+                let changed = *value != next;
+                *value = next;
+                changed
+            }
+            ModuleBody::Primitive(AudioModule::Binary { a, b, .. }) => {
+                let ParameterValue::Float { value: next, .. } = parameter.value else {
+                    return false;
+                };
+                let Some(next) = AudioSample::new(next as f32 / 100.0) else {
+                    return false;
+                };
+                let target = match index {
+                    0 => a,
+                    1 => b,
+                    _ => return false,
+                };
+                let changed = *target != next;
+                *target = next;
+                changed
+            }
+            ModuleBody::Primitive(AudioModule::Damp { coefficient }) => {
+                let ParameterValue::Float { value, .. } = parameter.value else {
+                    return false;
+                };
+                if index != 0 {
+                    return false;
+                }
+                let Some(next) = Unit::new(value as f32 / 100.0) else {
+                    return false;
+                };
+                let changed = *coefficient != next;
+                *coefficient = next;
+                changed
+            }
+            ModuleBody::Primitive(AudioModule::VariableDelay { max_time }) => {
+                let ParameterValue::Float { value, .. } = parameter.value else {
+                    return false;
+                };
+                if index != 0 {
+                    return false;
+                }
+                let Some(seconds) = Seconds::new(value as f32 / 100.0) else {
+                    return false;
+                };
+                let next = Duration::Seconds(seconds);
+                let changed = *max_time != next;
+                *max_time = next;
+                changed
+            }
+            ModuleBody::Primitive(AudioModule::Slew { rise, fall }) => {
+                let ParameterValue::Float { value, .. } = parameter.value else {
+                    return false;
+                };
+                let Some(next) = Seconds::new(value as f32 / 100.0) else {
+                    return false;
+                };
+                let target = match index {
+                    0 => rise,
+                    1 => fall,
+                    _ => return false,
+                };
+                let changed = *target != next;
+                *target = next;
+                changed
+            }
             ModuleBody::Primitive(_) => false,
             ModuleBody::DegreeGate { degree } => set_int_param(degree, index, 0, &parameter),
             ModuleBody::Rate { time } => set_time_param(time, index, 0, &parameter),
@@ -1802,14 +2041,12 @@ impl ModuleBody {
             }
             ModuleBody::Distortion {
                 input,
-                kind,
                 drive,
                 asymmetry,
             } => {
                 set_float_param(input, index, 0, &parameter)
-                    || set_enum_param(kind, index, 1, &parameter)
-                    || set_float_param(drive, index, 2, &parameter)
-                    || set_float_param(asymmetry, index, 3, &parameter)
+                    || set_float_param(drive, index, 1, &parameter)
+                    || set_float_param(asymmetry, index, 2, &parameter)
             }
             ModuleBody::Compressor {
                 input,
@@ -2051,7 +2288,7 @@ impl ModuleCategory {
             ModuleCategory::Shape => "Shape",
             ModuleCategory::Filter => "Filter",
             ModuleCategory::Effect => "Effect",
-            ModuleCategory::Logic => "Logic",
+            ModuleCategory::Logic => "Function",
             ModuleCategory::Routing => "Routing",
             ModuleCategory::Composition => "Composition",
             ModuleCategory::Output => "Output",
@@ -3004,14 +3241,36 @@ impl GuiState {
                 kind,
                 name: kind.label().to_string(),
                 user: None,
+                preset: None,
+                category: kind.category(),
             })
             .collect::<Vec<_>>();
+        if category == ModuleCategory::Effect {
+            modules.extend(
+                [
+                    ("Tube", CurvePreset::Tube),
+                    ("Tape", CurvePreset::Tape),
+                    ("Fuzz", CurvePreset::Fuzz),
+                    ("Fold", CurvePreset::Fold),
+                    ("Clip", CurvePreset::Clip),
+                ]
+                .map(|(name, preset)| PaletteModule {
+                    kind: ModuleKind::Composition,
+                    name: name.to_string(),
+                    user: None,
+                    preset: Some(preset),
+                    category: ModuleCategory::Effect,
+                }),
+            );
+        }
         if category == ModuleCategory::Composition {
             modules.extend(self.user_compositions.iter().enumerate().map(
                 |(index, composition)| PaletteModule {
                     kind: ModuleKind::Composition,
                     name: composition.name().to_string(),
                     user: Some(index),
+                    preset: None,
+                    category: ModuleCategory::Composition,
                 },
             ));
         }
@@ -3999,9 +4258,24 @@ impl GuiState {
 
     fn insert_palette_module(&mut self, choice: PaletteModule) {
         let graph = choice
-            .user
-            .and_then(|index| self.user_compositions.get(index))
-            .cloned();
+            .preset
+            .map(|preset| match preset {
+                CurvePreset::Tube => brainwash::preset::tube(),
+                CurvePreset::Tape => brainwash::preset::tape(),
+                CurvePreset::Fuzz => brainwash::preset::fuzz(),
+                CurvePreset::Fold => brainwash::preset::fold(),
+                CurvePreset::Clip => brainwash::preset::clip(),
+            })
+            .and_then(|module| match module {
+                AudioModule::Composition(graph) => Some(*graph),
+                _ => None,
+            })
+            .or_else(|| {
+                choice
+                    .user
+                    .and_then(|index| self.user_compositions.get(index))
+                    .cloned()
+            });
         self.insert_at_cursor(choice.kind, graph);
     }
 
@@ -4104,36 +4378,6 @@ mod tests {
                 ..
             }
         ));
-
-        for (index, expected) in [
-            AudioDistortion::Tube,
-            AudioDistortion::Tape,
-            AudioDistortion::Fuzz,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let mut distortion = Module {
-                id: ModuleId::new(0),
-                position: GridPos::new(0, 0),
-                orientation: Orientation::Right,
-                body: ModuleKind::Distortion.default_body(),
-                disabled: false,
-            };
-            let ModuleBody::Distortion { kind, .. } = &mut distortion.body else {
-                panic!()
-            };
-            assert_eq!(kind.options[index], ["tube", "tape", "fuzz"][index]);
-            kind.index = index;
-            let AudioModule::Composition(composition) =
-                audio_module(&distortion, rate, 120).unwrap()
-            else {
-                panic!()
-            };
-            assert!(composition.patch().module_entries().any(
-                |(_, module)| matches!(module, AudioModule::Waveshaper(kind) if *kind == expected)
-            ));
-        }
 
         let mut lowpass = Module {
             id: ModuleId::new(0),
@@ -4326,7 +4570,30 @@ mod tests {
     fn default_module_body_matches_module_kind() {
         for kind in all_modules().iter().copied() {
             let body = kind.default_body();
-            assert_eq!(body.kind(), kind);
+            let expected = if matches!(
+                kind,
+                ModuleKind::Constant
+                    | ModuleKind::Absolute
+                    | ModuleKind::Sine
+                    | ModuleKind::Tanh
+                    | ModuleKind::Atan
+                    | ModuleKind::Exp
+                    | ModuleKind::Sign
+                    | ModuleKind::Subtract
+                    | ModuleKind::Divide
+                    | ModuleKind::Power
+                    | ModuleKind::Remainder
+                    | ModuleKind::Minimum
+                    | ModuleKind::Maximum
+                    | ModuleKind::Damp
+                    | ModuleKind::VariableDelay
+                    | ModuleKind::Slew
+            ) {
+                ModuleKind::Primitive
+            } else {
+                kind
+            };
+            assert_eq!(body.kind(), expected);
             assert_eq!(body.env_points().is_empty(), kind != ModuleKind::Envelope);
         }
     }
@@ -4917,6 +5184,22 @@ impl ModuleKind {
     fn input_count(self) -> u16 {
         match self {
             ModuleKind::Primitive => 0,
+            ModuleKind::Constant
+            | ModuleKind::Absolute
+            | ModuleKind::Sine
+            | ModuleKind::Tanh
+            | ModuleKind::Atan
+            | ModuleKind::Exp
+            | ModuleKind::Sign
+            | ModuleKind::Subtract
+            | ModuleKind::Divide
+            | ModuleKind::Power
+            | ModuleKind::Remainder
+            | ModuleKind::Minimum
+            | ModuleKind::Maximum => self.default_body().input_count(),
+            ModuleKind::Damp | ModuleKind::VariableDelay | ModuleKind::Slew => {
+                self.default_body().input_count()
+            }
             ModuleKind::Freq
             | ModuleKind::Gate
             | ModuleKind::Degree
@@ -4961,7 +5244,21 @@ impl ModuleKind {
 
     fn output_count(self) -> u16 {
         match self {
-            ModuleKind::Primitive => 1,
+            ModuleKind::Primitive
+            | ModuleKind::Constant
+            | ModuleKind::Absolute
+            | ModuleKind::Sine
+            | ModuleKind::Tanh
+            | ModuleKind::Atan
+            | ModuleKind::Exp
+            | ModuleKind::Sign
+            | ModuleKind::Subtract
+            | ModuleKind::Divide
+            | ModuleKind::Power
+            | ModuleKind::Remainder
+            | ModuleKind::Minimum
+            | ModuleKind::Maximum => 1,
+            ModuleKind::Damp | ModuleKind::VariableDelay | ModuleKind::Slew => 1,
             ModuleKind::Output | ModuleKind::CompositionOutput => 0,
             ModuleKind::LeftSplit | ModuleKind::TopSplit => 2,
             ModuleKind::Freq
@@ -5111,8 +5408,24 @@ pub fn all_modules() -> &'static [ModuleKind] {
         ModuleKind::Distortion,
         ModuleKind::Compressor,
         ModuleKind::Flanger,
+        ModuleKind::Constant,
+        ModuleKind::Absolute,
+        ModuleKind::Sine,
+        ModuleKind::Tanh,
+        ModuleKind::Atan,
+        ModuleKind::Exp,
+        ModuleKind::Sign,
+        ModuleKind::Damp,
+        ModuleKind::VariableDelay,
+        ModuleKind::Slew,
         ModuleKind::Add,
         ModuleKind::Multiply,
+        ModuleKind::Subtract,
+        ModuleKind::Divide,
+        ModuleKind::Power,
+        ModuleKind::Remainder,
+        ModuleKind::Minimum,
+        ModuleKind::Maximum,
         ModuleKind::Switch,
         ModuleKind::Probe,
         ModuleKind::Sample,

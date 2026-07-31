@@ -1,4 +1,3 @@
-use crate::effect::Distortion;
 use crate::osc::Wave;
 use crate::sample::{Sample, Unit};
 use crate::time::{Duration, Hertz, Seconds};
@@ -15,8 +14,21 @@ pub enum BinaryOp {
     Subtract,
     Divide,
     Power,
+    Remainder,
+    Minimum,
+    Maximum,
     GreaterThan,
     LessThan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnaryOp {
+    Absolute,
+    Sine,
+    HyperbolicTangent,
+    Arctangent,
+    Exponential,
+    Sign,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -112,7 +124,7 @@ pub enum Module {
         target: i32,
     },
     Constant(Sample),
-    Absolute,
+    Unary(UnaryOp),
     Pass,
     Damp {
         coefficient: Unit,
@@ -159,7 +171,6 @@ pub enum Module {
     VariableDelay {
         max_time: Duration,
     },
-    Waveshaper(Distortion),
     Slew {
         rise: Seconds,
         fall: Seconds,
@@ -603,7 +614,7 @@ impl Module {
             | Module::Degree
             | Module::DegreeGate { .. }
             | Module::Constant(_) => vec![],
-            Module::Absolute => vec![InputKind::In],
+            Module::Unary(_) => vec![InputKind::In],
             Module::Damp { .. } => vec![InputKind::In, InputKind::Damp],
             Module::Random => vec![InputKind::Gate],
             Module::Pass | Module::Probe => vec![InputKind::In],
@@ -625,7 +636,6 @@ impl Module {
             Module::VariableDelay { .. } => {
                 vec![InputKind::In, InputKind::Time, InputKind::Feedback]
             }
-            Module::Waveshaper(_) => vec![InputKind::In],
             Module::Slew { .. } => vec![InputKind::In, InputKind::Rise, InputKind::Fall],
             Module::Sample { .. } => vec![InputKind::Position],
             Module::Binary { .. } => vec![InputKind::A, InputKind::B],
