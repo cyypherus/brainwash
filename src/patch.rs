@@ -50,6 +50,14 @@ pub enum InputKind {
     Select,
     Position,
     Q,
+    Channel1,
+    Channel2,
+    Channel3,
+    Channel4,
+    Channel5,
+    Channel6,
+    Channel7,
+    Channel8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]

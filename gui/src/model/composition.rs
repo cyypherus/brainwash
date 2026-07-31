@@ -53,7 +53,7 @@ pub(super) fn composition_body(
         (4, 10),
         (12, 12),
     ];
-    const FDN_DRIVE_POSITIONS: [(u16, u16); 11] = [
+    const FDN_VOICE_GROUP_POSITIONS: [(u16, u16); 11] = [
         (0, 0),
         (2, 1),
         (4, 2),
@@ -66,7 +66,7 @@ pub(super) fn composition_body(
         (18, 8),
         (20, 0),
     ];
-    const FEEDBACK_BANK_POSITIONS: [(u16, u16); 12] = [
+    const FEEDBACK_GROUP_POSITIONS: [(u16, u16); 12] = [
         (0, 0),
         (2, 0),
         (4, 0),
@@ -98,7 +98,7 @@ pub(super) fn composition_body(
         (28, 13),
         (30, 15),
     ];
-    const OUTPUT_MIX_POSITIONS: [(u16, u16); 13] = [
+    const OUTPUT_DECODER_POSITIONS: [(u16, u16); 13] = [
         (0, 0),
         (2, 0),
         (4, 0),
@@ -229,22 +229,27 @@ pub(super) fn composition_body(
             let index = entries.iter().position(|(id, _)| *id == *core_id)?;
             let (x, y) = FDN_POSITIONS[index];
             GridPos::new(x, y)
-        } else if graph.name() == "FDN Drive" && entries.len() == FDN_DRIVE_POSITIONS.len() {
-            let index = entries.iter().position(|(id, _)| *id == *core_id)?;
-            let (x, y) = FDN_DRIVE_POSITIONS[index];
-            GridPos::new(x, y)
-        } else if graph.name() == "Feedback Bank" && entries.len() == FEEDBACK_BANK_POSITIONS.len()
+        } else if graph.name() == "FDN Voice Group"
+            && entries.len() == FDN_VOICE_GROUP_POSITIONS.len()
         {
             let index = entries.iter().position(|(id, _)| *id == *core_id)?;
-            let (x, y) = FEEDBACK_BANK_POSITIONS[index];
+            let (x, y) = FDN_VOICE_GROUP_POSITIONS[index];
+            GridPos::new(x, y)
+        } else if graph.name() == "Feedback Group"
+            && entries.len() == FEEDBACK_GROUP_POSITIONS.len()
+        {
+            let index = entries.iter().position(|(id, _)| *id == *core_id)?;
+            let (x, y) = FEEDBACK_GROUP_POSITIONS[index];
             GridPos::new(x, y)
         } else if graph.name() == "Reflection" && entries.len() == REFLECTION_POSITIONS.len() {
             let index = entries.iter().position(|(id, _)| *id == *core_id)?;
             let (x, y) = REFLECTION_POSITIONS[index];
             GridPos::new(x, y)
-        } else if graph.name() == "Output Mix" && entries.len() == OUTPUT_MIX_POSITIONS.len() {
+        } else if graph.name() == "Output Decoder"
+            && entries.len() == OUTPUT_DECODER_POSITIONS.len()
+        {
             let index = entries.iter().position(|(id, _)| *id == *core_id)?;
-            let (x, y) = OUTPUT_MIX_POSITIONS[index];
+            let (x, y) = OUTPUT_DECODER_POSITIONS[index];
             GridPos::new(x, y)
         } else {
             *positions.get(core_id)?

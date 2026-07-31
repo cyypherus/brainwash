@@ -4741,15 +4741,15 @@ mod tests {
             .position;
         state.instrument_mut().surface_mut().cursor = tank;
         state.apply(GuiAction::EditComposition);
-        let drive = state
+        let voice_group = state
             .modules()
             .iter()
-            .find(|module| module.label() == "FDN Drive")
+            .find(|module| module.label() == "FDN Voice Group")
             .unwrap()
             .position;
-        state.instrument_mut().surface_mut().cursor = drive;
+        state.instrument_mut().surface_mut().cursor = voice_group;
         state.apply(GuiAction::EditComposition);
-        for label in ["Delay Modulation Bank", "Feedback Bank"] {
+        for label in ["Delay Group", "Feedback Group"] {
             let position = state
                 .modules()
                 .iter()
@@ -4759,8 +4759,62 @@ mod tests {
             state.instrument_mut().surface_mut().cursor = position;
             state.apply(GuiAction::EditComposition);
             assert_eq!(state.composition_depth(), 4);
+            let child = if label == "Delay Group" {
+                "Delay Modulation"
+            } else {
+                "Feedback Path"
+            };
+            let position = state
+                .modules()
+                .iter()
+                .find(|module| module.label() == child)
+                .unwrap()
+                .position;
+            state.instrument_mut().surface_mut().cursor = position;
+            state.apply(GuiAction::EditComposition);
+            assert_eq!(state.composition_depth(), 5);
+            if label == "Feedback Group" {
+                let position = state
+                    .modules()
+                    .iter()
+                    .find(|module| module.label() == "Room Decay")
+                    .unwrap()
+                    .position;
+                state.instrument_mut().surface_mut().cursor = position;
+                state.apply(GuiAction::EditComposition);
+                assert_eq!(state.composition_depth(), 6);
+                state.apply(GuiAction::ExitComposition);
+            }
+            state.apply(GuiAction::ExitComposition);
             state.apply(GuiAction::ExitComposition);
         }
+        state.apply(GuiAction::ExitComposition);
+
+        let decoder = state
+            .modules()
+            .iter()
+            .find(|module| module.label() == "Output Decoder")
+            .unwrap()
+            .position;
+        state.instrument_mut().surface_mut().cursor = decoder;
+        state.apply(GuiAction::EditComposition);
+        let row = state
+            .modules()
+            .iter()
+            .find(|module| module.label() == "FDN Output Row")
+            .unwrap()
+            .position;
+        state.instrument_mut().surface_mut().cursor = row;
+        state.apply(GuiAction::EditComposition);
+        let pair = state
+            .modules()
+            .iter()
+            .find(|module| module.label() == "FDN Weighted Pair")
+            .unwrap()
+            .position;
+        state.instrument_mut().surface_mut().cursor = pair;
+        state.apply(GuiAction::EditComposition);
+        assert_eq!(state.composition_depth(), 5);
     }
 
     #[test]
