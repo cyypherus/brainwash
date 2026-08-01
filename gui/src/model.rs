@@ -4145,6 +4145,22 @@ mod tests {
     }
 
     #[test]
+    fn oscillator_projection_contains_only_functional_modules() {
+        let AudioModule::Composition(graph) = brainwash::preset::sine(Hertz::new(440.0).unwrap())
+        else {
+            unreachable!()
+        };
+        let mut next_module_id = 0;
+        let ModuleBody::Composition { surface, .. } =
+            composition_body(graph, &mut next_module_id).unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(surface.modules.len(), 5);
+        assert!(surface.modules.iter().all(|module| !module.is_wire()));
+    }
+
+    #[test]
     fn palette_selection_identifies_one_row_when_kinds_repeat() {
         let mut state = GuiState::default();
         state.open_category(ModuleCategory::Effect);
