@@ -1,69 +1,37 @@
-use crate::sample::Sample;
 use crate::time::{Hertz, SampleRate};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Wave {
-    Sine,
-    Square,
-    Triangle,
-    Saw,
-    ReverseSaw,
-    Noise,
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Phase {
+    rate: SampleRate,
+    phase: f32,
+}
+
+impl Phase {
+    pub fn new(rate: SampleRate) -> Self {
+        Self { rate, phase: 0.0 }
+    }
+
+    pub fn next(&mut self, frequency: Hertz) -> f32 {
+        let value = self.phase;
+        self.phase += frequency.value() / self.rate.value() as f32;
+        self.phase -= self.phase.floor();
+        value
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Oscillator {
-    wave: Wave,
-    rate: SampleRate,
-    frequency: Hertz,
-    phase: f32,
-    noise: u32,
-}
+pub struct Noise(u32);
 
-impl Oscillator {
-    pub fn new(wave: Wave, rate: SampleRate, frequency: Hertz) -> Self {
-        Self {
-            wave,
-            rate,
-            frequency,
-            phase: 0.0,
-            noise: 0x1234_5678,
-        }
+impl Noise {
+    pub fn new() -> Self {
+        Self(0x1234_5678)
     }
 
-    pub fn next(&mut self) -> Sample {
-        let value = match self.wave {
-            Wave::Sine => (self.phase * std::f32::consts::TAU).sin(),
-            Wave::Square => {
-                if self.phase < 0.5 {
-                    1.0
-                } else {
-                    -1.0
-                }
-            }
-            Wave::Triangle => 1.0 - 4.0 * (self.phase - 0.5).abs(),
-            Wave::Saw => self.phase * 2.0 - 1.0,
-            Wave::ReverseSaw => 1.0 - self.phase * 2.0,
-            Wave::Noise => self.noise(),
-        };
-        self.advance();
-        Sample::raw(value)
-    }
-
-    pub fn set_frequency(&mut self, frequency: Hertz) {
-        self.frequency = frequency;
-    }
-
-    fn advance(&mut self) {
-        self.phase += self.frequency.value() / self.rate.value() as f32;
-        self.phase -= self.phase.floor();
-    }
-
-    fn noise(&mut self) -> f32 {
-        self.noise ^= self.noise << 13;
-        self.noise ^= self.noise >> 17;
-        self.noise ^= self.noise << 5;
-        (self.noise as f32 / u32::MAX as f32) * 2.0 - 1.0
+    pub fn next(&mut self) -> f32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 17;
+        self.0 ^= self.0 << 5;
+        (self.0 as f32 / u32::MAX as f32) * 2.0 - 1.0
     }
 }
 
@@ -72,13 +40,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reverse_saw_is_the_inverse_of_saw() {
+    fn phase_wraps_at_the_sample_rate() {
         let rate = SampleRate::new(4).unwrap();
         let frequency = Hertz::new(1.0).unwrap();
-        let mut saw = Oscillator::new(Wave::Saw, rate, frequency);
-        let mut reverse = Oscillator::new(Wave::ReverseSaw, rate, frequency);
-        for _ in 0..4 {
-            assert!((saw.next().value() + reverse.next().value()).abs() < f32::EPSILON);
-        }
+        let mut phase = Phase::new(rate);
+        assert_eq!(phase.next(frequency), 0.0);
+        assert_eq!(phase.next(frequency), 0.25);
+        assert_eq!(phase.next(frequency), 0.5);
+        assert_eq!(phase.next(frequency), 0.75);
+        assert_eq!(phase.next(frequency), 0.0);
+    }
+
+    #[test]
+    fn noise_is_continuous_bipolar_sample_generation() {
+        let mut noise = Noise::new();
+        let first = noise.next();
+        let second = noise.next();
+        assert!((-1.0..=1.0).contains(&first));
+        assert!((-1.0..=1.0).contains(&second));
+        assert_ne!(first, second);
     }
 }

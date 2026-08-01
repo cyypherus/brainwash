@@ -1,4 +1,3 @@
-use crate::osc::Wave;
 use crate::patch::{self, BinaryOp, Composition, EnvPoint, InputKind, Module, Patch, UnaryOp};
 use crate::sample::{Sample, Unit};
 use crate::time::{Duration, Hertz, Samples, Seconds};
@@ -129,10 +128,10 @@ enum FileModule {
     Damp {
         coefficient: f32,
     },
-    Osc {
-        wave: FileWave,
+    Phase {
         frequency: f32,
     },
+    Noise,
     Rise {
         time: FileDuration,
     },
@@ -146,14 +145,8 @@ enum FileModule {
     Envelope {
         points: Vec<FileEnvPoint>,
     },
-    Lowpass {
+    Filter {
         cutoff: f32,
-        #[serde(default = "default_resonance")]
-        resonance: f32,
-    },
-    Highpass {
-        cutoff: f32,
-        #[serde(default = "default_resonance")]
         resonance: f32,
     },
     Comb {
@@ -237,20 +230,6 @@ enum FileUnaryOp {
     Arctangent,
     Exponential,
     Sign,
-}
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-enum FileWave {
-    Sine,
-    Square,
-    Triangle,
-    Saw,
-    ReverseSaw,
-    Noise,
-}
-
-fn default_resonance() -> f32 {
-    0.707
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -426,10 +405,10 @@ impl FileModule {
             Module::Damp { coefficient } => FileModule::Damp {
                 coefficient: coefficient.value(),
             },
-            Module::Osc { wave, frequency } => FileModule::Osc {
-                wave: FileWave::from_wave(wave),
+            Module::Phase { frequency } => FileModule::Phase {
                 frequency: frequency.value(),
             },
+            Module::Noise => FileModule::Noise,
             Module::Rise { time } => FileModule::Rise {
                 time: FileDuration::from_duration(time),
             },
@@ -450,11 +429,7 @@ impl FileModule {
                     })
                     .collect(),
             },
-            Module::Lowpass { cutoff, resonance } => FileModule::Lowpass {
-                cutoff: cutoff.value(),
-                resonance: resonance.value(),
-            },
-            Module::Highpass { cutoff, resonance } => FileModule::Highpass {
+            Module::Filter { cutoff, resonance } => FileModule::Filter {
                 cutoff: cutoff.value(),
                 resonance: resonance.value(),
             },
@@ -541,10 +516,10 @@ impl FileModule {
             FileModule::Damp { coefficient } => Module::Damp {
                 coefficient: Unit::new(coefficient).ok_or(LoadError::Value)?,
             },
-            FileModule::Osc { wave, frequency } => Module::Osc {
-                wave: wave.into_wave(),
+            FileModule::Phase { frequency } => Module::Phase {
                 frequency: Hertz::new(frequency).ok_or(LoadError::Value)?,
             },
+            FileModule::Noise => Module::Noise,
             FileModule::Rise { time } => Module::Rise {
                 time: time.into_duration()?,
             },
@@ -569,11 +544,7 @@ impl FileModule {
                         .collect::<Result<Vec<_>, LoadError>>()?,
                 ),
             },
-            FileModule::Lowpass { cutoff, resonance } => Module::Lowpass {
-                cutoff: Hertz::new(cutoff).ok_or(LoadError::Value)?,
-                resonance: crate::patch::Resonance::new(resonance).ok_or(LoadError::Value)?,
-            },
-            FileModule::Highpass { cutoff, resonance } => Module::Highpass {
+            FileModule::Filter { cutoff, resonance } => Module::Filter {
                 cutoff: Hertz::new(cutoff).ok_or(LoadError::Value)?,
                 resonance: crate::patch::Resonance::new(resonance).ok_or(LoadError::Value)?,
             },
@@ -644,30 +615,6 @@ impl FileModule {
                 ))
             }
         })
-    }
-}
-
-impl FileWave {
-    fn from_wave(wave: Wave) -> Self {
-        match wave {
-            Wave::Sine => FileWave::Sine,
-            Wave::Square => FileWave::Square,
-            Wave::Triangle => FileWave::Triangle,
-            Wave::Saw => FileWave::Saw,
-            Wave::ReverseSaw => FileWave::ReverseSaw,
-            Wave::Noise => FileWave::Noise,
-        }
-    }
-
-    fn into_wave(self) -> Wave {
-        match self {
-            FileWave::Sine => Wave::Sine,
-            FileWave::Square => Wave::Square,
-            FileWave::Triangle => Wave::Triangle,
-            FileWave::Saw => Wave::Saw,
-            FileWave::ReverseSaw => Wave::ReverseSaw,
-            FileWave::Noise => Wave::Noise,
-        }
     }
 }
 
@@ -815,12 +762,12 @@ mod tests {
     #[test]
     fn module_round_trips_without_a_patch_wrapper() {
         for module in [
-            Module::Osc {
-                wave: Wave::ReverseSaw,
+            Module::Phase {
                 frequency: Hertz::new(220.0).unwrap(),
             },
+            Module::Noise,
             crate::preset::tape(),
-            Module::Lowpass {
+            Module::Filter {
                 cutoff: Hertz::new(1_000.0).unwrap(),
                 resonance: crate::patch::Resonance::new(8.0).unwrap(),
             },
@@ -828,6 +775,11 @@ mod tests {
             let encoded = module_to_string(&module).unwrap();
             let decoded = module_from_str(&encoded).unwrap();
             assert_eq!(decoded, module);
+            if matches!(module, Module::Filter { .. }) {
+                assert!(encoded.contains("Filter"));
+                assert!(!encoded.contains("Lowpass"));
+                assert!(!encoded.contains("Highpass"));
+            }
         }
     }
 

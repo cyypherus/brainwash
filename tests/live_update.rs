@@ -1,7 +1,6 @@
 use assert_no_alloc::assert_no_alloc;
 use brainwash::compile::{CompiledPatch, PatchControls, PatchEngine, UpdateRejected};
 use brainwash::live::RealtimePatchEngine;
-use brainwash::osc::Wave;
 use brainwash::patch::{InputKind, Module, Patch};
 use brainwash::sample::Unit;
 use brainwash::scale::cmin;
@@ -11,13 +10,13 @@ use brainwash::track::Track;
 #[test]
 fn patch_engine_plays_and_updates_patch() {
     let rate = SampleRate::new(44_100).unwrap();
-    let mut engine = PatchEngine::new(compiled_patch(Wave::Square, 110.0, rate));
+    let mut engine = PatchEngine::new(compiled_patch(brainwash::preset::square, 110.0, rate));
 
     for _ in 0..16 {
         assert_frame(engine.next());
     }
 
-    let saw = compiled_patch(Wave::Saw, 220.0, rate);
+    let saw = compiled_patch(brainwash::preset::saw, 220.0, rate);
     assert_no_alloc(|| engine.replace(saw).unwrap());
     assert!(engine.take_retired().is_none());
 
@@ -25,7 +24,7 @@ fn patch_engine_plays_and_updates_patch() {
         assert_frame(engine.next());
     }
 
-    let rejected = compiled_patch(Wave::Sine, 440.0, rate);
+    let rejected = compiled_patch(brainwash::preset::sine, 440.0, rate);
     let Err(UpdateRejected::RetiredPatchPending(rejected)) = engine.replace(rejected) else {
         panic!("engine should retain the old patch until non-realtime code takes it");
     };
@@ -35,7 +34,7 @@ fn patch_engine_plays_and_updates_patch() {
 
     engine.replace(rejected).unwrap();
 
-    let rejected = compiled_patch(Wave::Triangle, 330.0, rate);
+    let rejected = compiled_patch(brainwash::preset::triangle, 330.0, rate);
     let Err(UpdateRejected::Busy(_)) = engine.replace(rejected) else {
         panic!("engine should reject overlapping live updates");
     };
@@ -51,7 +50,7 @@ fn patch_engine_plays_and_updates_patch() {
 #[test]
 fn patch_engine_next_does_not_allocate_while_playing_or_updating() {
     let rate = SampleRate::new(44_100).unwrap();
-    let mut engine = PatchEngine::new(compiled_patch(Wave::Square, 110.0, rate));
+    let mut engine = PatchEngine::new(compiled_patch(brainwash::preset::square, 110.0, rate));
 
     assert_no_alloc(|| {
         for _ in 0..64 {
@@ -60,7 +59,7 @@ fn patch_engine_next_does_not_allocate_while_playing_or_updating() {
     });
 
     engine
-        .replace(compiled_patch(Wave::Saw, 220.0, rate))
+        .replace(compiled_patch(brainwash::preset::saw, 220.0, rate))
         .unwrap();
 
     assert_no_alloc(|| {
@@ -82,11 +81,11 @@ fn patch_engine_next_does_not_allocate_while_playing_or_updating() {
 fn realtime_patch_exchange_updates_without_audio_thread_allocation() {
     let rate = SampleRate::new(44_100).unwrap();
     let (mut engine, mut exchange) =
-        RealtimePatchEngine::new(compiled_patch(Wave::Square, 110.0, rate));
+        RealtimePatchEngine::new(compiled_patch(brainwash::preset::square, 110.0, rate));
 
     assert!(
         exchange
-            .submit(compiled_patch(Wave::Saw, 220.0, rate))
+            .submit(compiled_patch(brainwash::preset::saw, 220.0, rate))
             .is_none()
     );
 
@@ -101,7 +100,7 @@ fn realtime_patch_exchange_updates_without_audio_thread_allocation() {
 
     assert!(
         exchange
-            .submit(compiled_patch(Wave::Triangle, 330.0, rate))
+            .submit(compiled_patch(brainwash::preset::triangle, 330.0, rate))
             .is_none()
     );
 
@@ -118,11 +117,11 @@ fn realtime_patch_exchange_updates_without_audio_thread_allocation() {
 fn realtime_patch_exchange_handles_retired_backpressure_without_allocation() {
     let rate = SampleRate::new(44_100).unwrap();
     let (mut engine, mut exchange) =
-        RealtimePatchEngine::new(compiled_patch(Wave::Square, 110.0, rate));
+        RealtimePatchEngine::new(compiled_patch(brainwash::preset::square, 110.0, rate));
 
     assert!(
         exchange
-            .submit(compiled_patch(Wave::Saw, 220.0, rate))
+            .submit(compiled_patch(brainwash::preset::saw, 220.0, rate))
             .is_none()
     );
     assert_no_alloc(|| {
@@ -133,7 +132,7 @@ fn realtime_patch_exchange_handles_retired_backpressure_without_allocation() {
 
     assert!(
         exchange
-            .submit(compiled_patch(Wave::Triangle, 330.0, rate))
+            .submit(compiled_patch(brainwash::preset::triangle, 330.0, rate))
             .is_none()
     );
     assert_no_alloc(|| {
@@ -144,7 +143,7 @@ fn realtime_patch_exchange_handles_retired_backpressure_without_allocation() {
 
     assert!(
         exchange
-            .submit(compiled_patch(Wave::Sine, 440.0, rate))
+            .submit(compiled_patch(brainwash::preset::sine, 440.0, rate))
             .is_none()
     );
     assert_no_alloc(|| {
@@ -164,8 +163,7 @@ fn patch_controls_drive_oscillator_frequency() {
     let rate = SampleRate::new(44_100).unwrap();
     let mut patch = Patch::new();
     let freq = patch.insert(Module::Freq);
-    let osc = patch.insert(brainwash::preset::oscillator(
-        Wave::Saw,
+    let osc = patch.insert(brainwash::preset::saw(
         Hertz::new(110.0).unwrap(),
         Unit::ONE,
         false,
@@ -269,14 +267,13 @@ fn realtime_function_bodies_exclude_allocator_shapes() {
     }
 }
 
-fn compiled_patch(wave: Wave, frequency: f32, rate: SampleRate) -> CompiledPatch {
+fn compiled_patch(
+    oscillator: fn(Hertz, Unit, bool) -> Module,
+    frequency: f32,
+    rate: SampleRate,
+) -> CompiledPatch {
     let mut patch = Patch::new();
-    let osc = patch.insert(brainwash::preset::oscillator(
-        wave,
-        Hertz::new(frequency).unwrap(),
-        Unit::ONE,
-        false,
-    ));
+    let osc = patch.insert(oscillator(Hertz::new(frequency).unwrap(), Unit::ONE, false));
     patch.output(patch.output_port(osc, 0).unwrap()).unwrap();
     CompiledPatch::new(&patch, rate).unwrap()
 }

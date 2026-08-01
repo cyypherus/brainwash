@@ -20,6 +20,7 @@ const PANEL_GAP: f32 = 10.;
 const ENVELOPE_VALUE_MIN: f32 = -1.;
 const ENVELOPE_VALUE_MAX: f32 = 1.;
 const PREVIEW_ID_OFFSET: u64 = 100_000;
+const PALETTE_ICON_SIZE: f32 = 17.;
 
 pub fn main_view<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
     let side_panel = column_spaced(
@@ -1332,7 +1333,16 @@ fn envelope_editor<'a>(
     editing: bool,
     app: &mut PaneState,
 ) -> View<'a, GuiState> {
-    let graph_points = points.to_vec();
+    let graph_points = points
+        .iter()
+        .map(|point| {
+            brainwash::patch::EnvPoint::new(
+                brainwash::sample::Unit::new(envelope_point_time(*point)).unwrap(),
+                brainwash::sample::Sample::new(envelope_point_value(*point)).unwrap(),
+                point.curve,
+            )
+        })
+        .collect::<Vec<_>>();
     let point_views = points.to_vec();
     let value_labels = row_spaced(
         PANEL_GAP,
@@ -1597,7 +1607,7 @@ fn meter_bar<'a>(
     .width(130.)
 }
 
-fn envelope_path(area: Area, points: &[crate::model::EnvPoint]) -> BezPath {
+fn envelope_path(area: Area, points: &[brainwash::patch::EnvPoint]) -> BezPath {
     let mut path = BezPath::new();
     if points.is_empty() {
         return path;
@@ -1606,7 +1616,7 @@ fn envelope_path(area: Area, points: &[crate::model::EnvPoint]) -> BezPath {
     let height = area.height.max(1.);
     for index in 0..=48 {
         let time = index as f32 / 48.;
-        let value = envelope_value(points, time);
+        let value = brainwash::patch::envelope_value(points, time);
         let x = area.x + time * width;
         let y = area.y + envelope_point_y(value) * height;
         if index == 0 {
@@ -1645,43 +1655,6 @@ fn probe_path(area: Area, history: &[f32]) -> BezPath {
         }
     }
     path
-}
-
-fn envelope_value(points: &[crate::model::EnvPoint], time: f32) -> f32 {
-    let time = time.clamp(0., 1.);
-    let first = points[0];
-    if points.len() == 1 || time <= envelope_point_time(first) {
-        return envelope_point_value(first);
-    }
-    let last = points[points.len() - 1];
-    if time >= envelope_point_time(last) {
-        return envelope_point_value(last);
-    }
-    for pair in points.windows(2) {
-        let start = pair[0];
-        let end = pair[1];
-        let start_time = envelope_point_time(start);
-        let end_time = envelope_point_time(end);
-        if time < start_time || time > end_time {
-            continue;
-        }
-        let span = end_time - start_time;
-        if span.abs() < f32::EPSILON {
-            return envelope_point_value(start);
-        }
-        let position = (time - start_time) / span;
-        let position = match (start.curve, end.curve) {
-            (false, false) => position,
-            (true, false) => 1. - (1. - position) * (1. - position),
-            (false, true) => position * position,
-            (true, true) if position < 0.5 => 2. * position * position,
-            (true, true) => 1. - 2. * (1. - position) * (1. - position),
-        };
-        let start_value = envelope_point_value(start);
-        let end_value = envelope_point_value(end);
-        return start_value + (end_value - start_value) * position;
-    }
-    envelope_point_value(last)
 }
 
 fn envelope_point_time(point: crate::model::EnvPoint) -> f32 {
@@ -2050,6 +2023,9 @@ fn module_tile<'a>(
 
             if module.has_output_right {
                 for index in 0..output_count {
+                    let Some(offset) = module.right_output_offsets[index as usize] else {
+                        continue;
+                    };
                     let port_id = if output_count == 1 {
                         id + 4
                     } else {
@@ -2057,16 +2033,19 @@ fn module_tile<'a>(
                     };
                     layers.push(
                         output_port(port_id, alpha, app)
-                            .offset(tile_width - PORT_INSET - PORT_SIZE, port_axis(index)),
+                            .offset(tile_width - PORT_INSET - PORT_SIZE, port_axis(offset)),
                     );
                 }
             }
 
             if module.has_output_bottom {
                 for index in 0..output_count {
+                    let Some(offset) = module.bottom_output_offsets[index as usize] else {
+                        continue;
+                    };
                     layers.push(
                         output_port(id + 33_000 + index as u64, alpha, app)
-                            .offset(port_axis(index), tile_height - PORT_INSET - PORT_SIZE),
+                            .offset(port_axis(offset), tile_height - PORT_INSET - PORT_SIZE),
                     );
                 }
             }
@@ -2417,13 +2396,7 @@ fn module_choice<'a>(
             .build(app)
             .width(width)
             .height(PALETTE_ROW_HEIGHT),
-        text(id + 200, module.label())
-            .font_size(13)
-            .fill(fg())
-            .view()
-            .build(app)
-            .pad_x(10.)
-            .pad_y(5.),
+        palette_module_label(id + 200, module, app),
     ])
 }
 
@@ -2457,14 +2430,121 @@ fn filtered_module_choice<'a>(
             .build(app)
             .width(width)
             .height(PALETTE_ROW_HEIGHT),
-        text(id + 200, module.label())
-            .font_size(13)
-            .fill(fg())
-            .view()
-            .build(app)
-            .pad_x(10.)
-            .pad_y(5.),
+        palette_module_label(id + 200, module, app),
     ])
+}
+
+fn palette_module_label<'a>(
+    id: u64,
+    module: &PaletteModule,
+    app: &mut PaneState,
+) -> View<'a, GuiState> {
+    let label = text(id, module.label())
+        .font_size(13)
+        .fill(fg())
+        .view()
+        .build(app);
+    if module.category() != ModuleCategory::Routing {
+        return label.pad_x(10.).pad_y(5.);
+    }
+    let kind = module.kind();
+    row_spaced_aligned(
+        7.,
+        Align::CenterLeading,
+        vec![
+            path(id + 10_000, move |area| routing_icon_path(area, kind))
+                .stroke(fg(), Stroke::new(1.6))
+                .build(app)
+                .width(PALETTE_ICON_SIZE)
+                .height(PALETTE_ICON_SIZE),
+            label,
+        ],
+    )
+    .pad_x(8.)
+    .pad_y(3.)
+}
+
+fn routing_icon_path(area: Area, kind: ModuleKind) -> BezPath {
+    let point = |x: f32, y: f32| {
+        (
+            (area.x + area.width * x / 16.) as f64,
+            (area.y + area.height * y / 16.) as f64,
+        )
+    };
+    let mut path = BezPath::new();
+    match kind {
+        ModuleKind::TurnRightDown => {
+            path.move_to(point(1., 4.));
+            path.line_to(point(11., 4.));
+            path.line_to(point(11., 15.));
+            routing_arrow_down(&mut path, area, 11., 15.);
+        }
+        ModuleKind::TurnDownRight => {
+            path.move_to(point(4., 1.));
+            path.line_to(point(4., 11.));
+            path.line_to(point(15., 11.));
+            routing_arrow_right(&mut path, area, 15., 11.);
+        }
+        ModuleKind::LeftSplit => {
+            path.move_to(point(1., 5.));
+            path.line_to(point(9., 5.));
+            path.line_to(point(15., 5.));
+            path.move_to(point(9., 5.));
+            path.line_to(point(9., 15.));
+            routing_arrow_right(&mut path, area, 15., 5.);
+            routing_arrow_down(&mut path, area, 9., 15.);
+        }
+        ModuleKind::TopSplit => {
+            path.move_to(point(5., 1.));
+            path.line_to(point(5., 9.));
+            path.line_to(point(5., 15.));
+            path.move_to(point(5., 9.));
+            path.line_to(point(15., 9.));
+            routing_arrow_right(&mut path, area, 15., 9.);
+            routing_arrow_down(&mut path, area, 5., 15.);
+        }
+        ModuleKind::RightJoin => {
+            path.move_to(point(1., 9.));
+            path.line_to(point(9., 9.));
+            path.move_to(point(9., 1.));
+            path.line_to(point(9., 9.));
+            path.line_to(point(15., 9.));
+            routing_arrow_right(&mut path, area, 15., 9.);
+        }
+        ModuleKind::DownJoin => {
+            path.move_to(point(1., 9.));
+            path.line_to(point(9., 9.));
+            path.move_to(point(9., 1.));
+            path.line_to(point(9., 15.));
+            routing_arrow_down(&mut path, area, 9., 15.);
+        }
+        _ => {}
+    }
+    path
+}
+
+fn routing_arrow_right(path: &mut BezPath, area: Area, x: f32, y: f32) {
+    let point = |x: f32, y: f32| {
+        (
+            (area.x + area.width * x / 16.) as f64,
+            (area.y + area.height * y / 16.) as f64,
+        )
+    };
+    path.move_to(point(x - 3., y - 3.));
+    path.line_to(point(x, y));
+    path.line_to(point(x - 3., y + 3.));
+}
+
+fn routing_arrow_down(path: &mut BezPath, area: Area, x: f32, y: f32) {
+    let point = |x: f32, y: f32| {
+        (
+            (area.x + area.width * x / 16.) as f64,
+            (area.y + area.height * y / 16.) as f64,
+        )
+    };
+    path.move_to(point(x - 3., y - 3.));
+    path.line_to(point(x, y));
+    path.line_to(point(x + 3., y - 3.));
 }
 
 fn action_button<'a>(

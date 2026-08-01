@@ -14,14 +14,14 @@ use std::path::PathBuf;
 #[test]
 fn module_inventory_has_expected_surface_count() {
     assert_eq!(all_modules().len(), 56);
-    assert_eq!(all_modules()[0], ModuleKind::Osc);
+    assert_eq!(all_modules()[0], ModuleKind::Phase);
     assert_eq!(all_modules()[1], ModuleKind::Output);
     assert_eq!(
         all_modules()
             .iter()
             .filter(|kind| kind.category() == ModuleCategory::Source)
             .count(),
-        9
+        10
     );
     assert_eq!(
         all_modules()
@@ -33,35 +33,35 @@ fn module_inventory_has_expected_surface_count() {
 }
 
 #[test]
-fn default_oscillator_is_a_primitive_unit() {
+fn default_phase_is_a_primitive_unit() {
     let mut state = GuiState::new(8, 8);
     state.apply(GuiAction::OpenPalette);
     state.apply(GuiAction::Confirm);
 
     let module = state.module_at(GridPos::new(0, 0)).unwrap();
-    assert_eq!(module.kind(), ModuleKind::Osc);
-    assert_eq!(module.label(), "Osc");
-    assert_eq!(module.parameters().len(), 2);
+    assert_eq!(module.kind(), ModuleKind::Phase);
+    assert_eq!(module.label(), "Phase");
+    assert_eq!(module.parameters().len(), 1);
 
     state.apply(GuiAction::EditComposition);
     assert_eq!(state.composition_depth(), 0);
 }
 
 #[test]
-fn primitive_oscillator_has_no_inner_surface() {
+fn phase_has_no_inner_surface() {
     let mut state = GuiState::new(16, 16);
-    place_module_kind(&mut state, ModuleKind::Osc);
+    place_module_kind(&mut state, ModuleKind::Phase);
     state.apply(GuiAction::EditComposition);
     assert_eq!(state.composition_depth(), 0);
 }
 
 #[test]
-fn rate_converts_one_second_to_one_hertz_for_an_oscillator() {
+fn rate_converts_one_second_to_one_hertz_for_phase() {
     let mut state = GuiState::new(8, 8);
     place_module_kind(&mut state, ModuleKind::Rate);
     assert_eq!(state.modules()[0].parameters()[0].value_label(), "1.00s");
     state.apply(GuiAction::Right);
-    place_module_kind(&mut state, ModuleKind::Osc);
+    place_module_kind(&mut state, ModuleKind::Phase);
     state.apply(GuiAction::Right);
     place_module_kind(&mut state, ModuleKind::Output);
 
@@ -69,13 +69,16 @@ fn rate_converts_one_second_to_one_hertz_for_an_oscillator() {
         .compile_audio_patch(SampleRate::new(44_100).unwrap())
         .unwrap();
     let first = patch.next().left().value();
-    let after_one_second = (0..44_099)
+    let after_half_second = (0..22_050)
         .map(|_| patch.next().left().value())
         .last()
         .unwrap();
 
     assert!(first.abs() < 0.001, "{first}");
-    assert!(after_one_second.abs() < 0.01, "{after_one_second}");
+    assert!(
+        (after_half_second - 0.5).abs() < 0.01,
+        "{after_half_second}"
+    );
 }
 
 #[test]
@@ -138,7 +141,7 @@ fn direct_palette_category_opens_and_resets_selection() {
 
     state.apply(GuiAction::Palette(ModuleCategory::Filter));
     assert_eq!(state.palette_category(), ModuleCategory::Filter);
-    assert_eq!(state.selected_palette_module(), ModuleKind::Lowpass);
+    assert_eq!(state.selected_palette_module(), ModuleKind::Filter);
 }
 
 #[test]
@@ -147,21 +150,21 @@ fn palette_search_filters_and_places_module() {
 
     state.apply(GuiAction::OpenPalette);
     state.apply(GuiAction::Search);
-    state.apply(GuiAction::InputChar('l'));
-    state.apply(GuiAction::InputChar('p'));
-    state.apply(GuiAction::InputChar('f'));
+    for character in "filter".chars() {
+        state.apply(GuiAction::InputChar(character));
+    }
 
     assert!(state.palette_searching());
-    assert_eq!(state.palette_filter(), "lpf");
+    assert_eq!(state.palette_filter(), "filter");
     assert_eq!(
         state.selected_filtered_palette_module(),
-        Some(ModuleKind::Lowpass)
+        Some(ModuleKind::Filter)
     );
 
     state.apply(GuiAction::Confirm);
     assert_eq!(
         state.module_at(GridPos::new(0, 0)).unwrap().kind(),
-        ModuleKind::Lowpass
+        ModuleKind::Primitive
     );
     assert_eq!(state.mode(), Mode::Normal);
     assert!(!state.palette_searching());
@@ -188,12 +191,12 @@ fn palette_search_navigation_backspace_and_cancel_are_consistent() {
     assert_eq!(state.palette_filter(), "");
     assert_eq!(state.selected_filtered_palette_module(), None);
 
-    pane.key_pressed(&mut state, Key::character("l"));
-    pane.key_pressed(&mut state, Key::character("p"));
-    pane.key_pressed(&mut state, Key::character("f"));
+    for character in "filter".chars() {
+        pane.key_pressed(&mut state, Key::character(character.to_string()));
+    }
     assert_eq!(
         state.selected_filtered_palette_module(),
-        Some(ModuleKind::Lowpass)
+        Some(ModuleKind::Filter)
     );
 
     pane.key_pressed(&mut state, NamedKey::Escape);
@@ -984,14 +987,14 @@ fn haven_palette_search_keys_drive_model() {
 
     pane.key_pressed(&mut state, Key::character("n"));
     pane.key_pressed(&mut state, Key::character("/"));
-    pane.key_pressed(&mut state, Key::character("l"));
-    pane.key_pressed(&mut state, Key::character("p"));
-    pane.key_pressed(&mut state, Key::character("f"));
+    for character in "filter".chars() {
+        pane.key_pressed(&mut state, Key::character(character.to_string()));
+    }
     pane.key_pressed(&mut state, NamedKey::Enter);
 
     assert_eq!(
         state.module_at(GridPos::new(0, 0)).unwrap().kind(),
-        ModuleKind::Lowpass
+        ModuleKind::Primitive
     );
 }
 
@@ -1008,12 +1011,12 @@ fn haven_palette_category_keys_work() {
 
     pane.key_pressed(&mut state, Key::character("#"));
     assert_eq!(state.palette_category(), ModuleCategory::Filter);
-    assert_eq!(state.selected_palette_module(), ModuleKind::Lowpass);
+    assert_eq!(state.selected_palette_module(), ModuleKind::Filter);
 
     pane.key_pressed(&mut state, NamedKey::Enter);
     assert_eq!(
         state.module_at(GridPos::new(0, 0)).unwrap().kind(),
-        ModuleKind::Lowpass
+        ModuleKind::Primitive
     );
 }
 
@@ -1091,6 +1094,25 @@ fn haven_palette_background_stays_top_aligned_when_switching_tabs() {
     let (frame, _) = pane.redraw(&mut state, 760, 560, 1.0);
     let area = panel_area(&pane, &frame);
     assert!((area.y - 40.).abs() < 0.5, "{area:?}");
+}
+
+#[test]
+fn haven_routing_palette_draws_a_leading_icon_for_every_module() {
+    let mut state = GuiState::new(8, 8);
+    state.apply(GuiAction::Palette(ModuleCategory::Routing));
+    let mut pane = PaneBuilder::new("main", main_view).build();
+    let (frame, _) = pane.redraw(&mut state, 760, 560, 1.0);
+    let icons = frame
+        .items
+        .iter()
+        .filter(|item| match item {
+            RenderItem::Path { area, .. } => {
+                (area.width - 17.).abs() < 0.5 && (area.height - 17.).abs() < 0.5
+            }
+            _ => false,
+        })
+        .count();
+    assert_eq!(icons, 6);
 }
 
 #[test]
@@ -1179,7 +1201,7 @@ fn haven_track_edit_key_is_contextual() {
         state.mode(),
         Mode::ValueInput {
             module,
-            parameter: 1
+            parameter: 0
         }
     );
     assert!(!state.track_edit_requested());
@@ -1287,11 +1309,11 @@ fn haven_edit_keys_drive_parameter_editor() {
         state.mode(),
         Mode::Edit {
             module,
-            parameter: 1,
+            parameter: 0,
         }
     );
     assert!(matches!(
-        state.module_at(GridPos::new(0, 0)).unwrap().parameters()[1].value(),
+        state.module_at(GridPos::new(0, 0)).unwrap().parameters()[0].value(),
         ParameterValue::Float { .. }
     ));
     pane.key_pressed(&mut state, NamedKey::Space);
@@ -1300,7 +1322,7 @@ fn haven_edit_keys_drive_parameter_editor() {
         state.mode(),
         Mode::Edit {
             module,
-            parameter: 1,
+            parameter: 0,
         }
     );
 }
@@ -1580,6 +1602,9 @@ fn envelope_special_editor_adds_moves_curves_and_deletes_points() {
         }
     );
 
+    state.apply(GuiAction::ToggleCurve);
+    assert!(!state.module_at(GridPos::new(0, 0)).unwrap().env_points()[0].curve);
+
     state.apply(GuiAction::AddPoint);
     assert_eq!(
         state
@@ -1735,7 +1760,7 @@ fn built_in_composition_inputs_create_derived_connections() {
     place_module_kind(&mut state, ModuleKind::Freq);
     state.apply(GuiAction::Right);
     state.apply(GuiAction::Right);
-    place_module_kind(&mut state, ModuleKind::Osc);
+    place_module_kind(&mut state, ModuleKind::Phase);
 
     assert_eq!(state.connections().len(), 1);
 
@@ -1752,11 +1777,13 @@ fn derived_connections_stop_at_nearest_module() {
     state.apply(GuiAction::Right);
     place_module(&mut state, 2, 0);
     state.apply(GuiAction::Right);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::Down);
     place_module(&mut state, 7, 0);
 
     let source = state.module_at(GridPos::new(0, 0)).unwrap().id();
     let middle = state.module_at(GridPos::new(1, 0)).unwrap().id();
-    let output = state.module_at(GridPos::new(2, 0)).unwrap().id();
+    let output = state.module_at(GridPos::new(2, 2)).unwrap().id();
     let connections = state.connections();
 
     assert_eq!(connections.len(), 2);
@@ -1789,7 +1816,7 @@ fn routing_modules_accept_derived_input_connections() {
     let osc = state.module_at(GridPos::new(0, 0)).unwrap();
     let split = state.module_at(GridPos::new(1, 0)).unwrap();
     let output = state.module_at(GridPos::new(2, 0)).unwrap();
-    assert_eq!(osc.kind(), ModuleKind::Osc);
+    assert_eq!(osc.kind(), ModuleKind::Phase);
     assert_eq!(split.kind(), ModuleKind::LeftSplit);
     assert_eq!(output.kind(), ModuleKind::Output);
 
@@ -1851,10 +1878,10 @@ fn routing_join_compiles_with_both_inputs_connected() {
 #[test]
 fn filter_frequency_port_compiles_from_semantic_shape() {
     let mut state = GuiState::new(8, 8);
-    place_module_kind(&mut state, ModuleKind::Osc);
+    place_module_kind(&mut state, ModuleKind::Phase);
     state.apply(GuiAction::Right);
     state.apply(GuiAction::Right);
-    place_module_kind(&mut state, ModuleKind::Highpass);
+    place_module_kind(&mut state, ModuleKind::Filter);
     state.apply(GuiAction::Left);
     state.apply(GuiAction::Left);
     state.apply(GuiAction::Down);
@@ -1863,6 +1890,8 @@ fn filter_frequency_port_compiles_from_semantic_shape() {
     state.apply(GuiAction::Right);
     state.apply(GuiAction::Up);
     state.apply(GuiAction::Right);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::Down);
     place_module_kind(&mut state, ModuleKind::Output);
 
     state
@@ -1900,7 +1929,7 @@ fn haven_grid_renders_connections_and_ports() {
 #[test]
 fn haven_grid_renders_cursor_over_module() {
     let mut state = GuiState::new(8, 8);
-    place_module_kind(&mut state, ModuleKind::Osc);
+    place_module_kind(&mut state, ModuleKind::Phase);
     let mut pane = PaneBuilder::new("main", main_view).build();
     pane.redraw(&mut state, 640, 480, 1.0);
 
@@ -2030,7 +2059,7 @@ fn gui_built_osc_output_patch_emits_audio() {
 
     let osc = state.module_at(GridPos::new(0, 0)).unwrap();
     let output = state.module_at(GridPos::new(1, 0)).unwrap();
-    assert_eq!(osc.kind(), ModuleKind::Osc);
+    assert_eq!(osc.kind(), ModuleKind::Phase);
     assert_eq!(output.kind(), ModuleKind::Output);
     assert!(
         state
@@ -2060,7 +2089,7 @@ fn gui_composition_routes_parent_input_to_child_composition_input() {
     state.apply(GuiAction::EditComposition);
     place_module_kind(&mut state, ModuleKind::CompositionInput);
     state.apply(GuiAction::Right);
-    place_module_kind(&mut state, ModuleKind::Osc);
+    place_module_kind(&mut state, ModuleKind::Phase);
     state.apply(GuiAction::Right);
     place_module_kind(&mut state, ModuleKind::CompositionOutput);
     state.apply(GuiAction::ExitComposition);
@@ -2107,6 +2136,10 @@ fn gui_reverb_emits_a_wet_tail_after_an_impulse() {
     state.apply(GuiAction::Confirm);
     state.apply(GuiAction::Cancel);
     state.apply(GuiAction::Right);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::Down);
+    state.apply(GuiAction::Down);
     place_module_kind(&mut state, ModuleKind::Output);
     let mut compiled = state
         .compile_audio_patch(SampleRate::new(44_100).unwrap())
@@ -2235,7 +2268,7 @@ fn gui_built_freq_osc_output_patch_uses_track_controls() {
     let osc = state.module_at(GridPos::new(1, 0)).unwrap();
     let output = state.module_at(GridPos::new(2, 0)).unwrap();
     assert_eq!(freq.kind(), ModuleKind::Freq);
-    assert_eq!(osc.kind(), ModuleKind::Osc);
+    assert_eq!(osc.kind(), ModuleKind::Phase);
     assert_eq!(output.kind(), ModuleKind::Output);
 
     let mut compiled = state
@@ -2270,7 +2303,7 @@ fn gate_into_osc_gain_matches_default_gain_when_gate_is_high() {
     };
 
     let mut default_state = GuiState::new(8, 8);
-    place_module_kind(&mut default_state, ModuleKind::Osc);
+    place_module_kind(&mut default_state, ModuleKind::Phase);
     default_state.apply(GuiAction::Right);
     place_module_kind(&mut default_state, ModuleKind::Output);
 
@@ -2279,7 +2312,7 @@ fn gate_into_osc_gain_matches_default_gain_when_gate_is_high() {
     place_module_kind(&mut gated_state, ModuleKind::Gate);
     gated_state.apply(GuiAction::Up);
     gated_state.apply(GuiAction::Right);
-    place_module_kind(&mut gated_state, ModuleKind::Osc);
+    place_module_kind(&mut gated_state, ModuleKind::Phase);
     gated_state.apply(GuiAction::Right);
     place_module_kind(&mut gated_state, ModuleKind::Output);
 
@@ -2353,7 +2386,7 @@ fn unrelated_composition_does_not_silence_direct_osc_output() {
     state.apply(GuiAction::ExitComposition);
     state.apply(GuiAction::Down);
     state.apply(GuiAction::Down);
-    place_module_kind(&mut state, ModuleKind::Osc);
+    place_module_kind(&mut state, ModuleKind::Phase);
     state.apply(GuiAction::Right);
     place_module_kind(&mut state, ModuleKind::Output);
 
@@ -2388,6 +2421,7 @@ fn composition_parent_inputs_route_by_port_order() {
     place_module_kind(&mut state, ModuleKind::CompositionOutput);
     state.apply(GuiAction::ExitComposition);
     state.apply(GuiAction::Right);
+    state.apply(GuiAction::Down);
     place_module_kind(&mut state, ModuleKind::Output);
 
     let mut compiled = state
@@ -3110,14 +3144,11 @@ fn load_project_replaces_state_from_project_file() {
   modules: [
     (
       id: 7,
-      kind: Standard(Osc),
+      kind: Standard(Phase),
       x: 1,
       y: 2,
-      params: Osc(
-        wave: Squ,
+      params: Phase(
         frequency: 440.0,
-        gain: 0.75,
-        uni: false,
         connected: 255,
       ),
     ),
@@ -3153,11 +3184,11 @@ fn load_project_replaces_state_from_project_file() {
     let osc = state
         .modules()
         .iter()
-        .find(|module| module.kind() == ModuleKind::Osc)
+        .find(|module| module.kind() == ModuleKind::Phase)
         .unwrap();
     assert_eq!(osc.position(), GridPos::new(1, 2));
-    assert_eq!(osc.label(), "Osc");
-    assert_eq!(osc.parameters().len(), 2);
+    assert_eq!(osc.label(), "Phase");
+    assert_eq!(osc.parameters().len(), 1);
 
     let output = state
         .modules()
@@ -3351,7 +3382,7 @@ fn place_module(state: &mut GuiState, category_rights: usize, selection_downs: u
         (0, 1) => ModuleKind::Gate,
         (0, 2) => ModuleKind::Degree,
         (0, 3) => ModuleKind::DegreeGate,
-        (0, 4) => ModuleKind::Osc,
+        (0, 4) => ModuleKind::Phase,
         (0, 5) => ModuleKind::Random,
         (0, 6) => ModuleKind::Sample,
         (1, 0) => ModuleKind::Rise,
@@ -3359,8 +3390,8 @@ fn place_module(state: &mut GuiState, category_rights: usize, selection_downs: u
         (1, 2) => ModuleKind::Ramp,
         (1, 3) => ModuleKind::Adsr,
         (1, 4) => ModuleKind::Envelope,
-        (2, 0) => ModuleKind::Lowpass,
-        (2, 1) => ModuleKind::Highpass,
+        (2, 0) => ModuleKind::Filter,
+        (2, 1) => ModuleKind::Damp,
         (3, 0) => ModuleKind::Comb,
         (3, 1) => ModuleKind::Allpass,
         (3, 2) => ModuleKind::Delay,

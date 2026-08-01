@@ -1,11 +1,73 @@
-use crate::osc::Wave;
 use crate::patch::{
     BinaryOp, Composition, CompressorRatio, Gain, InputKind, Module, Patch, UnaryOp,
 };
 use crate::sample::{Sample, Unit};
 use crate::time::{Duration, Hertz, Seconds};
 
-pub fn oscillator(wave: Wave, frequency: Hertz, gain: Unit, unipolar: bool) -> Module {
+pub fn sine(frequency: Hertz, gain: Unit, unipolar: bool) -> Module {
+    oscillator("Sine", frequency, gain, unipolar, |patch, phase| {
+        let radians = binary(patch, BinaryOp::Multiply, 0.0, std::f32::consts::TAU);
+        connect(patch, phase, radians, InputKind::A);
+        let sine = patch.insert(Module::Unary(UnaryOp::Sine));
+        connect(patch, radians, sine, InputKind::In);
+        sine
+    })
+}
+
+pub fn square(frequency: Hertz, gain: Unit, unipolar: bool) -> Module {
+    oscillator("Square", frequency, gain, unipolar, |patch, phase| {
+        let condition = binary(patch, BinaryOp::LessThan, 0.0, 0.5);
+        connect(patch, phase, condition, InputKind::A);
+        let output = patch.insert(Module::Switch {
+            a: Sample::new(-1.0).unwrap(),
+            b: Sample::new(1.0).unwrap(),
+        });
+        connect(patch, condition, output, InputKind::Select);
+        output
+    })
+}
+
+pub fn triangle(frequency: Hertz, gain: Unit, unipolar: bool) -> Module {
+    oscillator("Triangle", frequency, gain, unipolar, |patch, phase| {
+        let centered = binary(patch, BinaryOp::Subtract, 0.0, 0.5);
+        connect(patch, phase, centered, InputKind::A);
+        let absolute = patch.insert(Module::Unary(UnaryOp::Absolute));
+        connect(patch, centered, absolute, InputKind::In);
+        let scaled = binary(patch, BinaryOp::Multiply, 0.0, 4.0);
+        connect(patch, absolute, scaled, InputKind::A);
+        let output = binary(patch, BinaryOp::Subtract, 1.0, 0.0);
+        connect(patch, scaled, output, InputKind::B);
+        output
+    })
+}
+
+pub fn saw(frequency: Hertz, gain: Unit, unipolar: bool) -> Module {
+    oscillator("Saw", frequency, gain, unipolar, |patch, phase| {
+        let scaled = binary(patch, BinaryOp::Multiply, 0.0, 2.0);
+        connect(patch, phase, scaled, InputKind::A);
+        let output = binary(patch, BinaryOp::Subtract, 0.0, 1.0);
+        connect(patch, scaled, output, InputKind::A);
+        output
+    })
+}
+
+pub fn reverse_saw(frequency: Hertz, gain: Unit, unipolar: bool) -> Module {
+    oscillator("Reverse Saw", frequency, gain, unipolar, |patch, phase| {
+        let scaled = binary(patch, BinaryOp::Multiply, 0.0, 2.0);
+        connect(patch, phase, scaled, InputKind::A);
+        let output = binary(patch, BinaryOp::Subtract, 1.0, 0.0);
+        connect(patch, scaled, output, InputKind::B);
+        output
+    })
+}
+
+fn oscillator(
+    name: &'static str,
+    frequency: Hertz,
+    gain: Unit,
+    unipolar: bool,
+    shape: impl FnOnce(&mut Patch, crate::patch::ModuleId) -> crate::patch::ModuleId,
+) -> Module {
     let mut patch = Patch::new();
     let frequency_input = patch.insert(Module::Input {
         kind: InputKind::Freq,
@@ -15,8 +77,9 @@ pub fn oscillator(wave: Wave, frequency: Hertz, gain: Unit, unipolar: bool) -> M
         kind: InputKind::Gain,
         default: Sample::new(gain.value()).unwrap(),
     });
-    let oscillator = patch.insert(Module::Osc { wave, frequency });
-    connect(&mut patch, frequency_input, oscillator, InputKind::Freq);
+    let phase = patch.insert(Module::Phase { frequency });
+    connect(&mut patch, frequency_input, phase, InputKind::Freq);
+    let oscillator = shape(&mut patch, phase);
     let signal = if unipolar {
         let offset = patch.insert(Module::Binary {
             op: BinaryOp::Add,
@@ -45,7 +108,7 @@ pub fn oscillator(wave: Wave, frequency: Hertz, gain: Unit, unipolar: bool) -> M
     let composition_output = patch.output_id().unwrap();
     Module::Composition(Box::new(
         Composition::new(
-            "Oscillator",
+            name,
             patch,
             [
                 ("Frequency".to_string(), InputKind::Freq, frequency_input),
@@ -356,7 +419,7 @@ pub fn flanger(rate: Hertz, depth: Unit, feedback: Unit) -> Module {
     let rate_input = input(&mut patch, InputKind::Rate, rate.value());
     let depth_input = input(&mut patch, InputKind::Depth, depth.value());
     let feedback_input = input(&mut patch, InputKind::Feedback, feedback.value());
-    let lfo = patch.insert(oscillator(Wave::Sine, rate, Unit::ONE, true));
+    let lfo = patch.insert(sine(rate, Unit::ONE, true));
     connect(&mut patch, rate_input, lfo, InputKind::Freq);
     let depth_amount = binary(&mut patch, BinaryOp::Multiply, 0.0, depth.value());
     connect(&mut patch, lfo, depth_amount, InputKind::A);
@@ -494,18 +557,37 @@ fn reverb_tank(room: Unit, damp: Unit, modulation: Unit) -> Module {
         });
         delays.push(delay);
     }
-    let delayed = delays
+    let group_delayed = delays
         .iter()
         .map(|delay| patch.insert_delay_tap(*delay, Unit::ONE).unwrap())
         .collect::<Vec<_>>();
-
-    let reflection = patch.insert(reverb_reflection());
-    for (channel, kind) in REVERB_CHANNEL_KINDS.into_iter().enumerate() {
-        connect(&mut patch, delayed[channel], reflection, kind);
+    let reflection_delayed = (0..3)
+        .map(|_| {
+            delays
+                .iter()
+                .map(|delay| patch.insert_delay_tap(*delay, Unit::ONE).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let output_delayed = delays
+        .iter()
+        .map(|delay| patch.insert_delay_tap(*delay, Unit::ONE).unwrap())
+        .collect::<Vec<_>>();
+    let reflections = reflection_delayed
+        .iter()
+        .map(|delayed| {
+            let reflection = patch.insert(reverb_reflection());
+            for (channel, kind) in REVERB_CHANNEL_KINDS.into_iter().enumerate() {
+                connect(&mut patch, delayed[channel], reflection, kind);
+            }
+            reflection
+        })
+        .collect::<Vec<_>>();
+    for (channel, _) in REVERB_CHANNEL_KINDS.into_iter().enumerate() {
         let group = groups[channel / 4];
         connect(
             &mut patch,
-            delayed[channel],
+            group_delayed[channel],
             group,
             REVERB_GROUP_CHANNEL_KINDS[channel % 4],
         );
@@ -524,22 +606,22 @@ fn reverb_tank(room: Unit, damp: Unit, modulation: Unit) -> Module {
             InputKind::In,
         );
     }
-    connect(&mut patch, reflection, groups[0], InputKind::Feedback);
-    connect(&mut patch, reflection, groups[1], InputKind::Feedback);
+    connect(&mut patch, reflections[0], groups[0], InputKind::Feedback);
+    connect(&mut patch, reflections[1], groups[1], InputKind::Feedback);
     let output = patch.insert(reverb_output_decoder());
     for (channel, kind) in REVERB_CHANNEL_KINDS.into_iter().enumerate() {
-        connect(&mut patch, delayed[channel], output, kind);
+        connect(&mut patch, output_delayed[channel], output, kind);
     }
-    connect(&mut patch, reflection, output, InputKind::Feedback);
+    connect(&mut patch, reflections[2], output, InputKind::Feedback);
     set_output(&mut patch, output);
     composition(
         "FDN Tank",
         patch,
         [
-            ("Modulation", InputKind::Mod, modulation_input),
             ("Input", InputKind::In, diffused),
             ("Room", InputKind::Room, room_input),
             ("Damping", InputKind::Damp, damp_input),
+            ("Modulation", InputKind::Mod, modulation_input),
         ],
     )
 }
@@ -855,10 +937,7 @@ fn reverb_weighted_output_pair(
 fn reverb_delay_time(samples: usize, depth: f32, rate: f32, modulation: Unit) -> Module {
     let mut patch = Patch::new();
     let modulation_input = input(&mut patch, InputKind::Mod, modulation.value());
-    let oscillator = patch.insert(Module::Osc {
-        wave: Wave::Sine,
-        frequency: Hertz::new(rate).unwrap(),
-    });
+    let oscillator = patch.insert(sine(Hertz::new(rate).unwrap(), Unit::ONE, false));
     let depth = binary(&mut patch, BinaryOp::Multiply, 0.0, depth / 29_761.0);
     connect(&mut patch, oscillator, depth, InputKind::A);
     let modulated = binary(&mut patch, BinaryOp::Multiply, 0.0, modulation.value());
@@ -1080,6 +1159,42 @@ mod tests {
         let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
 
         assert!((compiled.next().left().value() - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn waveform_compositions_are_phase_transforms() {
+        let rate = SampleRate::new(4).unwrap();
+        let frequency = Hertz::new(1.0).unwrap();
+        let cases = [
+            (sine(frequency, Unit::ONE, false), [0.0, 1.0, 0.0, -1.0]),
+            (square(frequency, Unit::ONE, false), [1.0, 1.0, -1.0, -1.0]),
+            (triangle(frequency, Unit::ONE, false), [-1.0, 0.0, 1.0, 0.0]),
+            (saw(frequency, Unit::ONE, false), [-1.0, -0.5, 0.0, 0.5]),
+            (
+                reverse_saw(frequency, Unit::ONE, false),
+                [1.0, 0.5, 0.0, -0.5],
+            ),
+        ];
+
+        for (waveform, expected) in cases {
+            let Module::Composition(graph) = &waveform else {
+                panic!()
+            };
+            assert!(
+                graph
+                    .patch()
+                    .modules()
+                    .iter()
+                    .any(|(_, module)| matches!(module, Module::Phase { .. }))
+            );
+            let mut patch = Patch::new();
+            let waveform = patch.insert(waveform);
+            set_output(&mut patch, waveform);
+            let mut compiled = CompiledPatch::new(&patch, rate).unwrap();
+            for expected in expected {
+                assert!((compiled.next().left().value() - expected).abs() < 0.0001);
+            }
+        }
     }
 
     #[test]

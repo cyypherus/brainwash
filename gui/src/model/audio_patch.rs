@@ -555,7 +555,13 @@ pub(super) fn audio_module(
         | ModuleKind::Power
         | ModuleKind::Remainder
         | ModuleKind::Minimum
-        | ModuleKind::Maximum => unreachable!(),
+        | ModuleKind::Maximum
+        | ModuleKind::Multiply
+        | ModuleKind::Add
+        | ModuleKind::GreaterThan
+        | ModuleKind::LessThan
+        | ModuleKind::Switch
+        | ModuleKind::Filter => unreachable!(),
         ModuleKind::Damp | ModuleKind::VariableDelay | ModuleKind::Slew => unreachable!(),
         ModuleKind::Freq => Ok(AudioModule::Freq),
         ModuleKind::Gate => Ok(AudioModule::Gate),
@@ -568,11 +574,11 @@ pub(super) fn audio_module(
                 .ok_or(AudioPatchError::InvalidParameter)?,
         )),
         ModuleKind::Transpose => Ok(brainwash::preset::transpose(audio_sample(module, 1)?)),
-        ModuleKind::Osc => Ok(AudioModule::Osc {
-            wave: audio_wave(module)?,
-            frequency: Hertz::new(audio_float(module, 1)?)
+        ModuleKind::Phase => Ok(AudioModule::Phase {
+            frequency: Hertz::new(audio_float(module, 0)?)
                 .ok_or(AudioPatchError::InvalidParameter)?,
         }),
+        ModuleKind::Noise => Ok(AudioModule::Noise),
         ModuleKind::Rise => Ok(AudioModule::Rise {
             time: audio_duration(module, 1, rate, bpm)?,
         }),
@@ -603,16 +609,6 @@ pub(super) fn audio_module(
                     })
                     .collect::<Result<Vec<_>, AudioPatchError>>()?,
             ),
-        }),
-        ModuleKind::Lowpass => Ok(AudioModule::Lowpass {
-            cutoff: filter_cutoff(audio_float(module, 1)?)?,
-            resonance: Resonance::new(audio_float(module, 2)?)
-                .ok_or(AudioPatchError::InvalidParameter)?,
-        }),
-        ModuleKind::Highpass => Ok(AudioModule::Highpass {
-            cutoff: filter_cutoff(audio_float(module, 1)?)?,
-            resonance: Resonance::new(audio_float(module, 2)?)
-                .ok_or(AudioPatchError::InvalidParameter)?,
         }),
         ModuleKind::Comb => Ok(AudioModule::Comb {
             time: audio_duration(module, 1, rate, bpm)?,
@@ -663,30 +659,6 @@ pub(super) fn audio_module(
             audio_unit(module, 2)?,
             audio_unit(module, 3)?,
         )),
-        ModuleKind::Multiply => Ok(AudioModule::Binary {
-            op: BinaryOp::Multiply,
-            a: audio_sample(module, 0)?,
-            b: audio_sample(module, 1)?,
-        }),
-        ModuleKind::Add => Ok(AudioModule::Binary {
-            op: BinaryOp::Add,
-            a: audio_sample(module, 0)?,
-            b: audio_sample(module, 1)?,
-        }),
-        ModuleKind::GreaterThan => Ok(AudioModule::Binary {
-            op: BinaryOp::GreaterThan,
-            a: audio_sample(module, 0)?,
-            b: audio_sample(module, 1)?,
-        }),
-        ModuleKind::LessThan => Ok(AudioModule::Binary {
-            op: BinaryOp::LessThan,
-            a: audio_sample(module, 0)?,
-            b: audio_sample(module, 1)?,
-        }),
-        ModuleKind::Switch => Ok(AudioModule::Switch {
-            a: audio_sample(module, 1)?,
-            b: audio_sample(module, 2)?,
-        }),
         ModuleKind::Random => Ok(AudioModule::Random),
         ModuleKind::Sample => {
             let ModuleBody::Sample { samples, .. } = &module.body else {
@@ -798,21 +770,6 @@ pub(super) fn composition_outputs(surface: &PatchSurface) -> Vec<ModuleId> {
     modules.into_iter().map(|module| module.id).collect()
 }
 
-fn audio_wave(module: &Module) -> Result<Wave, AudioPatchError> {
-    let Some(ParameterValue::Enum { index, .. }) = module.parameter(0).map(|p| p.value) else {
-        return Err(AudioPatchError::InvalidParameter);
-    };
-    match index {
-        0 => Ok(Wave::Sine),
-        1 => Ok(Wave::Square),
-        2 => Ok(Wave::Triangle),
-        3 => Ok(Wave::Saw),
-        4 => Ok(Wave::ReverseSaw),
-        5 => Ok(Wave::Noise),
-        _ => Err(AudioPatchError::InvalidParameter),
-    }
-}
-
 fn audio_rate(
     module: &Module,
     parameter: usize,
@@ -921,11 +878,6 @@ fn audio_int(module: &Module, parameter: usize) -> Result<i32, AudioPatchError> 
 
 fn audio_unit(module: &Module, parameter: usize) -> Result<Unit, AudioPatchError> {
     Unit::new(audio_float(module, parameter)?.clamp(0.0, 1.0))
-        .ok_or(AudioPatchError::InvalidParameter)
-}
-
-fn filter_cutoff(value: f32) -> Result<Hertz, AudioPatchError> {
-    Hertz::new(20.0 * 1000.0_f32.powf(value.clamp(0.0, 1.0)))
         .ok_or(AudioPatchError::InvalidParameter)
 }
 

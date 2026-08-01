@@ -37,10 +37,6 @@ impl Sample {
         Self::finite(self.0 + rhs.0)
     }
 
-    pub(crate) fn sub(self, rhs: Self) -> Self {
-        Self::finite(self.0 - rhs.0)
-    }
-
     pub(crate) fn attenuate(self, amount: Unit) -> Self {
         Self::finite(self.0 * amount.0)
     }

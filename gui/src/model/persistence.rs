@@ -169,7 +169,13 @@ fn project_kind(
         | ModuleKind::Power
         | ModuleKind::Remainder
         | ModuleKind::Minimum
-        | ModuleKind::Maximum => unreachable!(),
+        | ModuleKind::Maximum
+        | ModuleKind::Multiply
+        | ModuleKind::Add
+        | ModuleKind::GreaterThan
+        | ModuleKind::LessThan
+        | ModuleKind::Switch
+        | ModuleKind::Filter => unreachable!(),
         ModuleKind::Damp | ModuleKind::VariableDelay | ModuleKind::Slew => unreachable!(),
         ModuleKind::TurnRightDown => ProjectModuleKind::Routing(ProjectRoutingModule::TurnRD),
         ModuleKind::TurnDownRight => ProjectModuleKind::Routing(ProjectRoutingModule::TurnDR),
@@ -199,13 +205,12 @@ fn project_kind(
         ModuleKind::Degree => ProjectModuleKind::Standard(ProjectStandardModule::Degree),
         ModuleKind::DegreeGate => ProjectModuleKind::Standard(ProjectStandardModule::DegreeGate),
         ModuleKind::Rate => ProjectModuleKind::Standard(ProjectStandardModule::Rate),
-        ModuleKind::Osc => ProjectModuleKind::Standard(ProjectStandardModule::Osc),
+        ModuleKind::Phase => ProjectModuleKind::Standard(ProjectStandardModule::Phase),
+        ModuleKind::Noise => ProjectModuleKind::Standard(ProjectStandardModule::Noise),
         ModuleKind::Rise => ProjectModuleKind::Standard(ProjectStandardModule::Rise),
         ModuleKind::Fall => ProjectModuleKind::Standard(ProjectStandardModule::Fall),
         ModuleKind::Ramp => ProjectModuleKind::Standard(ProjectStandardModule::Ramp),
         ModuleKind::Envelope => ProjectModuleKind::Standard(ProjectStandardModule::Envelope),
-        ModuleKind::Lowpass => ProjectModuleKind::Standard(ProjectStandardModule::Lpf),
-        ModuleKind::Highpass => ProjectModuleKind::Standard(ProjectStandardModule::Hpf),
         ModuleKind::Comb => ProjectModuleKind::Standard(ProjectStandardModule::Comb),
         ModuleKind::Allpass => ProjectModuleKind::Standard(ProjectStandardModule::Allpass),
         ModuleKind::Delay => ProjectModuleKind::Standard(ProjectStandardModule::Delay),
@@ -215,11 +220,6 @@ fn project_kind(
         | ModuleKind::Distortion
         | ModuleKind::Compressor
         | ModuleKind::Flanger => unreachable!(),
-        ModuleKind::Multiply => ProjectModuleKind::Standard(ProjectStandardModule::Mul),
-        ModuleKind::Add => ProjectModuleKind::Standard(ProjectStandardModule::Add),
-        ModuleKind::GreaterThan => ProjectModuleKind::Standard(ProjectStandardModule::Gt),
-        ModuleKind::LessThan => ProjectModuleKind::Standard(ProjectStandardModule::Lt),
-        ModuleKind::Switch => ProjectModuleKind::Standard(ProjectStandardModule::Switch),
         ModuleKind::Random => ProjectModuleKind::Standard(ProjectStandardModule::Rng),
         ModuleKind::Sample => ProjectModuleKind::Standard(ProjectStandardModule::Sample),
         ModuleKind::Probe => ProjectModuleKind::Standard(ProjectStandardModule::Probe),
@@ -276,10 +276,9 @@ fn project_params(
         ModuleBody::Transpose { .. } => {
             return Err("unprojected Transpose composition".to_string());
         }
-        ModuleBody::Osc { wave, frequency } => ProjectModuleParams::Osc {
-            wave: project_wave(wave.index)?,
+        ModuleBody::Phase { frequency } => ProjectModuleParams::Phase {
             frequency: project_float(*frequency),
-            connected: connected_mask(&[(1, frequency.connected)]),
+            connected: connected_mask(&[(0, frequency.connected)]),
         },
         ModuleBody::Rise { gate, time } => ProjectModuleParams::Rise {
             time: project_time(*time)?,
@@ -300,24 +299,6 @@ fn project_params(
         ModuleBody::Envelope { phase, points } => ProjectModuleParams::Envelope {
             points: points.iter().map(project_env_point).collect(),
             connected: connected_mask(&[(0, phase.connected)]),
-        },
-        ModuleBody::Lowpass {
-            input,
-            frequency,
-            resonance,
-        }
-        | ModuleBody::Highpass {
-            input,
-            frequency,
-            resonance,
-        } => ProjectModuleParams::Filter {
-            freq: project_float(*frequency),
-            q: project_float(*resonance),
-            connected: connected_mask(&[
-                (0, input.connected),
-                (1, frequency.connected),
-                (2, resonance.connected),
-            ]),
         },
         ModuleBody::Comb {
             input,
@@ -361,31 +342,6 @@ fn project_params(
         | ModuleBody::Flanger { .. } => {
             return Err("unprojected effect composition".to_string());
         }
-        ModuleBody::Multiply { a, b } => ProjectModuleParams::Mul {
-            a: project_float(*a),
-            b: project_float(*b),
-            connected: connected_mask(&[(0, a.connected), (1, b.connected)]),
-        },
-        ModuleBody::Add { a, b } => ProjectModuleParams::Add {
-            a: project_float(*a),
-            b: project_float(*b),
-            connected: connected_mask(&[(0, a.connected), (1, b.connected)]),
-        },
-        ModuleBody::GreaterThan { a, b } => ProjectModuleParams::Gt {
-            a: project_float(*a),
-            b: project_float(*b),
-            connected: connected_mask(&[(0, a.connected), (1, b.connected)]),
-        },
-        ModuleBody::LessThan { a, b } => ProjectModuleParams::Lt {
-            a: project_float(*a),
-            b: project_float(*b),
-            connected: connected_mask(&[(0, a.connected), (1, b.connected)]),
-        },
-        ModuleBody::Switch { select, a, b } => ProjectModuleParams::Switch {
-            a: project_float(*a),
-            b: project_float(*b),
-            connected: connected_mask(&[(0, select.connected), (1, a.connected), (2, b.connected)]),
-        },
         ModuleBody::Random { gate } => {
             if !gate.connected {
                 return Err(format!(
@@ -496,18 +452,6 @@ fn connected_mask(rows: &[(usize, bool)]) -> u8 {
             mask
         }
     })
-}
-
-fn project_wave(index: usize) -> Result<ProjectWaveType, String> {
-    match index {
-        0 => Ok(ProjectWaveType::Sin),
-        1 => Ok(ProjectWaveType::Squ),
-        2 => Ok(ProjectWaveType::Tri),
-        3 => Ok(ProjectWaveType::Saw),
-        4 => Ok(ProjectWaveType::RSaw),
-        5 => Ok(ProjectWaveType::Noise),
-        _ => Err(format!("invalid wave index {index}")),
-    }
 }
 
 pub(super) fn instrument_surface_from_project(project: &Project) -> Result<PatchSurface, String> {
@@ -621,22 +565,16 @@ fn kind_from_project(kind: ProjectModuleKind) -> (ModuleKind, Option<u32>) {
                 ProjectStandardModule::Degree => ModuleKind::Degree,
                 ProjectStandardModule::DegreeGate => ModuleKind::DegreeGate,
                 ProjectStandardModule::Rate => ModuleKind::Rate,
-                ProjectStandardModule::Osc => ModuleKind::Osc,
+                ProjectStandardModule::Phase => ModuleKind::Phase,
+                ProjectStandardModule::Noise => ModuleKind::Noise,
                 ProjectStandardModule::Rise => ModuleKind::Rise,
                 ProjectStandardModule::Fall => ModuleKind::Fall,
                 ProjectStandardModule::Ramp => ModuleKind::Ramp,
                 ProjectStandardModule::Envelope => ModuleKind::Envelope,
-                ProjectStandardModule::Lpf => ModuleKind::Lowpass,
-                ProjectStandardModule::Hpf => ModuleKind::Highpass,
                 ProjectStandardModule::Comb => ModuleKind::Comb,
                 ProjectStandardModule::Allpass => ModuleKind::Allpass,
                 ProjectStandardModule::Delay => ModuleKind::Delay,
                 ProjectStandardModule::DelayTap(_) => ModuleKind::DelayTap,
-                ProjectStandardModule::Mul => ModuleKind::Multiply,
-                ProjectStandardModule::Add => ModuleKind::Add,
-                ProjectStandardModule::Gt => ModuleKind::GreaterThan,
-                ProjectStandardModule::Lt => ModuleKind::LessThan,
-                ProjectStandardModule::Switch => ModuleKind::Switch,
                 ProjectStandardModule::Rng => ModuleKind::Random,
                 ProjectStandardModule::Sample => ModuleKind::Sample,
                 ProjectStandardModule::Probe => ModuleKind::Probe,
@@ -679,15 +617,13 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
         ProjectModuleParams::Rate { time } => {
             set_time(&mut parameters, 0, *time);
         }
-        ProjectModuleParams::Osc {
-            wave,
+        ProjectModuleParams::Phase {
             frequency,
             connected,
         } => {
-            set_enum(&mut parameters, 0, wave_index(*wave));
-            set_float(&mut parameters, 1, *frequency);
-            if let Some(parameter) = parameters.get_mut(1) {
-                parameter.connected = connected & (1 << 1) != 0;
+            set_float(&mut parameters, 0, *frequency);
+            if let Some(parameter) = parameters.get_mut(0) {
+                parameter.connected = connected & 1 != 0;
             }
         }
         ProjectModuleParams::Rise { time, connected }
@@ -708,11 +644,6 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             if let Some(target) = module.body.env_points_mut() {
                 *target = points.iter().map(env_point_from_project).collect();
             }
-            apply_connected(&mut parameters, *connected);
-        }
-        ProjectModuleParams::Filter { freq, q, connected } => {
-            set_float(&mut parameters, 1, *freq);
-            set_float(&mut parameters, 2, *q);
             apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Comb {
@@ -737,19 +668,6 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
         }
         ProjectModuleParams::Delay { time, connected } => {
             set_time(&mut parameters, 1, *time);
-            apply_connected(&mut parameters, *connected);
-        }
-        ProjectModuleParams::Mul { a, b, connected }
-        | ProjectModuleParams::Add { a, b, connected }
-        | ProjectModuleParams::Gt { a, b, connected }
-        | ProjectModuleParams::Lt { a, b, connected } => {
-            set_float(&mut parameters, 0, *a);
-            set_float(&mut parameters, 1, *b);
-            apply_connected(&mut parameters, *connected);
-        }
-        ProjectModuleParams::Switch { a, b, connected } => {
-            set_float(&mut parameters, 1, *a);
-            set_float(&mut parameters, 2, *b);
             apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Sample {
@@ -829,18 +747,6 @@ fn set_time(parameters: &mut [ModuleParameter], index: usize, value: ProjectTime
     }
 }
 
-fn set_enum(parameters: &mut [ModuleParameter], index: usize, value: usize) {
-    if let Some(parameter) = parameters.get_mut(index)
-        && let ParameterValue::Enum {
-            index: target,
-            options,
-        } = &mut parameter.value
-        && value < options.len()
-    {
-        *target = value;
-    }
-}
-
 fn apply_connected(parameters: &mut [ModuleParameter], connected: u8) {
     for (index, parameter) in parameters.iter_mut().enumerate() {
         if parameter.value.is_port() {
@@ -875,16 +781,5 @@ fn env_point_from_project(point: &brainwash_grid::project::EnvPoint) -> EnvPoint
         time: (point.time * 100.0).round().clamp(0.0, 100.0) as i32,
         value: (point.value * 100.0).round().clamp(-100.0, 100.0) as i32,
         curve: point.curve,
-    }
-}
-
-fn wave_index(wave: ProjectWaveType) -> usize {
-    match wave {
-        ProjectWaveType::Sin => 0,
-        ProjectWaveType::Squ => 1,
-        ProjectWaveType::Tri => 2,
-        ProjectWaveType::Saw => 3,
-        ProjectWaveType::RSaw => 4,
-        ProjectWaveType::Noise => 5,
     }
 }

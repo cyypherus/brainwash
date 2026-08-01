@@ -193,6 +193,8 @@ impl GuiState {
             let moved = points[point];
             points.sort_by_key(|point| point.time);
             let point = points.iter().position(|point| *point == moved).unwrap_or(0);
+            points.first_mut().unwrap().curve = false;
+            points.last_mut().unwrap().curve = false;
             (point, changed)
         };
         if changed {
@@ -604,12 +606,19 @@ impl GuiState {
                         Orientation::Right => Orientation::Down,
                         Orientation::Down => Orientation::Right,
                     };
-                    if self.area_fits(
-                        module.kind().width(orientation),
-                        module.kind().height(orientation),
-                        module.position,
-                        &[module.id],
-                    ) {
+                    let span = self
+                        .module_input_count(module)
+                        .max(self.module_output_count(module))
+                        .max(1);
+                    let (width, height) = if module.kind().is_routing() {
+                        (1, 1)
+                    } else {
+                        match orientation {
+                            Orientation::Right => (1, span),
+                            Orientation::Down => (span, 1),
+                        }
+                    };
+                    if self.area_fits(width, height, module.position, &[module.id]) {
                         let id = module.id;
                         let before = self.snapshot();
                         if let Some(module) = self
@@ -1714,6 +1723,9 @@ impl GuiState {
                 };
             }
             GuiAction::ToggleCurve => {
+                if point == 0 || point + 1 == point_count {
+                    return;
+                }
                 let before = self.snapshot();
                 let Some(points) =
                     self.instrument_mut().surface_mut().modules[module_index].env_points_mut()
@@ -1765,6 +1777,8 @@ impl GuiState {
                         return;
                     };
                     points.remove(point);
+                    points.first_mut().unwrap().curve = false;
+                    points.last_mut().unwrap().curve = false;
                     self.commit(before);
                     self.mode = Mode::EnvEdit {
                         module,

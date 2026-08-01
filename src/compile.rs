@@ -1,7 +1,8 @@
 use crate::delay::Delay;
-use crate::osc::Oscillator;
+use crate::osc::{Noise, Phase};
 use crate::patch::{
     BinaryOp, EnvPoint, InputKind, InputPort, Module, ModuleId, OutputPort, Patch, UnaryOp,
+    envelope_value,
 };
 use crate::sample::{Frame, Sample, Unit};
 use crate::time::{Duration, Hertz, SampleRate};
@@ -12,11 +13,17 @@ use std::sync::Arc;
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompiledPatch {
     nodes: Vec<Node>,
-    inputs: Vec<Vec<Option<usize>>>,
-    values: Vec<Sample>,
-    output: usize,
+    inputs: Vec<Vec<Option<Signal>>>,
+    values: Vec<[Sample; 2]>,
+    output: Signal,
     probes: Vec<(crate::patch::ModuleId, usize)>,
     meters: Vec<(crate::patch::ModuleId, usize, MeterInputs)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Signal {
+    node: usize,
+    output: u16,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -68,18 +75,18 @@ enum Node {
         coefficient: Unit,
         value: f32,
     },
-    Osc {
-        osc: Oscillator,
+    Phase {
+        phase: Phase,
         frequency: Hertz,
     },
+    Noise(Noise),
     Rise(GateRamp),
     Fall(GateRamp),
     Ramp(Ramp),
     Envelope {
         points: Arc<Vec<EnvPoint>>,
     },
-    Lowpass(StateVariable),
-    Highpass(StateVariable),
+    Filter(StateVariable),
     Comb(Comb),
     Allpass(Allpass),
     Delay(Delay),
@@ -278,10 +285,12 @@ fn expand(
             _ => {
                 let mapped = target.insert(module.clone());
                 modules.insert(id, mapped);
-                outputs.insert(
-                    source.output_port(id, 0).unwrap(),
-                    target.output_port(mapped, 0).unwrap(),
-                );
+                for output in 0..module.output_count() {
+                    outputs.insert(
+                        source.output_port(id, output).unwrap(),
+                        target.output_port(mapped, output).unwrap(),
+                    );
+                }
                 for kind in module.input_kinds() {
                     inputs.insert(
                         source.input_port(id, kind).unwrap(),
@@ -319,8 +328,8 @@ impl CompiledPatch {
         Self {
             nodes: vec![Node::Silence],
             inputs: vec![Vec::new()],
-            values: vec![Sample::ZERO],
-            output: 0,
+            values: vec![[Sample::ZERO; 2]],
+            output: Signal { node: 0, output: 0 },
             probes: Vec::new(),
             meters: Vec::new(),
         }
@@ -380,10 +389,7 @@ impl CompiledPatch {
         }
 
         for connection in patch.connections() {
-            if connection.from.output != 0 {
-                return Err(CompileError::InvalidInput);
-            }
-            let source_id = resolve_passthrough_source(patch, connection.from.module)?;
+            let source_port = resolve_passthrough_output(patch, connection.from)?;
             if !order
                 .iter()
                 .any(|module_index| patch.modules()[*module_index].0 == connection.input.module)
@@ -392,7 +398,12 @@ impl CompiledPatch {
             }
             let source = rank_by_module
                 .iter()
-                .find_map(|(id, rank)| (*id == source_id).then_some(*rank))
+                .find_map(|(id, rank)| {
+                    (*id == source_port.module).then_some(Signal {
+                        node: *rank,
+                        output: source_port.output,
+                    })
+                })
                 .ok_or(CompileError::MissingModule)?;
             let target = rank_by_module
                 .iter()
@@ -459,18 +470,21 @@ impl CompiledPatch {
         }
         let output = patch
             .output_id()
-            .map(|port| resolve_passthrough_source(patch, port.module))
+            .map(|port| resolve_passthrough_output(patch, port))
             .transpose()?
-            .and_then(|id| {
-                rank_by_module
-                    .iter()
-                    .find_map(|(module_id, rank)| (*module_id == id).then_some(*rank))
+            .and_then(|port| {
+                rank_by_module.iter().find_map(|(module_id, rank)| {
+                    (*module_id == port.module).then_some(Signal {
+                        node: *rank,
+                        output: port.output,
+                    })
+                })
             })
             .ok_or(CompileError::MissingOutput)?;
         Ok(Self {
             nodes,
             inputs,
-            values: vec![Sample::ZERO; patch.modules().len()],
+            values: vec![[Sample::ZERO; 2]; patch.modules().len()],
             output,
             probes,
             meters,
@@ -492,8 +506,8 @@ impl CompiledPatch {
                     .first()
                     .copied()
                     .flatten()
-                    .and_then(|source| self.values.get(source).copied());
-                self.values[idx] = match &self.nodes[delay] {
+                    .and_then(|source| signal_value(&self.values, source));
+                self.values[idx][0] = match &self.nodes[delay] {
                     Node::Delay(delay) => delay.tap(seconds).attenuate(gain),
                     _ => Sample::ZERO,
                 };
@@ -502,7 +516,11 @@ impl CompiledPatch {
             self.values[idx] =
                 self.nodes[idx].process(&self.inputs[idx], &self.values, external, controls);
         }
-        Frame::mono(self.values[self.output].clipped())
+        Frame::mono(
+            signal_value(&self.values, self.output)
+                .unwrap_or(Sample::ZERO)
+                .clipped(),
+        )
     }
 
     fn continue_gate_state_from(&mut self, previous: &Self) {
@@ -536,13 +554,13 @@ impl CompiledPatch {
     pub fn probe_values(&self) -> impl Iterator<Item = (crate::patch::ModuleId, Sample)> + '_ {
         self.probes
             .iter()
-            .map(|(id, index)| (*id, self.values[*index]))
+            .map(|(id, index)| (*id, self.values[*index][0]))
     }
 
     fn visit_input_values(&self, mut visitor: impl FnMut(crate::patch::ModuleId, usize, Sample)) {
         for (id, index, meter_inputs) in &self.meters {
             if let MeterInputs::Output(input) = meter_inputs {
-                visitor(*id, *input, self.values[*index]);
+                visitor(*id, *input, self.values[*index][0]);
                 continue;
             }
             for (slot, source) in self.inputs[*index].iter().copied().enumerate() {
@@ -557,7 +575,7 @@ impl CompiledPatch {
                         MeterInputs::Output(_) => unreachable!(),
                     },
                     source
-                        .map(|source| self.values[source])
+                        .and_then(|source| signal_value(&self.values, source))
                         .unwrap_or(Sample::ZERO),
                 );
             }
@@ -575,7 +593,7 @@ impl CompiledPatch {
             .filter(|(candidate, _, _)| *candidate == module)
         {
             if let MeterInputs::Output(input) = meter_inputs {
-                visitor(*input, self.values[*index]);
+                visitor(*input, self.values[*index][0]);
                 continue;
             }
             for (slot, source) in self.inputs[*index].iter().copied().enumerate() {
@@ -589,7 +607,7 @@ impl CompiledPatch {
                         MeterInputs::Output(_) => unreachable!(),
                     },
                     source
-                        .map(|source| self.values[source])
+                        .and_then(|source| signal_value(&self.values, source))
                         .unwrap_or(Sample::ZERO),
                 );
             }
@@ -599,23 +617,36 @@ impl CompiledPatch {
 
 fn resolve_passthrough_source(
     patch: &Patch,
-    mut module: crate::patch::ModuleId,
+    module: crate::patch::ModuleId,
 ) -> Result<crate::patch::ModuleId, CompileError> {
+    resolve_passthrough_output(
+        patch,
+        patch
+            .output_port(module, 0)
+            .map_err(|_| CompileError::MissingModule)?,
+    )
+    .map(|output| output.module)
+}
+
+fn resolve_passthrough_output(
+    patch: &Patch,
+    mut output: OutputPort,
+) -> Result<OutputPort, CompileError> {
     loop {
         let definition = patch
             .modules()
             .iter()
-            .find_map(|(id, definition)| (*id == module).then_some(definition))
+            .find_map(|(id, definition)| (*id == output.module).then_some(definition))
             .ok_or(CompileError::MissingModule)?;
         let mut incoming = patch
             .connections()
             .iter()
-            .filter(|connection| connection.input.module == module);
+            .filter(|connection| connection.input.module == output.module);
         let Some(connection) = incoming.next() else {
-            return Ok(module);
+            return Ok(output);
         };
         if incoming.next().is_some() {
-            return Ok(module);
+            return Ok(output);
         }
         let passthrough = match definition {
             Module::Pass => true,
@@ -640,9 +671,9 @@ fn resolve_passthrough_source(
             _ => false,
         };
         if !passthrough {
-            return Ok(module);
+            return Ok(output);
         }
-        module = connection.from.module;
+        output = connection.from;
     }
 }
 
@@ -719,13 +750,27 @@ impl PatchEngine {
 impl Node {
     fn process(
         &mut self,
-        inputs: &[Option<usize>],
-        values: &[Sample],
+        inputs: &[Option<Signal>],
+        values: &[[Sample; 2]],
         external: &[Option<Sample>],
         controls: PatchControls,
-    ) -> Sample {
+    ) -> [Sample; 2] {
         let in0 = sample(inputs, values, 0);
-        match self {
+        if let Node::Filter(filter) = self {
+            if let Some(cutoff) =
+                input(inputs, values, 1).and_then(|input| filter_cutoff(input.value()))
+            {
+                filter.cutoff = cutoff;
+            }
+            if let Some(resonance) = input(inputs, values, 2)
+                .and_then(|input| crate::patch::Resonance::new(input.value()))
+            {
+                filter.resonance = resonance;
+            }
+            let (low, high) = filter.outputs(in0);
+            return [low, high];
+        }
+        let output = match self {
             Node::Input { index, default } => {
                 external.get(*index).copied().flatten().unwrap_or(*default)
             }
@@ -759,7 +804,8 @@ impl Node {
                 inputs
                     .iter()
                     .flatten()
-                    .map(|input| values[*input].value())
+                    .filter_map(|input| signal_value(values, *input))
+                    .map(Sample::value)
                     .sum(),
             ),
             Node::Damp { coefficient, value } => {
@@ -771,44 +817,17 @@ impl Node {
                 *value = in0.value() * (1.0 - coefficient.value()) + *value * coefficient.value();
                 Sample::raw(*value)
             }
-            Node::Osc { osc, frequency } => {
+            Node::Phase { phase, frequency } => {
                 let frequency = input(inputs, values, 0)
                     .and_then(|input| Hertz::new(input.value()))
                     .unwrap_or(*frequency);
-                if let Some(frequency) = Hertz::new(frequency.value()) {
-                    osc.set_frequency(frequency);
-                }
-                osc.next()
+                Sample::raw(phase.next(frequency))
             }
+            Node::Noise(noise) => Sample::raw(noise.next()),
             Node::Rise(ramp) | Node::Fall(ramp) => Sample::raw(ramp.next(in0.value())),
             Node::Ramp(ramp) => Sample::raw(ramp.next(in0.value())),
             Node::Envelope { points } => Sample::raw(envelope_value(points, in0.value())),
-            Node::Lowpass(filter) => {
-                if let Some(cutoff) =
-                    input(inputs, values, 1).and_then(|input| filter_cutoff(input.value()))
-                {
-                    filter.cutoff = cutoff;
-                }
-                if let Some(resonance) = input(inputs, values, 2)
-                    .and_then(|input| crate::patch::Resonance::new(input.value()))
-                {
-                    filter.resonance = resonance;
-                }
-                filter.lowpass(in0)
-            }
-            Node::Highpass(filter) => {
-                if let Some(cutoff) =
-                    input(inputs, values, 1).and_then(|input| filter_cutoff(input.value()))
-                {
-                    filter.cutoff = cutoff;
-                }
-                if let Some(resonance) = input(inputs, values, 2)
-                    .and_then(|input| crate::patch::Resonance::new(input.value()))
-                {
-                    filter.resonance = resonance;
-                }
-                filter.highpass(in0)
-            }
+            Node::Filter(_) => unreachable!(),
             Node::Comb(comb) => Sample::raw(comb.next(in0.value())),
             Node::Allpass(allpass) => {
                 if let Some(feedback) = input(inputs, values, 2)
@@ -902,7 +921,8 @@ impl Node {
             }
             Node::Sample { samples } => Sample::raw(sample_value(samples, in0.value())),
             Node::Probe => in0,
-        }
+        };
+        [output, Sample::ZERO]
     }
 }
 
@@ -997,14 +1017,6 @@ impl StateVariable {
         self.integrator_1 = 2.0 * v1 - self.integrator_1;
         self.integrator_2 = 2.0 * v2 - self.integrator_2;
         (Sample::raw(v2), Sample::raw(input.value() - k * v1 - v2))
-    }
-
-    fn lowpass(&mut self, input: Sample) -> Sample {
-        self.outputs(input).0
-    }
-
-    fn highpass(&mut self, input: Sample) -> Sample {
-        self.outputs(input).1
     }
 }
 
@@ -1176,24 +1188,18 @@ fn create_node(
             coefficient: *coefficient,
             value: 0.0,
         },
-        Module::Osc { wave, frequency } => Node::Osc {
-            osc: Oscillator::new(*wave, rate, *frequency),
+        Module::Phase { frequency } => Node::Phase {
+            phase: Phase::new(rate),
             frequency: *frequency,
         },
+        Module::Noise => Node::Noise(Noise::new()),
         Module::Rise { time } => Node::Rise(GateRamp::new(GateRampMode::Rise, *time, rate)),
         Module::Fall { time } => Node::Fall(GateRamp::new(GateRampMode::Fall, *time, rate)),
         Module::Ramp { value, time } => Node::Ramp(Ramp::new(value.value(), *time, rate)),
         Module::Envelope { points } => Node::Envelope {
             points: Arc::clone(points),
         },
-        Module::Lowpass { cutoff, resonance } => Node::Lowpass(StateVariable {
-            rate,
-            cutoff: *cutoff,
-            resonance: *resonance,
-            integrator_1: 0.0,
-            integrator_2: 0.0,
-        }),
-        Module::Highpass { cutoff, resonance } => Node::Highpass(StateVariable {
+        Module::Filter { cutoff, resonance } => Node::Filter(StateVariable {
             rate,
             cutoff: *cutoff,
             resonance: *resonance,
@@ -1241,52 +1247,27 @@ fn create_node(
     })
 }
 
-fn input(inputs: &[Option<usize>], values: &[Sample], index: usize) -> Option<Sample> {
+fn input(inputs: &[Option<Signal>], values: &[[Sample; 2]], index: usize) -> Option<Sample> {
     inputs
         .get(index)
         .copied()
         .flatten()
-        .and_then(|source| values.get(source).copied())
+        .and_then(|source| signal_value(values, source))
 }
 
-fn sample(inputs: &[Option<usize>], values: &[Sample], index: usize) -> Sample {
+fn sample(inputs: &[Option<Signal>], values: &[[Sample; 2]], index: usize) -> Sample {
     input(inputs, values, index).unwrap_or(Sample::ZERO)
+}
+
+fn signal_value(values: &[[Sample; 2]], signal: Signal) -> Option<Sample> {
+    values
+        .get(signal.node)
+        .and_then(|outputs| outputs.get(signal.output as usize))
+        .copied()
 }
 
 fn filter_cutoff(value: f32) -> Option<Hertz> {
     Hertz::new(20.0 * 1000.0_f32.powf(value.clamp(0.0, 1.0)))
-}
-
-fn envelope_value(points: &[EnvPoint], time: f32) -> f32 {
-    let time = time.clamp(0.0, 1.0);
-    if points.is_empty() {
-        return 0.0;
-    }
-    if points.len() == 1 || time <= points[0].time.value() {
-        return points[0].value.value();
-    }
-    let last = points.len() - 1;
-    if time >= points[last].time.value() {
-        return points[last].value.value();
-    }
-    for window in points.windows(2) {
-        let start = window[0];
-        let end = window[1];
-        if time < start.time.value() || time > end.time.value() {
-            continue;
-        }
-        let span = (end.time.value() - start.time.value()).max(f32::EPSILON);
-        let mut amount = (time - start.time.value()) / span;
-        amount = match (start.curve, end.curve) {
-            (false, false) => amount,
-            (true, false) => 1.0 - (1.0 - amount) * (1.0 - amount),
-            (false, true) => amount * amount,
-            (true, true) if amount < 0.5 => 2.0 * amount * amount,
-            (true, true) => 1.0 - 2.0 * (1.0 - amount) * (1.0 - amount),
-        };
-        return start.value.value() + (end.value.value() - start.value.value()) * amount;
-    }
-    points[last].value.value()
 }
 
 fn sample_value(samples: &[Sample], position: f32) -> f32 {
@@ -1309,7 +1290,6 @@ fn sample_value(samples: &[Sample], position: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::osc::Wave;
     use crate::patch::InputKind;
     use crate::patch::{Composition, Module, Patch};
     use crate::time::Hertz;
@@ -1328,11 +1308,12 @@ mod tests {
             (0..512)
                 .map(|index| {
                     filter
-                        .lowpass(if index == 0 {
+                        .outputs(if index == 0 {
                             Sample::new(1.0).unwrap()
                         } else {
                             Sample::ZERO
                         })
+                        .0
                         .value()
                         .abs()
                 })
@@ -1344,8 +1325,7 @@ mod tests {
 
     fn patch(rate: f32) -> Patch {
         let mut patch = Patch::new();
-        let osc = patch.insert(Module::Osc {
-            wave: Wave::Sine,
+        let osc = patch.insert(Module::Phase {
             frequency: Hertz::new(rate).unwrap(),
         });
         patch.output(patch.output_port(osc, 0).unwrap()).unwrap();
@@ -1355,8 +1335,7 @@ mod tests {
     #[test]
     fn compile_requires_output() {
         let mut patch = Patch::new();
-        patch.insert(Module::Osc {
-            wave: Wave::Sine,
+        patch.insert(Module::Phase {
             frequency: Hertz::new(440.0).unwrap(),
         });
         let rate = SampleRate::new(44_100).unwrap();
@@ -1488,7 +1467,7 @@ mod tests {
 
         let compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
 
-        assert!(compiled.nodes.len() <= 140, "{}", compiled.nodes.len());
+        assert!(compiled.nodes.len() <= 224, "{}", compiled.nodes.len());
     }
 
     #[test]
@@ -1529,7 +1508,7 @@ mod tests {
     fn input_values_expose_connected_module_inputs() {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Constant(Sample::new(0.25).unwrap()));
-        let lowpass = patch.insert(Module::Lowpass {
+        let lowpass = patch.insert(Module::Filter {
             cutoff: Hertz::new(1000.0).unwrap(),
             resonance: crate::patch::Resonance::new(0.707).unwrap(),
         });
@@ -1549,6 +1528,92 @@ mod tests {
         });
 
         assert!(values.contains(&(lowpass, 0, 0.25)));
+    }
+
+    #[test]
+    fn filter_outputs_share_one_state_update_and_preserve_output_index() {
+        let mut patch = Patch::new();
+        let source = patch.insert(Module::Constant(Sample::new(1.0).unwrap()));
+        let filter = patch.insert(Module::Filter {
+            cutoff: Hertz::new(1_000.0).unwrap(),
+            resonance: crate::patch::Resonance::new(0.707).unwrap(),
+        });
+        let low = patch.insert(Module::Probe);
+        let high = patch.insert(Module::Probe);
+        patch
+            .connect_input(
+                patch.output_port(source, 0).unwrap(),
+                patch.input_port(filter, InputKind::In).unwrap(),
+            )
+            .unwrap();
+        patch
+            .connect_input(
+                patch.output_port(filter, 0).unwrap(),
+                patch.input_port(low, InputKind::In).unwrap(),
+            )
+            .unwrap();
+        patch
+            .connect_input(
+                patch.output_port(filter, 1).unwrap(),
+                patch.input_port(high, InputKind::In).unwrap(),
+            )
+            .unwrap();
+        patch.output(patch.output_port(high, 0).unwrap()).unwrap();
+
+        let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+        let frame = compiled.next();
+        let probes = compiled.probe_values().collect::<Vec<_>>();
+        let low_value = probes.iter().find(|(id, _)| *id == low).unwrap().1;
+        let high_value = probes.iter().find(|(id, _)| *id == high).unwrap().1;
+
+        assert_ne!(low_value, high_value);
+        assert_eq!(frame.left(), high_value.clipped());
+    }
+
+    #[test]
+    fn composition_preserves_filter_output_order() {
+        let mut inner = Patch::new();
+        let source = inner.insert(Module::Constant(Sample::new(1.0).unwrap()));
+        let filter = inner.insert(Module::Filter {
+            cutoff: Hertz::new(1_000.0).unwrap(),
+            resonance: crate::patch::Resonance::new(0.707).unwrap(),
+        });
+        inner
+            .connect_input(
+                inner.output_port(source, 0).unwrap(),
+                inner.input_port(filter, InputKind::In).unwrap(),
+            )
+            .unwrap();
+        inner.output(inner.output_port(filter, 0).unwrap()).unwrap();
+        let composition = Composition::new(
+            "Filter Outputs",
+            inner,
+            [],
+            [
+                (
+                    "Low".to_string(),
+                    OutputPort {
+                        module: filter,
+                        output: 0,
+                    },
+                ),
+                (
+                    "High".to_string(),
+                    OutputPort {
+                        module: filter,
+                        output: 1,
+                    },
+                ),
+            ],
+        )
+        .unwrap();
+        let mut patch = Patch::new();
+        let filter = patch.insert(Module::Composition(Box::new(composition)));
+        patch.output(patch.output_port(filter, 1).unwrap()).unwrap();
+
+        let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+
+        assert!(compiled.next().left().value().abs() > 0.5);
     }
 
     #[test]

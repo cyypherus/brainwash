@@ -1,6 +1,5 @@
 use crate::audio::{AudioHandle, MeterRoute, ProbeRoute, VoiceMode};
 use brainwash::compile::{CompileError, CompiledPatch};
-use brainwash::osc::Wave;
 use brainwash::patch::{
     BinaryOp, CompressorRatio, ConnectError, EnvPoint as AudioEnvPoint, Gain,
     InputKind as AudioInputKind, Module as AudioModule, ModuleId as AudioModuleId, Patch,
@@ -22,7 +21,7 @@ use brainwash_grid::project::{
     CompositionModule as ProjectCompositionModule, ModuleDef as ProjectModuleDef,
     ModuleKind as ProjectModuleKind, ModuleParams as ProjectModuleParams, Project,
     RoutingModule as ProjectRoutingModule, StandardModule as ProjectStandardModule,
-    TimeUnit as ProjectTimeUnit, TimeValue as ProjectTimeValue, WaveType as ProjectWaveType,
+    TimeUnit as ProjectTimeUnit, TimeValue as ProjectTimeValue,
 };
 pub use brainwash_grid::{
     ModuleId, Orientation, Position as GridPos, Rect as GridRect, Size as GridSize,
@@ -260,14 +259,14 @@ pub enum ModuleKind {
     DegreeGate,
     Rate,
     Transpose,
-    Osc,
+    Phase,
+    Noise,
     Rise,
     Fall,
     Ramp,
     Adsr,
     Envelope,
-    Lowpass,
-    Highpass,
+    Filter,
     Comb,
     Allpass,
     Delay,
@@ -322,17 +321,22 @@ pub struct PaletteModule {
     kind: ModuleKind,
     name: String,
     user: Option<usize>,
-    preset: Option<CurvePreset>,
+    preset: Option<PalettePreset>,
     category: ModuleCategory,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CurvePreset {
+enum PalettePreset {
     Tube,
     Tape,
     Fuzz,
     Fold,
     Clip,
+    Sine,
+    Square,
+    Triangle,
+    Saw,
+    ReverseSaw,
 }
 
 impl PaletteModule {
@@ -374,8 +378,7 @@ enum ModuleBody {
         input: InputParam,
         semitones: FloatParam,
     },
-    Osc {
-        wave: EnumParam,
+    Phase {
         frequency: FloatParam,
     },
     Rise {
@@ -399,16 +402,6 @@ enum ModuleBody {
     Envelope {
         phase: FloatParam,
         points: Vec<EnvPoint>,
-    },
-    Lowpass {
-        input: FloatParam,
-        frequency: FloatParam,
-        resonance: FloatParam,
-    },
-    Highpass {
-        input: FloatParam,
-        frequency: FloatParam,
-        resonance: FloatParam,
     },
     Comb {
         input: FloatParam,
@@ -454,27 +447,6 @@ enum ModuleBody {
         rate: FloatParam,
         depth: FloatParam,
         feedback: FloatParam,
-    },
-    Multiply {
-        a: FloatParam,
-        b: FloatParam,
-    },
-    Add {
-        a: FloatParam,
-        b: FloatParam,
-    },
-    GreaterThan {
-        a: FloatParam,
-        b: FloatParam,
-    },
-    LessThan {
-        a: FloatParam,
-        b: FloatParam,
-    },
-    Switch {
-        select: InputParam,
-        a: FloatParam,
-        b: FloatParam,
     },
     Random {
         gate: InputParam,
@@ -541,12 +513,6 @@ struct TimeParam {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct InputParam {
     connected: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct EnumParam {
-    index: usize,
-    options: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -791,17 +757,6 @@ fn mark_missing_samples_in_surface(
     }
 }
 
-fn enum_parameter(name: &'static str, param: EnumParam) -> ModuleParameter {
-    ModuleParameter {
-        name: name.to_string(),
-        value: ParameterValue::Enum {
-            index: param.index,
-            options: param.options,
-        },
-        connected: false,
-    }
-}
-
 fn delay_source_parameter(name: &'static str, param: &DelaySourceParam) -> ModuleParameter {
     ModuleParameter {
         name: name.to_string(),
@@ -844,13 +799,6 @@ fn time_param(value: i32, unit: TimeUnit) -> TimeParam {
 
 fn input_param() -> InputParam {
     InputParam { connected: true }
-}
-
-fn enum_param(options: &[&str], index: usize) -> EnumParam {
-    EnumParam {
-        index,
-        options: options.iter().map(|option| (*option).to_string()).collect(),
-    }
 }
 
 #[derive(Debug)]
@@ -1015,7 +963,8 @@ impl ModuleKind {
             | ModuleKind::DegreeGate
             | ModuleKind::Rate
             | ModuleKind::Transpose
-            | ModuleKind::Osc
+            | ModuleKind::Phase
+            | ModuleKind::Noise
             | ModuleKind::Random
             | ModuleKind::Sample => ModuleCategory::Source,
             ModuleKind::Rise
@@ -1024,7 +973,7 @@ impl ModuleKind {
             | ModuleKind::Adsr
             | ModuleKind::Envelope => ModuleCategory::Shape,
             ModuleKind::Slew => ModuleCategory::Shape,
-            ModuleKind::Lowpass | ModuleKind::Highpass | ModuleKind::Damp => ModuleCategory::Filter,
+            ModuleKind::Filter | ModuleKind::Damp => ModuleCategory::Filter,
             ModuleKind::Comb
             | ModuleKind::Allpass
             | ModuleKind::Delay
@@ -1082,14 +1031,14 @@ impl ModuleKind {
             ModuleKind::DegreeGate => "Degree Gate",
             ModuleKind::Rate => "Rate",
             ModuleKind::Transpose => "Transpose",
-            ModuleKind::Osc => "Osc",
+            ModuleKind::Phase => "Phase",
+            ModuleKind::Noise => "Noise",
             ModuleKind::Rise => "Rise",
             ModuleKind::Fall => "Fall",
             ModuleKind::Ramp => "Ramp",
             ModuleKind::Adsr => "ADSR",
             ModuleKind::Envelope => "Envelope",
-            ModuleKind::Lowpass => "LPF",
-            ModuleKind::Highpass => "HPF",
+            ModuleKind::Filter => "Filter",
             ModuleKind::Comb => "Comb",
             ModuleKind::Allpass => "Allpass",
             ModuleKind::Delay => "Delay",
@@ -1116,12 +1065,12 @@ impl ModuleKind {
             ModuleKind::Random => "RNG",
             ModuleKind::Sample => "Sample",
             ModuleKind::Output => "Output",
-            ModuleKind::TurnRightDown => "Turn RD",
-            ModuleKind::TurnDownRight => "Turn DR",
-            ModuleKind::LeftSplit => "L Split",
-            ModuleKind::TopSplit => "T Split",
-            ModuleKind::RightJoin => "R Join",
-            ModuleKind::DownJoin => "D Join",
+            ModuleKind::TurnRightDown => "Right to Down",
+            ModuleKind::TurnDownRight => "Down to Right",
+            ModuleKind::LeftSplit => "Left Split",
+            ModuleKind::TopSplit => "Top Split",
+            ModuleKind::RightJoin => "Right Join",
+            ModuleKind::DownJoin => "Down Join",
             ModuleKind::CompositionInput => "Sub In",
             ModuleKind::CompositionOutput => "Sub Out",
             ModuleKind::Composition => "Composition",
@@ -1167,10 +1116,10 @@ impl ModuleKind {
                 input: input_param(),
                 semitones: float_param(-2400, 2400, 100, 0),
             },
-            ModuleKind::Osc => ModuleBody::Osc {
-                wave: enum_param(&["sin", "square", "tri", "saw", "rsaw", "noise"], 0),
+            ModuleKind::Phase => ModuleBody::Phase {
                 frequency: float_param(1, 200_000, 100, 44_000),
             },
+            ModuleKind::Noise => ModuleBody::Primitive(AudioModule::Noise),
             ModuleKind::Rise => ModuleBody::Rise {
                 gate: input_param(),
                 time: time_param(10, TimeUnit::Seconds),
@@ -1204,16 +1153,10 @@ impl ModuleKind {
                     },
                 ],
             },
-            ModuleKind::Lowpass => ModuleBody::Lowpass {
-                input: float_param(-100, 100, 1, 0),
-                frequency: float_param(0, 99, 1, 25),
-                resonance: float_param(10, 2000, 10, 71),
-            },
-            ModuleKind::Highpass => ModuleBody::Highpass {
-                input: float_param(-100, 100, 1, 0),
-                frequency: float_param(0, 100, 1, 25),
-                resonance: float_param(10, 2000, 10, 71),
-            },
+            ModuleKind::Filter => ModuleBody::Primitive(AudioModule::Filter {
+                cutoff: Hertz::new(440.0).unwrap(),
+                resonance: Resonance::new(0.71).unwrap(),
+            }),
             ModuleKind::Comb => ModuleBody::Comb {
                 input: float_param(-100, 100, 1, 0),
                 time: time_param(441, TimeUnit::Samples),
@@ -1262,14 +1205,16 @@ impl ModuleKind {
                 depth: float_param(0, 100, 5, 50),
                 feedback: float_param(0, 95, 5, 35),
             },
-            ModuleKind::Multiply => ModuleBody::Multiply {
-                a: float_param(-100_000, 100_000, 5, 100),
-                b: float_param(-100_000, 100_000, 5, 100),
-            },
-            ModuleKind::Add => ModuleBody::Add {
-                a: float_param(-100_000, 100_000, 5, 0),
-                b: float_param(-100_000, 100_000, 5, 0),
-            },
+            ModuleKind::Multiply => ModuleBody::Primitive(AudioModule::Binary {
+                op: BinaryOp::Multiply,
+                a: AudioSample::new(1.0).unwrap(),
+                b: AudioSample::new(1.0).unwrap(),
+            }),
+            ModuleKind::Add => ModuleBody::Primitive(AudioModule::Binary {
+                op: BinaryOp::Add,
+                a: AudioSample::ZERO,
+                b: AudioSample::ZERO,
+            }),
             ModuleKind::Subtract => ModuleBody::Primitive(AudioModule::Binary {
                 op: BinaryOp::Subtract,
                 a: AudioSample::ZERO,
@@ -1310,19 +1255,20 @@ impl ModuleKind {
                 rise: Seconds::new(0.01).unwrap(),
                 fall: Seconds::new(0.1).unwrap(),
             }),
-            ModuleKind::GreaterThan => ModuleBody::GreaterThan {
-                a: float_param(-100_000, 100_000, 5, 0),
-                b: float_param(-100_000, 100_000, 5, 0),
-            },
-            ModuleKind::LessThan => ModuleBody::LessThan {
-                a: float_param(-100_000, 100_000, 5, 0),
-                b: float_param(-100_000, 100_000, 5, 0),
-            },
-            ModuleKind::Switch => ModuleBody::Switch {
-                select: input_param(),
-                a: float_param(-100_000, 100_000, 10, 0),
-                b: float_param(-100_000, 100_000, 10, 100),
-            },
+            ModuleKind::GreaterThan => ModuleBody::Primitive(AudioModule::Binary {
+                op: BinaryOp::GreaterThan,
+                a: AudioSample::ZERO,
+                b: AudioSample::ZERO,
+            }),
+            ModuleKind::LessThan => ModuleBody::Primitive(AudioModule::Binary {
+                op: BinaryOp::LessThan,
+                a: AudioSample::ZERO,
+                b: AudioSample::ZERO,
+            }),
+            ModuleKind::Switch => ModuleBody::Primitive(AudioModule::Switch {
+                a: AudioSample::ZERO,
+                b: AudioSample::new(1.0).unwrap(),
+            }),
             ModuleKind::Random => ModuleBody::Random {
                 gate: input_param(),
             },
@@ -1388,12 +1334,12 @@ impl ModuleKind {
             | ModuleKind::DegreeGate
             | ModuleKind::Rate
             | ModuleKind::Transpose
-            | ModuleKind::Osc
+            | ModuleKind::Phase
+            | ModuleKind::Noise
             | ModuleKind::Rise
             | ModuleKind::Fall
             | ModuleKind::Ramp
-            | ModuleKind::Lowpass
-            | ModuleKind::Highpass
+            | ModuleKind::Filter
             | ModuleKind::Comb
             | ModuleKind::Allpass
             | ModuleKind::Delay
@@ -1480,14 +1426,12 @@ impl ModuleBody {
             ModuleBody::DegreeGate { .. } => ModuleKind::DegreeGate,
             ModuleBody::Rate { .. } => ModuleKind::Rate,
             ModuleBody::Transpose { .. } => ModuleKind::Transpose,
-            ModuleBody::Osc { .. } => ModuleKind::Osc,
+            ModuleBody::Phase { .. } => ModuleKind::Phase,
             ModuleBody::Rise { .. } => ModuleKind::Rise,
             ModuleBody::Fall { .. } => ModuleKind::Fall,
             ModuleBody::Ramp { .. } => ModuleKind::Ramp,
             ModuleBody::Adsr { .. } => ModuleKind::Adsr,
             ModuleBody::Envelope { .. } => ModuleKind::Envelope,
-            ModuleBody::Lowpass { .. } => ModuleKind::Lowpass,
-            ModuleBody::Highpass { .. } => ModuleKind::Highpass,
             ModuleBody::Comb { .. } => ModuleKind::Comb,
             ModuleBody::Allpass { .. } => ModuleKind::Allpass,
             ModuleBody::Delay { .. } => ModuleKind::Delay,
@@ -1496,11 +1440,6 @@ impl ModuleBody {
             ModuleBody::Distortion { .. } => ModuleKind::Distortion,
             ModuleBody::Compressor { .. } => ModuleKind::Compressor,
             ModuleBody::Flanger { .. } => ModuleKind::Flanger,
-            ModuleBody::Multiply { .. } => ModuleKind::Multiply,
-            ModuleBody::Add { .. } => ModuleKind::Add,
-            ModuleBody::GreaterThan { .. } => ModuleKind::GreaterThan,
-            ModuleBody::LessThan { .. } => ModuleKind::LessThan,
-            ModuleBody::Switch { .. } => ModuleKind::Switch,
             ModuleBody::Random { .. } => ModuleKind::Random,
             ModuleBody::Sample { .. } => ModuleKind::Sample,
             ModuleBody::Probe { .. } => ModuleKind::Probe,
@@ -1531,6 +1470,27 @@ impl ModuleBody {
                 float_parameter(
                     "B",
                     float_param(-2000, 2000, 1, (b.value() * 100.0).round() as i32),
+                ),
+            ],
+            ModuleBody::Primitive(AudioModule::Switch { a, b }) => vec![
+                input_parameter("Sel", input_param()),
+                float_parameter(
+                    "A",
+                    float_param(-2000, 2000, 1, (a.value() * 100.0).round() as i32),
+                ),
+                float_parameter(
+                    "B",
+                    float_param(-2000, 2000, 1, (b.value() * 100.0).round() as i32),
+                ),
+            ],
+            ModuleBody::Primitive(AudioModule::Filter { cutoff, resonance }) => vec![
+                float_parameter(
+                    "Freq",
+                    float_param(1, 200_000, 100, (cutoff.value() * 100.0).round() as i32),
+                ),
+                float_parameter(
+                    "Q",
+                    float_param(10, 2000, 10, (resonance.value() * 100.0).round() as i32),
                 ),
             ],
             ModuleBody::Primitive(AudioModule::Damp { coefficient }) => vec![float_parameter(
@@ -1565,10 +1525,7 @@ impl ModuleBody {
                 input_parameter("In", *input),
                 float_parameter("St", *semitones),
             ],
-            ModuleBody::Osc { wave, frequency } => vec![
-                enum_parameter("Wave", wave.clone()),
-                float_parameter("Hz", *frequency),
-            ],
+            ModuleBody::Phase { frequency } => vec![float_parameter("Hz", *frequency)],
             ModuleBody::Rise { gate, time } | ModuleBody::Fall { gate, time } => {
                 vec![
                     input_parameter("Gate", *gate),
@@ -1593,20 +1550,6 @@ impl ModuleBody {
                 float_parameter("Sus", *sustain),
             ],
             ModuleBody::Envelope { phase, .. } => vec![float_parameter("Phase", *phase)],
-            ModuleBody::Lowpass {
-                input,
-                frequency,
-                resonance,
-            }
-            | ModuleBody::Highpass {
-                input,
-                frequency,
-                resonance,
-            } => vec![
-                float_parameter("In", *input),
-                float_parameter("Freq", *frequency),
-                float_parameter("Q", *resonance),
-            ],
             ModuleBody::Comb {
                 input,
                 time,
@@ -1681,19 +1624,6 @@ impl ModuleBody {
                 float_parameter("Rate", *rate),
                 float_parameter("Depth", *depth),
                 float_parameter("Fdbk", *feedback),
-            ],
-            ModuleBody::Multiply { a, b } => {
-                vec![float_parameter("A", *a), float_parameter("B", *b)]
-            }
-            ModuleBody::Add { a, b }
-            | ModuleBody::GreaterThan { a, b }
-            | ModuleBody::LessThan { a, b } => {
-                vec![float_parameter("A", *a), float_parameter("B", *b)]
-            }
-            ModuleBody::Switch { select, a, b } => vec![
-                input_parameter("Sel", *select),
-                float_parameter("A", *a),
-                float_parameter("B", *b),
             ],
             ModuleBody::Random { gate } => vec![input_parameter("Gate", *gate)],
             ModuleBody::Sample {
@@ -1787,7 +1717,7 @@ impl ModuleBody {
             | ModuleBody::DegreeGate { .. } => &[],
             ModuleBody::Rate { .. } => &[],
             ModuleBody::Transpose { .. } => &[AudioInputKind::In, AudioInputKind::Semitones],
-            ModuleBody::Osc { .. } => &[AudioInputKind::Freq],
+            ModuleBody::Phase { .. } => &[AudioInputKind::Freq],
             ModuleBody::Rise { .. } | ModuleBody::Fall { .. } => {
                 &[AudioInputKind::Gate, AudioInputKind::Time]
             }
@@ -1799,9 +1729,6 @@ impl ModuleBody {
                 AudioInputKind::Sustain,
             ],
             ModuleBody::Envelope { .. } => &[AudioInputKind::Phase],
-            ModuleBody::Lowpass { .. } | ModuleBody::Highpass { .. } => {
-                &[AudioInputKind::In, AudioInputKind::Freq, AudioInputKind::Q]
-            }
             ModuleBody::Comb { .. } => &[
                 AudioInputKind::In,
                 AudioInputKind::Time,
@@ -1841,13 +1768,6 @@ impl ModuleBody {
                 AudioInputKind::Depth,
                 AudioInputKind::Feedback,
             ],
-            ModuleBody::Multiply { .. }
-            | ModuleBody::Add { .. }
-            | ModuleBody::GreaterThan { .. }
-            | ModuleBody::LessThan { .. } => &[AudioInputKind::A, AudioInputKind::B],
-            ModuleBody::Switch { .. } => {
-                &[AudioInputKind::Select, AudioInputKind::A, AudioInputKind::B]
-            }
             ModuleBody::Random { .. } => &[AudioInputKind::Gate],
             ModuleBody::Sample { .. } => &[AudioInputKind::Position],
             ModuleBody::Probe { .. } => &[AudioInputKind::In],
@@ -1908,6 +1828,49 @@ impl ModuleBody {
                 *target = next;
                 changed
             }
+            ModuleBody::Primitive(AudioModule::Switch { a, b }) => {
+                if index == 0 {
+                    return matches!(parameter.value, ParameterValue::Input) && parameter.connected;
+                }
+                let ParameterValue::Float { value, .. } = parameter.value else {
+                    return false;
+                };
+                let Some(next) = AudioSample::new(value as f32 / 100.0) else {
+                    return false;
+                };
+                let target = match index {
+                    1 => a,
+                    2 => b,
+                    _ => return false,
+                };
+                let changed = *target != next;
+                *target = next;
+                changed
+            }
+            ModuleBody::Primitive(AudioModule::Filter { cutoff, resonance }) => {
+                let ParameterValue::Float { value, .. } = parameter.value else {
+                    return false;
+                };
+                match index {
+                    0 => {
+                        let Some(next) = Hertz::new(value as f32 / 100.0) else {
+                            return false;
+                        };
+                        let changed = *cutoff != next;
+                        *cutoff = next;
+                        changed
+                    }
+                    1 => {
+                        let Some(next) = Resonance::new(value as f32 / 100.0) else {
+                            return false;
+                        };
+                        let changed = *resonance != next;
+                        *resonance = next;
+                        changed
+                    }
+                    _ => false,
+                }
+            }
             ModuleBody::Primitive(AudioModule::Damp { coefficient }) => {
                 let ParameterValue::Float { value, .. } = parameter.value else {
                     return false;
@@ -1960,10 +1923,7 @@ impl ModuleBody {
                 set_input_param(input, index, 0, &parameter)
                     || set_float_param(semitones, index, 1, &parameter)
             }
-            ModuleBody::Osc { wave, frequency } => {
-                set_enum_param(wave, index, 0, &parameter)
-                    || set_float_param(frequency, index, 1, &parameter)
-            }
+            ModuleBody::Phase { frequency } => set_float_param(frequency, index, 0, &parameter),
             ModuleBody::Rise { gate, time } | ModuleBody::Fall { gate, time } => {
                 set_input_param(gate, index, 0, &parameter)
                     || set_time_param(time, index, 1, &parameter)
@@ -1984,20 +1944,6 @@ impl ModuleBody {
                     || set_float_param(sustain, index, 3, &parameter)
             }
             ModuleBody::Envelope { phase, .. } => set_float_param(phase, index, 0, &parameter),
-            ModuleBody::Lowpass {
-                input,
-                frequency,
-                resonance,
-            }
-            | ModuleBody::Highpass {
-                input,
-                frequency,
-                resonance,
-            } => {
-                set_float_param(input, index, 0, &parameter)
-                    || set_float_param(frequency, index, 1, &parameter)
-                    || set_float_param(resonance, index, 2, &parameter)
-            }
             ModuleBody::Comb {
                 input,
                 time,
@@ -2073,17 +2019,6 @@ impl ModuleBody {
                     || set_float_param(rate, index, 1, &parameter)
                     || set_float_param(depth, index, 2, &parameter)
                     || set_float_param(feedback, index, 3, &parameter)
-            }
-            ModuleBody::Multiply { a, b }
-            | ModuleBody::Add { a, b }
-            | ModuleBody::GreaterThan { a, b }
-            | ModuleBody::LessThan { a, b } => {
-                set_float_param(a, index, 0, &parameter) || set_float_param(b, index, 1, &parameter)
-            }
-            ModuleBody::Switch { select, a, b } => {
-                set_input_param(select, index, 0, &parameter)
-                    || set_float_param(a, index, 1, &parameter)
-                    || set_float_param(b, index, 2, &parameter)
             }
             ModuleBody::Random { gate } => set_input_param(gate, index, 0, &parameter),
             ModuleBody::Sample { position, .. } => set_input_param(position, index, 1, &parameter),
@@ -2229,26 +2164,6 @@ fn set_text_param(value: &mut String, parameter: &ModuleParameter) -> bool {
     }
     *value = next.clone();
     true
-}
-
-fn set_enum_param(
-    target: &mut EnumParam,
-    index: usize,
-    expected: usize,
-    parameter: &ModuleParameter,
-) -> bool {
-    if index != expected {
-        return false;
-    }
-    let ParameterValue::Enum { index, .. } = &parameter.value else {
-        return false;
-    };
-    if *index < target.options.len() {
-        target.index = *index;
-        true
-    } else {
-        false
-    }
 }
 
 fn set_delay_source_param(
@@ -2816,7 +2731,8 @@ fn validate_surface_bounds(surface: &PatchSurface, width: u16, height: u16) -> R
             return Err(format!("module {} is outside the grid", module.id.value()));
         }
         if let Some(nested) = module.composition_surface() {
-            validate_surface_bounds(nested, width, height)?;
+            validate_surface_bounds(nested, width, height)
+                .map_err(|error| format!("{}: {error}", module.label()))?;
         }
     }
     for (index, left) in surface.modules.iter().enumerate() {
@@ -2830,9 +2746,13 @@ fn validate_surface_bounds(surface: &PatchSurface, width: u16, height: u16) -> R
                 && right.position.y < left.position.y.saturating_add(left_size.1)
             {
                 return Err(format!(
-                    "modules {} and {} overlap",
+                    "modules {} {:?} {:?} and {} {:?} {:?} overlap",
                     left.id.value(),
-                    right.id.value()
+                    left.kind(),
+                    left.position,
+                    right.id.value(),
+                    right.kind(),
+                    right.position
                 ));
             }
         }
@@ -3248,11 +3168,11 @@ impl GuiState {
         if category == ModuleCategory::Effect {
             modules.extend(
                 [
-                    ("Tube", CurvePreset::Tube),
-                    ("Tape", CurvePreset::Tape),
-                    ("Fuzz", CurvePreset::Fuzz),
-                    ("Fold", CurvePreset::Fold),
-                    ("Clip", CurvePreset::Clip),
+                    ("Tube", PalettePreset::Tube),
+                    ("Tape", PalettePreset::Tape),
+                    ("Fuzz", PalettePreset::Fuzz),
+                    ("Fold", PalettePreset::Fold),
+                    ("Clip", PalettePreset::Clip),
                 ]
                 .map(|(name, preset)| PaletteModule {
                     kind: ModuleKind::Composition,
@@ -3260,6 +3180,24 @@ impl GuiState {
                     user: None,
                     preset: Some(preset),
                     category: ModuleCategory::Effect,
+                }),
+            );
+        }
+        if category == ModuleCategory::Source {
+            modules.extend(
+                [
+                    ("Sine Oscillator", PalettePreset::Sine),
+                    ("Square Oscillator", PalettePreset::Square),
+                    ("Triangle Oscillator", PalettePreset::Triangle),
+                    ("Saw Oscillator", PalettePreset::Saw),
+                    ("Reverse Saw Oscillator", PalettePreset::ReverseSaw),
+                ]
+                .map(|(name, preset)| PaletteModule {
+                    kind: ModuleKind::Composition,
+                    name: name.to_string(),
+                    user: None,
+                    preset: Some(preset),
+                    category: ModuleCategory::Source,
                 }),
             );
         }
@@ -3571,7 +3509,9 @@ impl GuiState {
         match module.kind() {
             ModuleKind::LeftSplit | ModuleKind::TopSplit => (output == 1).then_some(0),
             ModuleKind::TurnDownRight | ModuleKind::RightJoin => (output == 0).then_some(0),
-            _ => (output < self.module_output_count(module) as usize).then_some(output as u16),
+            _ => (output < self.module_output_count(module) as usize).then_some(
+                self.module_height(module) - self.module_output_count(module) + output as u16,
+            ),
         }
     }
 
@@ -3582,7 +3522,9 @@ impl GuiState {
         match module.kind() {
             ModuleKind::LeftSplit | ModuleKind::TopSplit => (output == 0).then_some(0),
             ModuleKind::TurnRightDown | ModuleKind::DownJoin => (output == 0).then_some(0),
-            _ => (output < self.module_output_count(module) as usize).then_some(output as u16),
+            _ => (output < self.module_output_count(module) as usize).then_some(
+                self.module_width(module) - self.module_output_count(module) + output as u16,
+            ),
         }
     }
 
@@ -4260,11 +4202,26 @@ impl GuiState {
         let graph = choice
             .preset
             .map(|preset| match preset {
-                CurvePreset::Tube => brainwash::preset::tube(),
-                CurvePreset::Tape => brainwash::preset::tape(),
-                CurvePreset::Fuzz => brainwash::preset::fuzz(),
-                CurvePreset::Fold => brainwash::preset::fold(),
-                CurvePreset::Clip => brainwash::preset::clip(),
+                PalettePreset::Tube => brainwash::preset::tube(),
+                PalettePreset::Tape => brainwash::preset::tape(),
+                PalettePreset::Fuzz => brainwash::preset::fuzz(),
+                PalettePreset::Fold => brainwash::preset::fold(),
+                PalettePreset::Clip => brainwash::preset::clip(),
+                PalettePreset::Sine => {
+                    brainwash::preset::sine(Hertz::new(440.0).unwrap(), Unit::ONE, false)
+                }
+                PalettePreset::Square => {
+                    brainwash::preset::square(Hertz::new(440.0).unwrap(), Unit::ONE, false)
+                }
+                PalettePreset::Triangle => {
+                    brainwash::preset::triangle(Hertz::new(440.0).unwrap(), Unit::ONE, false)
+                }
+                PalettePreset::Saw => {
+                    brainwash::preset::saw(Hertz::new(440.0).unwrap(), Unit::ONE, false)
+                }
+                PalettePreset::ReverseSaw => {
+                    brainwash::preset::reverse_saw(Hertz::new(440.0).unwrap(), Unit::ONE, false)
+                }
             })
             .and_then(|module| match module {
                 AudioModule::Composition(graph) => Some(*graph),
@@ -4357,40 +4314,32 @@ mod tests {
     }
 
     #[test]
-    fn restored_options_map_to_distinct_dsp_variants() {
+    fn phase_maps_to_the_phase_kernel() {
         let rate = SampleRate::new(44_100).unwrap();
-        let mut oscillator = Module {
+        let phase = Module {
             id: ModuleId::new(0),
             position: GridPos::new(0, 0),
             orientation: Orientation::Right,
-            body: ModuleKind::Osc.default_body(),
+            body: ModuleKind::Phase.default_body(),
             disabled: false,
         };
-        let ModuleBody::Osc { wave, .. } = &mut oscillator.body else {
-            panic!()
-        };
-        assert_eq!(wave.options[4], "rsaw");
-        wave.index = 4;
         assert!(matches!(
-            audio_module(&oscillator, rate, 120).unwrap(),
-            AudioModule::Osc {
-                wave: Wave::ReverseSaw,
-                ..
-            }
+            audio_module(&phase, rate, 120).unwrap(),
+            AudioModule::Phase { .. }
         ));
 
-        let mut lowpass = Module {
+        let mut filter = Module {
             id: ModuleId::new(0),
             position: GridPos::new(0, 0),
             orientation: Orientation::Right,
-            body: ModuleKind::Lowpass.default_body(),
+            body: ModuleKind::Filter.default_body(),
             disabled: false,
         };
-        let ModuleBody::Lowpass { resonance, .. } = &mut lowpass.body else {
+        let ModuleBody::Primitive(AudioModule::Filter { resonance, .. }) = &mut filter.body else {
             panic!()
         };
-        resonance.value = 800;
-        let AudioModule::Lowpass { resonance, .. } = audio_module(&lowpass, rate, 120).unwrap()
+        *resonance = Resonance::new(8.0).unwrap();
+        let AudioModule::Filter { resonance, .. } = audio_module(&filter, rate, 120).unwrap()
         else {
             panic!()
         };
@@ -4421,6 +4370,59 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(kinds.contains(&ModuleKind::CompositionInput));
         assert!(kinds.contains(&ModuleKind::CompositionOutput));
+    }
+
+    #[test]
+    fn outputs_use_the_last_occupied_cell_in_both_orientations() {
+        let mut state = GuiState::new(8, 8);
+        state.instrument_mut().root.modules.push(Module {
+            id: ModuleId::new(1),
+            position: GridPos::new(0, 0),
+            orientation: Orientation::Right,
+            body: ModuleKind::Adsr.default_body(),
+            disabled: false,
+        });
+        state.instrument_mut().root.modules.push(Module {
+            id: ModuleId::new(2),
+            position: GridPos::new(2, 3),
+            orientation: Orientation::Right,
+            body: ModuleKind::Output.default_body(),
+            disabled: false,
+        });
+
+        let source = state.grid_render_module(&state.modules()[0]);
+        assert_eq!(source.height, 4);
+        assert_eq!(source.right_output_offsets, vec![Some(3)]);
+        assert_eq!(
+            state.module_at(GridPos::new(0, 3)).unwrap().id,
+            ModuleId::new(1)
+        );
+        assert_eq!(state.connections().len(), 1);
+
+        state.instrument_mut().root.modules.clear();
+        state.instrument_mut().root.modules.push(Module {
+            id: ModuleId::new(1),
+            position: GridPos::new(0, 0),
+            orientation: Orientation::Down,
+            body: ModuleKind::Adsr.default_body(),
+            disabled: false,
+        });
+        state.instrument_mut().root.modules.push(Module {
+            id: ModuleId::new(2),
+            position: GridPos::new(3, 2),
+            orientation: Orientation::Down,
+            body: ModuleKind::Output.default_body(),
+            disabled: false,
+        });
+
+        let source = state.grid_render_module(&state.modules()[0]);
+        assert_eq!(source.width, 4);
+        assert_eq!(source.bottom_output_offsets, vec![Some(3)]);
+        assert_eq!(
+            state.module_at(GridPos::new(3, 0)).unwrap().id,
+            ModuleId::new(1)
+        );
+        assert_eq!(state.connections().len(), 1);
     }
 
     #[test]
@@ -4531,7 +4533,7 @@ mod tests {
                 id: ModuleId::new(1),
                 position: GridPos::new(2, 1),
                 orientation: Orientation::Right,
-                body: ModuleKind::Osc.default_body(),
+                body: ModuleKind::Phase.default_body(),
                 disabled: false,
             },
             Module {
@@ -4585,9 +4587,16 @@ mod tests {
                     | ModuleKind::Remainder
                     | ModuleKind::Minimum
                     | ModuleKind::Maximum
+                    | ModuleKind::Multiply
+                    | ModuleKind::Add
+                    | ModuleKind::GreaterThan
+                    | ModuleKind::LessThan
+                    | ModuleKind::Switch
+                    | ModuleKind::Filter
                     | ModuleKind::Damp
                     | ModuleKind::VariableDelay
                     | ModuleKind::Slew
+                    | ModuleKind::Noise
             ) {
                 ModuleKind::Primitive
             } else {
@@ -4599,15 +4608,34 @@ mod tests {
     }
 
     #[test]
+    fn filter_palette_unit_exposes_two_outputs_and_editable_kernel_parameters() {
+        let mut body = ModuleKind::Filter.default_body();
+        assert_eq!(body.kind(), ModuleKind::Primitive);
+        assert_eq!(body.input_count(), 3);
+        let ModuleBody::Primitive(kernel) = &body else {
+            panic!()
+        };
+        assert_eq!(kernel.output_count(), 2);
+        assert_eq!(body.parameters().len(), 2);
+
+        let changed = body.set_parameter(1, float_parameter("Q", float_param(10, 2000, 10, 800)));
+        let ModuleBody::Primitive(AudioModule::Filter { resonance, .. }) = body else {
+            panic!()
+        };
+        assert!(changed);
+        assert_eq!(resonance, Resonance::new(8.0).unwrap());
+    }
+
+    #[test]
     fn module_parameter_rows_apply_to_typed_body() {
         let mut module = Module {
             id: ModuleId::new(0),
             position: GridPos::new(0, 0),
             orientation: Orientation::Right,
-            body: ModuleKind::Osc.default_body(),
+            body: ModuleKind::Phase.default_body(),
             disabled: false,
         };
-        let mut frequency = module.parameter(1).unwrap();
+        let mut frequency = module.parameter(0).unwrap();
         frequency.value = ParameterValue::Float {
             value: 88_000,
             min: 1,
@@ -4616,9 +4644,9 @@ mod tests {
         };
         frequency.connected = false;
 
-        assert!(module.set_parameter(1, frequency));
+        assert!(module.set_parameter(0, frequency));
         match module.body {
-            ModuleBody::Osc { frequency, .. } => {
+            ModuleBody::Phase { frequency } => {
                 assert_eq!(frequency.value, 88_000);
                 assert!(!frequency.connected);
             }
@@ -4879,7 +4907,7 @@ mod tests {
                 },
                 Module {
                     id: ModuleId::new(2),
-                    position: GridPos::new(2, 0),
+                    position: GridPos::new(2, 4),
                     orientation: Orientation::Right,
                     body: ModuleKind::Output.default_body(),
                     disabled: false,
@@ -4888,6 +4916,8 @@ mod tests {
         };
         let rate = SampleRate::new(29_761).unwrap();
         fn check(state: &GuiState, graph: &brainwash::patch::Composition, surface: &PatchSurface) {
+            validate_surface_bounds(surface, 32, 24)
+                .unwrap_or_else(|error| panic!("{} {error}", graph.name()));
             let core_modules = graph.patch().module_entries().collect::<Vec<_>>();
             let gui_modules = surface
                 .modules
@@ -4922,7 +4952,7 @@ mod tests {
                 .collect::<HashSet<_>>();
             let gui = state
                 .semantic_surface_connections(&surface.modules)
-                .unwrap()
+                .unwrap_or_else(|error| panic!("{} {error:?}", graph.name()))
                 .into_iter()
                 .filter_map(|connection| {
                     Some((
@@ -5161,26 +5191,6 @@ mod tests {
 }
 
 impl ModuleKind {
-    fn width(self, orientation: Orientation) -> u16 {
-        if self.is_routing() {
-            return 1;
-        }
-        match orientation {
-            Orientation::Right => 1,
-            Orientation::Down => self.input_count().max(self.output_count()).max(1),
-        }
-    }
-
-    fn height(self, orientation: Orientation) -> u16 {
-        if self.is_routing() {
-            return 1;
-        }
-        match orientation {
-            Orientation::Right => self.input_count().max(self.output_count()).max(1),
-            Orientation::Down => 1,
-        }
-    }
-
     fn input_count(self) -> u16 {
         match self {
             ModuleKind::Primitive => 0,
@@ -5204,6 +5214,7 @@ impl ModuleKind {
             | ModuleKind::Gate
             | ModuleKind::Degree
             | ModuleKind::Rate
+            | ModuleKind::Noise
             | ModuleKind::Random
             | ModuleKind::Sample
             | ModuleKind::CompositionInput => 0,
@@ -5214,14 +5225,13 @@ impl ModuleKind {
             | ModuleKind::TopSplit => 1,
             ModuleKind::DegreeGate
             | ModuleKind::Transpose
-            | ModuleKind::Osc
+            | ModuleKind::Phase
             | ModuleKind::Rise
             | ModuleKind::Fall
             | ModuleKind::Ramp
             | ModuleKind::Adsr
             | ModuleKind::Envelope
-            | ModuleKind::Lowpass
-            | ModuleKind::Highpass
+            | ModuleKind::Filter
             | ModuleKind::Comb
             | ModuleKind::Allpass
             | ModuleKind::Delay
@@ -5258,8 +5268,11 @@ impl ModuleKind {
             | ModuleKind::Remainder
             | ModuleKind::Minimum
             | ModuleKind::Maximum => 1,
-            ModuleKind::Damp | ModuleKind::VariableDelay | ModuleKind::Slew => 1,
+            ModuleKind::Damp | ModuleKind::VariableDelay | ModuleKind::Slew | ModuleKind::Noise => {
+                1
+            }
             ModuleKind::Output | ModuleKind::CompositionOutput => 0,
+            ModuleKind::Filter => 2,
             ModuleKind::LeftSplit | ModuleKind::TopSplit => 2,
             ModuleKind::Freq
             | ModuleKind::Gate
@@ -5267,14 +5280,12 @@ impl ModuleKind {
             | ModuleKind::DegreeGate
             | ModuleKind::Rate
             | ModuleKind::Transpose
-            | ModuleKind::Osc
+            | ModuleKind::Phase
             | ModuleKind::Rise
             | ModuleKind::Fall
             | ModuleKind::Ramp
             | ModuleKind::Adsr
             | ModuleKind::Envelope
-            | ModuleKind::Lowpass
-            | ModuleKind::Highpass
             | ModuleKind::Comb
             | ModuleKind::Allpass
             | ModuleKind::Delay
@@ -5388,7 +5399,7 @@ fn updated_axis_view(offset: u16, min: u16, max: u16, size: u16, visible: u16) -
 
 pub fn all_modules() -> &'static [ModuleKind] {
     &[
-        ModuleKind::Osc,
+        ModuleKind::Phase,
         ModuleKind::Output,
         ModuleKind::Freq,
         ModuleKind::Gate,
@@ -5401,8 +5412,7 @@ pub fn all_modules() -> &'static [ModuleKind] {
         ModuleKind::Rise,
         ModuleKind::Fall,
         ModuleKind::Ramp,
-        ModuleKind::Lowpass,
-        ModuleKind::Highpass,
+        ModuleKind::Filter,
         ModuleKind::Delay,
         ModuleKind::Reverb,
         ModuleKind::Distortion,
@@ -5430,6 +5440,7 @@ pub fn all_modules() -> &'static [ModuleKind] {
         ModuleKind::Probe,
         ModuleKind::Sample,
         ModuleKind::Random,
+        ModuleKind::Noise,
         ModuleKind::GreaterThan,
         ModuleKind::LessThan,
         ModuleKind::Comb,

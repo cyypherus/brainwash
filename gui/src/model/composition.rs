@@ -27,31 +27,65 @@ pub(super) fn composition_body(
     graph: Box<brainwash::patch::Composition>,
     next_module_id: &mut u32,
 ) -> Option<ModuleBody> {
-    const FDN_POSITIONS: [(u16, u16); 24] = [
-        (5, 13),
-        (6, 14),
-        (7, 15),
-        (8, 12),
-        (0, 20),
-        (21, 20),
-        (0, 22),
-        (2, 22),
-        (4, 22),
-        (6, 22),
-        (21, 22),
-        (23, 22),
-        (25, 22),
-        (27, 22),
-        (0, 7),
-        (1, 6),
-        (2, 5),
-        (3, 4),
-        (4, 3),
-        (5, 2),
+    const FDN_POSITIONS: [(u16, u16); 58] = [
+        (9, 5),
+        (9, 6),
+        (9, 7),
+        (9, 8),
+        (20, 0),
+        (20, 10),
+        (22, 1),
+        (22, 3),
+        (22, 5),
+        (22, 7),
+        (22, 11),
+        (22, 13),
+        (22, 15),
+        (22, 17),
+        (18, 0),
+        (18, 1),
+        (18, 2),
+        (18, 3),
+        (18, 10),
+        (18, 11),
+        (18, 12),
+        (18, 13),
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (3, 1),
+        (4, 1),
+        (5, 1),
         (6, 1),
-        (7, 0),
-        (4, 10),
-        (12, 12),
+        (7, 1),
+        (0, 11),
+        (1, 11),
+        (2, 11),
+        (3, 11),
+        (4, 11),
+        (5, 11),
+        (6, 11),
+        (7, 11),
+        (0, 6),
+        (1, 6),
+        (2, 6),
+        (3, 6),
+        (4, 6),
+        (5, 6),
+        (6, 6),
+        (7, 6),
+        (28, 1),
+        (28, 2),
+        (28, 3),
+        (28, 4),
+        (28, 5),
+        (28, 6),
+        (28, 7),
+        (28, 8),
+        (0, 3),
+        (0, 13),
+        (0, 8),
+        (29, 1),
     ];
     const FDN_VOICE_GROUP_POSITIONS: [(u16, u16); 11] = [
         (0, 0),
@@ -66,6 +100,8 @@ pub(super) fn composition_body(
         (18, 8),
         (20, 0),
     ];
+    const REVERB_POSITIONS: [(u16, u16); 7] =
+        [(0, 0), (3, 2), (3, 3), (3, 4), (0, 1), (2, 0), (4, 1)];
     const FEEDBACK_GROUP_POSITIONS: [(u16, u16); 12] = [
         (0, 0),
         (2, 0),
@@ -229,6 +265,10 @@ pub(super) fn composition_body(
             let index = entries.iter().position(|(id, _)| *id == *core_id)?;
             let (x, y) = FDN_POSITIONS[index];
             GridPos::new(x, y)
+        } else if graph.name() == "Reverb" && entries.len() == REVERB_POSITIONS.len() {
+            let index = entries.iter().position(|(id, _)| *id == *core_id)?;
+            let (x, y) = REVERB_POSITIONS[index];
+            GridPos::new(x, y)
         } else if graph.name() == "FDN Voice Group"
             && entries.len() == FDN_VOICE_GROUP_POSITIONS.len()
         {
@@ -245,9 +285,7 @@ pub(super) fn composition_body(
             let index = entries.iter().position(|(id, _)| *id == *core_id)?;
             let (x, y) = REFLECTION_POSITIONS[index];
             GridPos::new(x, y)
-        } else if graph.name() == "Output Decoder"
-            && entries.len() == OUTPUT_DECODER_POSITIONS.len()
-        {
+        } else if matches!(graph.name(), "Output Decoder" | "Reflection") {
             let index = entries.iter().position(|(id, _)| *id == *core_id)?;
             let (x, y) = OUTPUT_DECODER_POSITIONS[index];
             GridPos::new(x, y)
@@ -257,7 +295,13 @@ pub(super) fn composition_body(
         modules.push(Module {
             id: projected,
             position,
-            orientation: if graph.name() == "FDN Tank" {
+            orientation: if graph.name() == "FDN Tank"
+                && matches!(
+                    entries.iter().position(|(id, _)| *id == *core_id),
+                    Some(0..=21 | 46..=53 | 57)
+                ) {
+                Orientation::Right
+            } else if graph.name() == "FDN Tank" {
                 Orientation::Down
             } else {
                 Orientation::Right
@@ -280,27 +324,40 @@ pub(super) fn composition_body(
             .find_map(|(id, projected)| (declared.port().module() == *id).then_some(*projected))?;
         let source_module = modules.iter().find(|module| module.id == source)?;
         let position = if graph.name() == "FDN Tank" && entries.len() == FDN_POSITIONS.len() {
-            GridPos::new(31, 18 + index as u16)
+            GridPos::new(30, 10 + index as u16)
+        } else if graph.name() == "Output Decoder"
+            && entries.len() == OUTPUT_DECODER_POSITIONS.len()
+        {
+            GridPos::new(31, 17 + index as u16)
         } else if graph.outputs().len() == 1 {
+            let source_ports = source_module.composition_surface().map(composition_ports);
+            let (_, source_height) = module_footprint(source_module, source_ports);
             GridPos::new(
-                source_module.position.x
-                    + module_footprint(
-                        source_module,
-                        source_module.composition_surface().map(composition_ports),
-                    )
-                    .0,
-                y.max(source_module.position.y + 1),
+                source_module.position.x + module_footprint(source_module, source_ports).0,
+                y.max(
+                    source_module.position.y + source_height
+                        - source_ports
+                            .map(|(_, outputs)| outputs)
+                            .unwrap_or_else(|| source_module.output_count())
+                        + 1,
+                ),
             )
         } else {
+            let source_ports = source_module.composition_surface().map(composition_ports);
+            let (_, source_height) = module_footprint(source_module, source_ports);
             GridPos::new(
                 output_x + 1,
-                source_module.position.y + declared.port().index(),
+                source_module.position.y + source_height
+                    - source_ports
+                        .map(|(_, outputs)| outputs)
+                        .unwrap_or_else(|| source_module.output_count())
+                    + declared.port().index(),
             )
         };
         modules.push(Module {
             id: ModuleId::new(*next_module_id),
             position,
-            orientation: if graph.outputs().len() == 1 {
+            orientation: if graph.outputs().len() == 1 && graph.name() != "Output Decoder" {
                 Orientation::Down
             } else {
                 Orientation::Right
@@ -314,8 +371,15 @@ pub(super) fn composition_body(
         exposed_outputs.push((declared.port(), position));
         *next_module_id += 1;
     }
-    let output_position = exposed_outputs.first()?.1;
     if graph.name() == "FDN Tank" && entries.len() == FDN_POSITIONS.len() {
+        modules.push(Module {
+            id: ModuleId::new(*next_module_id),
+            position: GridPos::new(30, 9),
+            orientation: Orientation::Right,
+            body: ModuleBody::TurnRightDown,
+            disabled: false,
+        });
+        *next_module_id += 1;
         let mut occupied = HashSet::new();
         for module in &modules {
             let (width, height) =
@@ -331,12 +395,30 @@ pub(super) fn composition_body(
                 .iter()
                 .find(|module| module.id == *projected_source)?;
             let source_position = source.position;
+            let source_orientation = source.orientation;
+            let (source_width, source_height) =
+                module_footprint(source, source.composition_surface().map(composition_ports));
             let core_module = entries
                 .iter()
                 .find_map(|(id, module)| (*id == *core_source).then_some(module))?;
             for source_output in 0..core_module.output_count() {
-                let source_x = source_position.x + source_output;
-                let source_y = source_position.y;
+                if graph.patch().output_module().is_some_and(|output| {
+                    output.module() == *core_source && output.index() == source_output
+                }) {
+                    continue;
+                }
+                let (source_x, source_y) = match source_orientation {
+                    Orientation::Down => (
+                        source_position.x + source_width - core_module.output_count()
+                            + source_output,
+                        source_position.y,
+                    ),
+                    Orientation::Right => (
+                        source_position.x,
+                        source_position.y + source_height - core_module.output_count()
+                            + source_output,
+                    ),
+                };
                 let mut targets = connections
                     .iter()
                     .filter(|(from, _)| {
@@ -354,20 +436,72 @@ pub(super) fn composition_body(
                             .input_kinds()
                             .iter()
                             .position(|kind| *kind == input.kind())?;
-                        Some((
-                            target_module.position.x + input_index as u16,
-                            target_module.position.y,
-                        ))
+                        Some(match target_module.orientation {
+                            Orientation::Down => (
+                                target_module.position.x + input_index as u16,
+                                target_module.position.y,
+                            ),
+                            Orientation::Right => (
+                                target_module.position.x,
+                                target_module.position.y + input_index as u16,
+                            ),
+                        })
                     })
                     .collect::<Vec<_>>();
-                if graph.patch().output_module().is_some_and(|output| {
-                    output.module() == *core_source && output.index() == source_output
-                }) {
-                    targets.push((output_position.x, output_position.y));
-                }
                 targets.sort_unstable();
                 targets.dedup();
                 if targets.is_empty() {
+                    continue;
+                }
+                if source_orientation == Orientation::Right
+                    && targets.iter().all(|target| target.0 == targets[0].0)
+                    && targets[0].1 == source_y
+                {
+                    if targets.len() > 1 {
+                        let branch_x = (source_x + 1..targets[0].0).rev().find(|x| {
+                            (source_y..=targets.last().unwrap().1)
+                                .all(|y| !occupied.contains(&GridPos::new(*x, y)))
+                        })?;
+                        for (index, (_, target_y)) in targets.iter().enumerate() {
+                            modules.push(Module {
+                                id: ModuleId::new(*next_module_id),
+                                position: GridPos::new(branch_x, *target_y),
+                                orientation: Orientation::Right,
+                                body: if index + 1 == targets.len() {
+                                    ModuleBody::TurnDownRight
+                                } else {
+                                    ModuleBody::LeftSplit
+                                },
+                                disabled: false,
+                            });
+                            occupied.insert(GridPos::new(branch_x, *target_y));
+                            *next_module_id += 1;
+                        }
+                    }
+                    continue;
+                }
+                if targets.len() == 1
+                    && targets[0].1 == source_y
+                    && (source_x + 1..targets[0].0)
+                        .all(|x| !occupied.contains(&GridPos::new(x, source_y)))
+                {
+                    continue;
+                }
+                if targets.len() == 1
+                    && targets[0].1 == source_y + 1
+                    && targets[0].0 > source_x
+                    && (source_x + 1..targets[0].0)
+                        .all(|x| !occupied.contains(&GridPos::new(x, targets[0].1)))
+                {
+                    modules.push(Module {
+                        id: ModuleId::new(*next_module_id),
+                        position: GridPos::new(source_x, targets[0].1),
+                        orientation: Orientation::Right,
+                        body: ModuleBody::TurnDownRight,
+                        disabled: false,
+                    });
+                    occupied.insert(GridPos::new(source_x, targets[0].1));
+                    *next_module_id += 1;
                     continue;
                 }
                 if targets.len() == 1
@@ -442,13 +576,14 @@ pub(super) fn composition_body(
             .find(|module| module.id == *projected_source)
             .expect("projected source exists");
         let source_position = source.position;
-        let source_width =
-            module_footprint(source, source.composition_surface().map(composition_ports)).0;
+        let (source_width, source_height) =
+            module_footprint(source, source.composition_surface().map(composition_ports));
         let core_module = entries
             .iter()
             .find_map(|(id, module)| (*id == *core_source).then_some(module))?;
         for source_output in 0..core_module.output_count() {
-            let source_y = source_position.y + source_output;
+            let source_y =
+                source_position.y + source_height - core_module.output_count() + source_output;
             let source_x = source_position.x;
             let mut rows = connections
                 .iter()
@@ -475,10 +610,16 @@ pub(super) fn composition_body(
                         .then_some(*position)
                 })
                 .collect::<Vec<_>>();
-            let feeds_output_below = graph.outputs().len() == 1 && !output_positions.is_empty();
-            if graph.outputs().len() > 1 {
-                rows.extend(output_positions.iter().map(|position| position.y));
-            }
+            let bus_x = source_x + source_width;
+            let feeds_output_below = output_positions
+                .iter()
+                .any(|position| position.x == bus_x && position.y > source_y);
+            rows.extend(
+                output_positions
+                    .iter()
+                    .filter(|position| position.x != bus_x)
+                    .map(|position| position.y),
+            );
             rows.sort_unstable();
             rows.dedup();
             if rows.len() == 1 && rows[0] == source_y && !feeds_output_below {
@@ -491,7 +632,6 @@ pub(super) fn composition_body(
             else {
                 continue;
             };
-            let bus_x = source_x + source_width;
             let same_row = rows.first().is_some_and(|row| *row == source_y);
             modules.push(Module {
                 id: ModuleId::new(*next_module_id),
@@ -566,13 +706,13 @@ pub(super) fn graph_node_label(module: &AudioModule) -> &'static str {
         },
         AudioModule::Pass => "Pass",
         AudioModule::Damp { .. } => "Damping",
-        AudioModule::Osc { .. } => "Oscillator",
+        AudioModule::Phase { .. } => "Phase",
+        AudioModule::Noise => "Noise",
         AudioModule::Rise { .. } => "Rise",
         AudioModule::Fall { .. } => "Fall",
         AudioModule::Ramp { .. } => "Ramp",
         AudioModule::Envelope { .. } => "Envelope",
-        AudioModule::Lowpass { .. } => "Lowpass",
-        AudioModule::Highpass { .. } => "Highpass",
+        AudioModule::Filter { .. } => "Filter",
         AudioModule::Comb { .. } => "Comb",
         AudioModule::Allpass { .. } => "Allpass",
         AudioModule::Delay { .. } => "Delay",

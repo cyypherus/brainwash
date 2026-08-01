@@ -53,17 +53,6 @@ impl CompositionId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum WaveType {
-    #[default]
-    Sin,
-    Squ,
-    Tri,
-    Saw,
-    RSaw,
-    Noise,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RoutingModule {
     LSplit,
@@ -89,22 +78,16 @@ pub enum StandardModule {
     Degree,
     DegreeGate,
     Rate,
-    Osc,
+    Phase,
+    Noise,
     Rise,
     Fall,
     Ramp,
     Envelope,
-    Lpf,
-    Hpf,
     Comb,
     Allpass,
     Delay,
     DelayTap(ModuleId),
-    Mul,
-    Add,
-    Gt,
-    Lt,
-    Switch,
     Rng,
     Sample,
     Probe,
@@ -155,8 +138,7 @@ pub enum ModuleParams {
     Rate {
         time: TimeValue,
     },
-    Osc {
-        wave: WaveType,
+    Phase {
         frequency: f32,
         connected: u8,
     },
@@ -177,11 +159,6 @@ pub enum ModuleParams {
         points: Vec<EnvPoint>,
         connected: u8,
     },
-    Filter {
-        freq: f32,
-        q: f32,
-        connected: u8,
-    },
     Comb {
         time: TimeValue,
         feedback: f32,
@@ -195,31 +172,6 @@ pub enum ModuleParams {
     },
     Delay {
         time: TimeValue,
-        connected: u8,
-    },
-    Mul {
-        a: f32,
-        b: f32,
-        connected: u8,
-    },
-    Add {
-        a: f32,
-        b: f32,
-        connected: u8,
-    },
-    Gt {
-        a: f32,
-        b: f32,
-        connected: u8,
-    },
-    Lt {
-        a: f32,
-        b: f32,
-        connected: u8,
-    },
-    Switch {
-        a: f32,
-        b: f32,
         connected: u8,
     },
     Sample {
@@ -308,8 +260,12 @@ fn project_params_match(kind: ModuleKind, params: &ModuleParams) -> bool {
                 ModuleParams::Rate { .. }
             )
             | (
-                ModuleKind::Standard(StandardModule::Osc),
-                ModuleParams::Osc { .. }
+                ModuleKind::Standard(StandardModule::Phase),
+                ModuleParams::Phase { .. }
+            )
+            | (
+                ModuleKind::Standard(StandardModule::Noise),
+                ModuleParams::None
             )
             | (
                 ModuleKind::Standard(StandardModule::Rise),
@@ -328,14 +284,6 @@ fn project_params_match(kind: ModuleKind, params: &ModuleParams) -> bool {
                 ModuleParams::Envelope { .. }
             )
             | (
-                ModuleKind::Standard(StandardModule::Lpf),
-                ModuleParams::Filter { .. }
-            )
-            | (
-                ModuleKind::Standard(StandardModule::Hpf),
-                ModuleParams::Filter { .. }
-            )
-            | (
                 ModuleKind::Standard(StandardModule::Comb),
                 ModuleParams::Comb { .. }
             )
@@ -350,26 +298,6 @@ fn project_params_match(kind: ModuleKind, params: &ModuleParams) -> bool {
             | (
                 ModuleKind::Standard(StandardModule::DelayTap(_)),
                 ModuleParams::DelayTap { .. }
-            )
-            | (
-                ModuleKind::Standard(StandardModule::Mul),
-                ModuleParams::Mul { .. }
-            )
-            | (
-                ModuleKind::Standard(StandardModule::Add),
-                ModuleParams::Add { .. }
-            )
-            | (
-                ModuleKind::Standard(StandardModule::Gt),
-                ModuleParams::Gt { .. }
-            )
-            | (
-                ModuleKind::Standard(StandardModule::Lt),
-                ModuleParams::Lt { .. }
-            )
-            | (
-                ModuleKind::Standard(StandardModule::Switch),
-                ModuleParams::Switch { .. }
             )
             | (
                 ModuleKind::Standard(StandardModule::Rng),
@@ -393,7 +321,7 @@ fn project_params_match(kind: ModuleKind, params: &ModuleParams) -> bool {
 fn validate_project_params(params: &ModuleParams) -> Result<(), String> {
     match params {
         ModuleParams::Rate { time } => validate_project_time(*time),
-        ModuleParams::Osc { frequency, .. } => validate_finite(*frequency),
+        ModuleParams::Phase { frequency, .. } => validate_finite(*frequency),
         ModuleParams::Rise { time, .. }
         | ModuleParams::Fall { time, .. }
         | ModuleParams::Delay { time, .. } => validate_project_time(*time),
@@ -408,10 +336,6 @@ fn validate_project_params(params: &ModuleParams) -> Result<(), String> {
             }
             Ok(())
         }
-        ModuleParams::Filter { freq, q, .. } => {
-            validate_finite(*freq)?;
-            validate_finite(*q)
-        }
         ModuleParams::Comb {
             time,
             feedback,
@@ -425,14 +349,6 @@ fn validate_project_params(params: &ModuleParams) -> Result<(), String> {
         ModuleParams::Allpass { time, feedback, .. } => {
             validate_project_time(*time)?;
             validate_finite(*feedback)
-        }
-        ModuleParams::Mul { a, b, .. }
-        | ModuleParams::Add { a, b, .. }
-        | ModuleParams::Gt { a, b, .. }
-        | ModuleParams::Lt { a, b, .. }
-        | ModuleParams::Switch { a, b, .. } => {
-            validate_finite(*a)?;
-            validate_finite(*b)
         }
         ModuleParams::Output { gain, .. } | ModuleParams::DelayTap { gain } => {
             validate_finite(*gain)

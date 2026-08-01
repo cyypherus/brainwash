@@ -1,4 +1,3 @@
-use crate::osc::Wave;
 use crate::sample::{Sample, Unit};
 use crate::time::{Duration, Hertz, Seconds};
 use serde::{Deserialize, Serialize};
@@ -129,10 +128,10 @@ pub enum Module {
     Damp {
         coefficient: Unit,
     },
-    Osc {
-        wave: Wave,
+    Phase {
         frequency: Hertz,
     },
+    Noise,
     Rise {
         time: Duration,
     },
@@ -146,11 +145,7 @@ pub enum Module {
     Envelope {
         points: Arc<Vec<EnvPoint>>,
     },
-    Lowpass {
-        cutoff: Hertz,
-        resonance: Resonance,
-    },
-    Highpass {
+    Filter {
         cutoff: Hertz,
         resonance: Resonance,
     },
@@ -203,6 +198,91 @@ impl EnvPoint {
     pub fn new(time: Unit, value: Sample, curve: bool) -> Self {
         Self { time, value, curve }
     }
+}
+
+pub fn envelope_value(points: &[EnvPoint], time: f32) -> f32 {
+    if points.is_empty() {
+        return 0.0;
+    }
+    let time = time.clamp(0.0, 1.0);
+    if points.len() == 1 || time <= points[0].time.value() {
+        return points[0].value.value();
+    }
+    let last = points.len() - 1;
+    if time >= points[last].time.value() {
+        return points[last].value.value();
+    }
+
+    let mut start = 0;
+    while start < last {
+        let mut end = start + 1;
+        while end < last && points[end].curve {
+            end += 1;
+        }
+        if time <= points[end].time.value() {
+            if end == start + 1 {
+                let span =
+                    (points[end].time.value() - points[start].time.value()).max(f32::EPSILON);
+                let amount = (time - points[start].time.value()) / span;
+                return points[start].value.value()
+                    + (points[end].value.value() - points[start].value.value()) * amount;
+            }
+
+            let mut low = 0.0;
+            let mut high = 1.0;
+            for _ in 0..20 {
+                let parameter = (low + high) * 0.5;
+                if bezier_coordinate(points, start, end, parameter, true) < time {
+                    low = parameter;
+                } else {
+                    high = parameter;
+                }
+            }
+            return bezier_coordinate(points, start, end, (low + high) * 0.5, false);
+        }
+        start = end;
+    }
+    points[last].value.value()
+}
+
+fn bezier_coordinate(
+    points: &[EnvPoint],
+    start: usize,
+    end: usize,
+    parameter: f32,
+    time: bool,
+) -> f32 {
+    if parameter <= 0.0 {
+        return if time {
+            points[start].time.value()
+        } else {
+            points[start].value.value()
+        };
+    }
+    if parameter >= 1.0 {
+        return if time {
+            points[end].time.value()
+        } else {
+            points[end].value.value()
+        };
+    }
+    let degree = end - start;
+    let inverse = 1.0 - parameter;
+    let mut basis = inverse.powi(degree as i32);
+    let mut result = 0.0;
+    for index in 0..=degree {
+        let point = points[start + index];
+        result += basis
+            * if time {
+                point.time.value()
+            } else {
+                point.value.value()
+            };
+        if index < degree {
+            basis *= (degree - index) as f32 / (index + 1) as f32 * parameter / inverse;
+        }
+    }
+    result
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -601,6 +681,7 @@ impl DelayTap {
 impl Module {
     pub fn output_count(&self) -> u16 {
         match self {
+            Module::Filter { .. } => 2,
             Module::Composition(composition) => composition.outputs.len() as u16,
             _ => 1,
         }
@@ -621,7 +702,7 @@ impl Module {
             Module::Rise { .. } | Module::Fall { .. } => vec![InputKind::Gate, InputKind::Time],
             Module::Ramp { .. } => vec![InputKind::Value, InputKind::Time],
             Module::Envelope { .. } => vec![InputKind::Phase],
-            Module::Lowpass { .. } | Module::Highpass { .. } => {
+            Module::Filter { .. } => {
                 vec![InputKind::In, InputKind::Freq, InputKind::Q]
             }
             Module::Comb { .. } => vec![
@@ -639,7 +720,8 @@ impl Module {
             Module::Slew { .. } => vec![InputKind::In, InputKind::Rise, InputKind::Fall],
             Module::Sample { .. } => vec![InputKind::Position],
             Module::Binary { .. } => vec![InputKind::A, InputKind::B],
-            Module::Osc { .. } => vec![InputKind::Freq],
+            Module::Phase { .. } => vec![InputKind::Freq],
+            Module::Noise => vec![],
             Module::Switch { .. } => vec![InputKind::Select, InputKind::A, InputKind::B],
             Module::Composition(composition) => {
                 composition.inputs.iter().map(|input| input.kind).collect()
@@ -691,11 +773,35 @@ mod tests {
     }
 
     #[test]
+    fn curve_point_pulls_the_chord_between_its_neighbors() {
+        let points = [
+            EnvPoint::new(unit(0.0), Sample::raw(0.0), false),
+            EnvPoint::new(unit(0.5), Sample::raw(1.0), true),
+            EnvPoint::new(unit(1.0), Sample::raw(0.0), false),
+        ];
+
+        assert!((envelope_value(&points, 0.5) - 0.5).abs() < 0.0001);
+        assert!(envelope_value(&points, 0.25) > 0.0);
+        assert!(envelope_value(&points, 0.75) > 0.0);
+    }
+
+    #[test]
+    fn ordinary_point_remains_a_linear_waypoint() {
+        let points = [
+            EnvPoint::new(unit(0.0), Sample::raw(0.0), false),
+            EnvPoint::new(unit(0.5), Sample::raw(1.0), false),
+            EnvPoint::new(unit(1.0), Sample::raw(0.0), false),
+        ];
+
+        assert!((envelope_value(&points, 0.5) - 1.0).abs() < 0.0001);
+        assert!((envelope_value(&points, 0.25) - 0.5).abs() < 0.0001);
+    }
+
+    #[test]
     fn connect_rejects_multi_input_targets() {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Gate);
-        let target = patch.insert(crate::preset::oscillator(
-            Wave::Sine,
+        let target = patch.insert(crate::preset::sine(
             Hertz::new(440.0).unwrap(),
             Unit::ONE,
             false,
@@ -712,8 +818,7 @@ mod tests {
     fn checked_input_port_stores_target_slot() {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Gate);
-        let target = patch.insert(crate::preset::oscillator(
-            Wave::Sine,
+        let target = patch.insert(crate::preset::sine(
             Hertz::new(440.0).unwrap(),
             Unit::ONE,
             false,
@@ -737,12 +842,13 @@ mod tests {
 
     #[test]
     fn module_inputs_are_semantic_shape() {
+        let filter = Module::Filter {
+            cutoff: Hertz::new(1000.0).unwrap(),
+            resonance: Resonance::new(0.707).unwrap(),
+        };
+        assert_eq!(filter.output_count(), 2);
         assert_eq!(
-            Module::Lowpass {
-                cutoff: Hertz::new(1000.0).unwrap(),
-                resonance: Resonance::new(0.707).unwrap(),
-            }
-            .input_kinds(),
+            filter.input_kinds(),
             &[InputKind::In, InputKind::Freq, InputKind::Q]
         );
         assert_eq!(
@@ -754,6 +860,19 @@ mod tests {
             .input_kinds(),
             &[InputKind::A, InputKind::B]
         );
+    }
+
+    #[test]
+    fn filter_exposes_low_and_high_outputs() {
+        let mut patch = Patch::new();
+        let filter = patch.insert(Module::Filter {
+            cutoff: Hertz::new(1000.0).unwrap(),
+            resonance: Resonance::new(0.707).unwrap(),
+        });
+
+        assert!(patch.output_port(filter, 0).is_ok());
+        assert!(patch.output_port(filter, 1).is_ok());
+        assert_eq!(patch.output_port(filter, 2), Err(ConnectError::ClosedInput));
     }
 
     #[test]

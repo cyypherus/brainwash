@@ -1,5 +1,4 @@
 use brainwash::compile::{CompiledPatch, PatchEngine};
-use brainwash::osc::Wave;
 use brainwash::patch::{Module, Patch, Resonance};
 use brainwash::sample::Unit;
 use brainwash::time::{Hertz, SampleRate};
@@ -7,13 +6,12 @@ use brainwash::time::{Hertz, SampleRate};
 fn main() {
     let rate = SampleRate::new(44_100).unwrap();
     let mut patch = Patch::new();
-    let osc = patch.insert(brainwash::preset::oscillator(
-        Wave::Sine,
+    let osc = patch.insert(brainwash::preset::sine(
         Hertz::new(440.0).unwrap(),
         Unit::ONE,
         false,
     ));
-    let filter = patch.insert(Module::Lowpass {
+    let filter = patch.insert(Module::Filter {
         cutoff: Hertz::new(1_000.0).unwrap(),
         resonance: Resonance::new(0.707).unwrap(),
     });

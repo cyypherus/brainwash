@@ -995,7 +995,6 @@ mod tests {
     use super::*;
     use crate::model::{GuiAction, GuiState, ModuleCategory};
     use assert_no_alloc::assert_no_alloc;
-    use brainwash::osc::Wave;
     use brainwash::patch::{InputKind, Module, Patch, Resonance};
     use brainwash::sample::{Sample as AudioSample, Unit};
     use brainwash::scale::cmin;
@@ -1123,8 +1122,7 @@ mod tests {
         let rate = SampleRate::new(44_100).unwrap();
         let mut patch = Patch::new();
         let freq = patch.insert(Module::Freq);
-        let osc = patch.insert(brainwash::preset::oscillator(
-            Wave::Saw,
+        let osc = patch.insert(brainwash::preset::saw(
             Hertz::new(110.0).unwrap(),
             Unit::ONE,
             false,
@@ -1783,7 +1781,7 @@ mod tests {
     fn metered_patch(rate: SampleRate) -> (CompiledPatch, MeterRoute) {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Constant(AudioSample::new(0.5).unwrap()));
-        let lowpass = patch.insert(Module::Lowpass {
+        let lowpass = patch.insert(Module::Filter {
             cutoff: Hertz::new(1000.0).unwrap(),
             resonance: Resonance::new(0.707).unwrap(),
         });
@@ -1829,8 +1827,7 @@ mod tests {
     fn compiled_saw_patch(frequency: f32, rate: SampleRate) -> CompiledPatch {
         let mut patch = Patch::new();
         let freq = patch.insert(Module::Freq);
-        let osc = patch.insert(brainwash::preset::oscillator(
-            Wave::Saw,
+        let osc = patch.insert(brainwash::preset::saw(
             Hertz::new(frequency).unwrap(),
             Unit::ONE,
             false,
@@ -1852,8 +1849,7 @@ mod tests {
 
     fn unmodulated_osc_patch(rate: SampleRate) -> CompiledPatch {
         let mut patch = Patch::new();
-        let osc = patch.insert(brainwash::preset::oscillator(
-            Wave::Saw,
+        let osc = patch.insert(brainwash::preset::saw(
             Hertz::new(440.0).unwrap(),
             Unit::ONE,
             false,
@@ -1865,8 +1861,7 @@ mod tests {
     fn gated_osc_patch(rate: SampleRate) -> CompiledPatch {
         let mut patch = Patch::new();
         let gate = patch.insert(Module::Gate);
-        let osc = patch.insert(brainwash::preset::oscillator(
-            Wave::Saw,
+        let osc = patch.insert(brainwash::preset::saw(
             Hertz::new(440.0).unwrap(),
             Unit::ONE,
             false,
