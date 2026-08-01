@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 #[test]
 fn module_inventory_has_expected_surface_count() {
-    assert_eq!(all_modules().len(), 56);
+    assert_eq!(all_modules().len(), 48);
     assert_eq!(all_modules()[0], ModuleKind::Phase);
     assert_eq!(all_modules()[1], ModuleKind::Output);
     assert_eq!(
@@ -21,7 +21,7 @@ fn module_inventory_has_expected_surface_count() {
             .iter()
             .filter(|kind| kind.category() == ModuleCategory::Source)
             .count(),
-        10
+        7
     );
     assert_eq!(
         all_modules()
@@ -53,32 +53,6 @@ fn phase_has_no_inner_surface() {
     place_module_kind(&mut state, ModuleKind::Phase);
     state.apply(GuiAction::EditComposition);
     assert_eq!(state.composition_depth(), 0);
-}
-
-#[test]
-fn rate_converts_one_second_to_one_hertz_for_phase() {
-    let mut state = GuiState::new(8, 8);
-    place_module_kind(&mut state, ModuleKind::Rate);
-    assert_eq!(state.modules()[0].parameters()[0].value_label(), "1.00s");
-    state.apply(GuiAction::Right);
-    place_module_kind(&mut state, ModuleKind::Phase);
-    state.apply(GuiAction::Right);
-    place_module_kind(&mut state, ModuleKind::Output);
-
-    let mut patch = state
-        .compile_audio_patch(SampleRate::new(44_100).unwrap())
-        .unwrap();
-    let first = patch.next().left().value();
-    let after_half_second = (0..22_050)
-        .map(|_| patch.next().left().value())
-        .last()
-        .unwrap();
-
-    assert!(first.abs() < 0.001, "{first}");
-    assert!(
-        (after_half_second - 0.5).abs() < 0.01,
-        "{after_half_second}"
-    );
 }
 
 #[test]
@@ -137,7 +111,6 @@ fn direct_palette_category_opens_and_resets_selection() {
     state.apply(GuiAction::PaletteDown);
     assert_eq!(state.mode(), Mode::Palette);
     assert_eq!(state.palette_category(), ModuleCategory::Effect);
-    assert_ne!(state.selected_palette_module(), ModuleKind::Comb);
 
     state.apply(GuiAction::Palette(ModuleCategory::Filter));
     assert_eq!(state.palette_category(), ModuleCategory::Filter);
@@ -260,7 +233,7 @@ fn move_confirm_cancel_delete_and_rotate_work() {
 #[test]
 fn move_places_multi_cell_module_relative_to_grabbed_cell() {
     let mut state = GuiState::default();
-    place_module_kind(&mut state, ModuleKind::Adsr);
+    place_palette_module(&mut state, ModuleCategory::Shape, "ADSR");
     let id = state.module_at(GridPos::new(0, 0)).unwrap().id();
 
     state.apply(GuiAction::Down);
@@ -1007,7 +980,8 @@ fn haven_palette_category_keys_work() {
     pane.key_pressed(&mut state, Key::character("@"));
     assert_eq!(state.mode(), Mode::Palette);
     assert_eq!(state.palette_category(), ModuleCategory::Shape);
-    assert_eq!(state.selected_palette_module(), ModuleKind::Adsr);
+    assert_eq!(state.selected_palette_label(), "Envelope");
+    assert_eq!(state.selected_palette_module(), ModuleKind::Envelope);
 
     pane.key_pressed(&mut state, Key::character("#"));
     assert_eq!(state.palette_category(), ModuleCategory::Filter);
@@ -1352,7 +1326,7 @@ fn haven_visual_editors_redraw() {
     let mut pane = PaneBuilder::new("main", main_view).build();
 
     let mut adsr = GuiState::new(8, 8);
-    place_module(&mut adsr, 1, 3);
+    place_palette_module(&mut adsr, ModuleCategory::Shape, "ADSR");
     adsr.apply(GuiAction::Edit);
     for _ in 0..4 {
         adsr.apply(GuiAction::Down);
@@ -1578,7 +1552,16 @@ fn haven_sample_keys_work() {
 #[test]
 fn adsr_opens_as_a_composition() {
     let mut state = GuiState::default();
-    place_module(&mut state, 1, 3);
+    place_palette_module(&mut state, ModuleCategory::Shape, "ADSR");
+    state.apply(GuiAction::EditComposition);
+    assert_eq!(state.composition_depth(), 1);
+    assert!(!state.modules().is_empty());
+}
+
+#[test]
+fn attenuator_is_available_as_an_editable_composition() {
+    let mut state = GuiState::default();
+    place_palette_module(&mut state, ModuleCategory::Effect, "Attenuator");
     state.apply(GuiAction::EditComposition);
     assert_eq!(state.composition_depth(), 1);
     assert!(!state.modules().is_empty());
@@ -2119,7 +2102,7 @@ fn gui_reverb_emits_a_wet_tail_after_an_impulse() {
     let mut state = GuiState::default();
     place_module_kind(&mut state, ModuleKind::Gate);
     state.apply(GuiAction::Right);
-    place_module_kind(&mut state, ModuleKind::Reverb);
+    place_palette_module(&mut state, ModuleCategory::Effect, "Reverb");
     state.apply(GuiAction::Edit);
     state.apply(GuiAction::Down);
     state.apply(GuiAction::Down);
@@ -2835,7 +2818,7 @@ fn haven_selection_move_preview_offsets_clipped_grid() {
 #[test]
 fn haven_single_module_move_preview_ignores_overlapped_modules() {
     let mut state = GuiState::default();
-    place_module_kind(&mut state, ModuleKind::Adsr);
+    place_palette_module(&mut state, ModuleCategory::Shape, "ADSR");
     state.apply(GuiAction::Right);
     state.apply(GuiAction::Down);
     place_module_kind(&mut state, ModuleKind::Freq);
@@ -3381,14 +3364,12 @@ fn place_module(state: &mut GuiState, category_rights: usize, selection_downs: u
         (0, 0) => ModuleKind::Freq,
         (0, 1) => ModuleKind::Gate,
         (0, 2) => ModuleKind::Degree,
-        (0, 3) => ModuleKind::DegreeGate,
         (0, 4) => ModuleKind::Phase,
         (0, 5) => ModuleKind::Random,
         (0, 6) => ModuleKind::Sample,
         (1, 0) => ModuleKind::Rise,
         (1, 1) => ModuleKind::Fall,
         (1, 2) => ModuleKind::Ramp,
-        (1, 3) => ModuleKind::Adsr,
         (1, 4) => ModuleKind::Envelope,
         (2, 0) => ModuleKind::Filter,
         (2, 1) => ModuleKind::Damp,
@@ -3396,10 +3377,6 @@ fn place_module(state: &mut GuiState, category_rights: usize, selection_downs: u
         (3, 1) => ModuleKind::Allpass,
         (3, 2) => ModuleKind::Delay,
         (3, 3) => ModuleKind::DelayTap,
-        (3, 4) => ModuleKind::Reverb,
-        (3, 5) => ModuleKind::Distortion,
-        (3, 6) => ModuleKind::Compressor,
-        (3, 7) => ModuleKind::Flanger,
         (4, 0) => ModuleKind::Probe,
         (4, 1) => ModuleKind::Multiply,
         (4, 2) => ModuleKind::Add,
@@ -3429,6 +3406,14 @@ fn place_module_kind(state: &mut GuiState, kind: ModuleKind) {
         .position(|module| *module == kind)
         .unwrap();
     for _ in 0..index {
+        state.apply(GuiAction::PaletteDown);
+    }
+    state.apply(GuiAction::Confirm);
+}
+
+fn place_palette_module(state: &mut GuiState, category: ModuleCategory, label: &str) {
+    state.apply(GuiAction::Palette(category));
+    while state.selected_palette_label() != label {
         state.apply(GuiAction::PaletteDown);
     }
     state.apply(GuiAction::Confirm);

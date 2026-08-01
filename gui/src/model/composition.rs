@@ -23,6 +23,29 @@ pub(super) fn sync_delay_sources(surface: &mut PatchSurface) {
     }
 }
 
+fn composition_input_position(module: &Module, input: usize) -> Option<(u16, u16)> {
+    if module.kind() == ModuleKind::Delay {
+        return match module.orientation {
+            Orientation::Right => match input {
+                0 => Some((module.position.x, module.position.y)),
+                1 => Some((module.position.x, module.position.y)),
+                2 => Some((module.position.x, module.position.y + 1)),
+                _ => None,
+            },
+            Orientation::Down => match input {
+                0 => Some((module.position.x, module.position.y)),
+                1 => Some((module.position.x, module.position.y)),
+                2 => Some((module.position.x + 1, module.position.y)),
+                _ => None,
+            },
+        };
+    }
+    Some(match module.orientation {
+        Orientation::Down => (module.position.x + input as u16, module.position.y),
+        Orientation::Right => (module.position.x, module.position.y + input as u16),
+    })
+}
+
 pub(super) fn composition_body(
     graph: Box<brainwash::patch::Composition>,
     next_module_id: &mut u32,
@@ -436,16 +459,7 @@ pub(super) fn composition_body(
                             .input_kinds()
                             .iter()
                             .position(|kind| *kind == input.kind())?;
-                        Some(match target_module.orientation {
-                            Orientation::Down => (
-                                target_module.position.x + input_index as u16,
-                                target_module.position.y,
-                            ),
-                            Orientation::Right => (
-                                target_module.position.x,
-                                target_module.position.y + input_index as u16,
-                            ),
-                        })
+                        composition_input_position(target_module, input_index)
                     })
                     .collect::<Vec<_>>();
                 targets.sort_unstable();
@@ -461,7 +475,8 @@ pub(super) fn composition_body(
                         let branch_x = (source_x + 1..targets[0].0).rev().find(|x| {
                             (source_y..=targets.last().unwrap().1)
                                 .all(|y| !occupied.contains(&GridPos::new(*x, y)))
-                        })?;
+                        });
+                        let branch_x = branch_x?;
                         for (index, (_, target_y)) in targets.iter().enumerate() {
                             modules.push(Module {
                                 id: ModuleId::new(*next_module_id),
@@ -600,7 +615,7 @@ pub(super) fn composition_body(
                         .input_kinds()
                         .iter()
                         .position(|kind| *kind == input.kind())?;
-                    Some(target_module.position.y + input_index as u16)
+                    composition_input_position(target_module, input_index).map(|(_, y)| y)
                 })
                 .collect::<Vec<_>>();
             let output_positions = exposed_outputs
@@ -672,7 +687,7 @@ pub(super) fn composition_body(
 
 fn graph_node_body(module: &AudioModule) -> ModuleBody {
     match module {
-        AudioModule::Delay { time, .. } => ModuleBody::Delay {
+        AudioModule::Delay { time, feedback } => ModuleBody::Delay {
             input: float_param(-100, 100, 1, 0),
             time: match time {
                 Duration::Samples(samples) => time_param(samples.value() as i32, TimeUnit::Samples),
@@ -683,6 +698,7 @@ fn graph_node_body(module: &AudioModule) -> ModuleBody {
                     time
                 }
             },
+            feedback: float_param(0, 99, 1, (feedback.value() * 100.0).round() as i32),
         },
         _ => ModuleBody::Primitive(module.clone()),
     }
@@ -694,7 +710,6 @@ pub(super) fn graph_node_label(module: &AudioModule) -> &'static str {
         AudioModule::Freq => "Frequency",
         AudioModule::Gate => "Gate",
         AudioModule::Degree => "Degree",
-        AudioModule::DegreeGate { .. } => "Degree Gate",
         AudioModule::Constant(_) => "Constant",
         AudioModule::Unary(op) => match op {
             brainwash::patch::UnaryOp::Absolute => "Absolute",
@@ -704,7 +719,6 @@ pub(super) fn graph_node_label(module: &AudioModule) -> &'static str {
             brainwash::patch::UnaryOp::Exponential => "Exp",
             brainwash::patch::UnaryOp::Sign => "Sign",
         },
-        AudioModule::Pass => "Pass",
         AudioModule::Damp { .. } => "Damping",
         AudioModule::Phase { .. } => "Phase",
         AudioModule::Noise => "Noise",
@@ -717,7 +731,6 @@ pub(super) fn graph_node_label(module: &AudioModule) -> &'static str {
         AudioModule::Allpass { .. } => "Allpass",
         AudioModule::Delay { .. } => "Delay",
         AudioModule::DelayTap { .. } => "Delay Tap",
-        AudioModule::VariableDelay { .. } => "Variable Delay",
         AudioModule::Slew { .. } => "Slew",
         AudioModule::Binary { op, .. } => match op {
             BinaryOp::Multiply => "Multiply",
@@ -730,6 +743,7 @@ pub(super) fn graph_node_label(module: &AudioModule) -> &'static str {
             BinaryOp::Maximum => "Maximum",
             BinaryOp::GreaterThan => "Greater Than",
             BinaryOp::LessThan => "Less Than",
+            BinaryOp::Equal => "Equal",
         },
         AudioModule::Switch { .. } => "Switch",
         AudioModule::Random => "Random",

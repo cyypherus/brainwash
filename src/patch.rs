@@ -18,6 +18,7 @@ pub enum BinaryOp {
     Maximum,
     GreaterThan,
     LessThan,
+    Equal,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,12 +120,8 @@ pub enum Module {
     Freq,
     Gate,
     Degree,
-    DegreeGate {
-        target: i32,
-    },
     Constant(Sample),
     Unary(UnaryOp),
-    Pass,
     Damp {
         coefficient: Unit,
     },
@@ -163,9 +160,6 @@ pub enum Module {
         feedback: Unit,
     },
     DelayTap(DelayTap),
-    VariableDelay {
-        max_time: Duration,
-    },
     Slew {
         rise: Seconds,
         fall: Seconds,
@@ -690,15 +684,11 @@ impl Module {
     pub fn input_kinds(&self) -> Vec<InputKind> {
         match self {
             Module::Input { .. } => vec![],
-            Module::Freq
-            | Module::Gate
-            | Module::Degree
-            | Module::DegreeGate { .. }
-            | Module::Constant(_) => vec![],
+            Module::Freq | Module::Gate | Module::Degree | Module::Constant(_) => vec![],
             Module::Unary(_) => vec![InputKind::In],
             Module::Damp { .. } => vec![InputKind::In, InputKind::Damp],
             Module::Random => vec![InputKind::Gate],
-            Module::Pass | Module::Probe => vec![InputKind::In],
+            Module::Probe => vec![InputKind::In],
             Module::Rise { .. } | Module::Fall { .. } => vec![InputKind::Gate, InputKind::Time],
             Module::Ramp { .. } => vec![InputKind::Value, InputKind::Time],
             Module::Envelope { .. } => vec![InputKind::Phase],
@@ -712,11 +702,8 @@ impl Module {
                 InputKind::Damp,
             ],
             Module::Allpass { .. } => vec![InputKind::In, InputKind::Time, InputKind::Feedback],
-            Module::Delay { .. } => vec![InputKind::Time, InputKind::In],
+            Module::Delay { .. } => vec![InputKind::Feedback, InputKind::Time, InputKind::In],
             Module::DelayTap(_) => vec![],
-            Module::VariableDelay { .. } => {
-                vec![InputKind::In, InputKind::Time, InputKind::Feedback]
-            }
             Module::Slew { .. } => vec![InputKind::In, InputKind::Rise, InputKind::Fall],
             Module::Sample { .. } => vec![InputKind::Position],
             Module::Binary { .. } => vec![InputKind::A, InputKind::B],

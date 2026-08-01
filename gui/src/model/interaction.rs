@@ -1057,12 +1057,6 @@ impl GuiState {
             GuiAction::Confirm => {
                 if parameter == parameter_count {
                     match special {
-                        Some(SpecialEditor::Adsr) => {
-                            self.mode = Mode::AdsrEdit {
-                                module,
-                                parameter: 0,
-                            };
-                        }
                         Some(SpecialEditor::Envelope) => {
                             self.mode = Mode::EnvEdit {
                                 module,

@@ -119,12 +119,8 @@ enum FileModule {
     Freq,
     Gate,
     Degree,
-    DegreeGate {
-        target: i32,
-    },
     Constant(f32),
     Unary(FileUnaryOp),
-    Pass,
     Damp {
         coefficient: f32,
     },
@@ -165,9 +161,6 @@ enum FileModule {
     DelayTap {
         delay: u32,
         gain: f32,
-    },
-    VariableDelay {
-        max_time: FileDuration,
     },
     Slew {
         rise: f32,
@@ -220,6 +213,7 @@ enum FileBinaryOp {
     Maximum,
     GreaterThan,
     LessThan,
+    Equal,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -391,7 +385,6 @@ impl FileModule {
             Module::Freq => FileModule::Freq,
             Module::Gate => FileModule::Gate,
             Module::Degree => FileModule::Degree,
-            Module::DegreeGate { target } => FileModule::DegreeGate { target },
             Module::Constant(value) => FileModule::Constant(value.value()),
             Module::Unary(op) => FileModule::Unary(match op {
                 UnaryOp::Absolute => FileUnaryOp::Absolute,
@@ -401,7 +394,6 @@ impl FileModule {
                 UnaryOp::Exponential => FileUnaryOp::Exponential,
                 UnaryOp::Sign => FileUnaryOp::Sign,
             }),
-            Module::Pass => FileModule::Pass,
             Module::Damp { coefficient } => FileModule::Damp {
                 coefficient: coefficient.value(),
             },
@@ -454,9 +446,6 @@ impl FileModule {
                 delay: tap.delay().0,
                 gain: tap.gain().value(),
             },
-            Module::VariableDelay { max_time } => FileModule::VariableDelay {
-                max_time: FileDuration::from_duration(max_time),
-            },
             Module::Slew { rise, fall } => FileModule::Slew {
                 rise: rise.value(),
                 fall: fall.value(),
@@ -500,7 +489,6 @@ impl FileModule {
             FileModule::Freq => Module::Freq,
             FileModule::Gate => Module::Gate,
             FileModule::Degree => Module::Degree,
-            FileModule::DegreeGate { target } => Module::DegreeGate { target },
             FileModule::Constant(value) => {
                 Module::Constant(Sample::new(value).ok_or(LoadError::Value)?)
             }
@@ -512,7 +500,6 @@ impl FileModule {
                 FileUnaryOp::Exponential => UnaryOp::Exponential,
                 FileUnaryOp::Sign => UnaryOp::Sign,
             }),
-            FileModule::Pass => Module::Pass,
             FileModule::Damp { coefficient } => Module::Damp {
                 coefficient: Unit::new(coefficient).ok_or(LoadError::Value)?,
             },
@@ -566,9 +553,6 @@ impl FileModule {
                 feedback: Unit::new(feedback).ok_or(LoadError::Value)?,
             },
             FileModule::DelayTap { .. } => return Err(LoadError::Value),
-            FileModule::VariableDelay { max_time } => Module::VariableDelay {
-                max_time: max_time.into_duration()?,
-            },
             FileModule::Slew { rise, fall } => Module::Slew {
                 rise: Seconds::new(rise).ok_or(LoadError::Value)?,
                 fall: Seconds::new(fall).ok_or(LoadError::Value)?,
@@ -631,6 +615,7 @@ impl FileBinaryOp {
             BinaryOp::Maximum => FileBinaryOp::Maximum,
             BinaryOp::GreaterThan => FileBinaryOp::GreaterThan,
             BinaryOp::LessThan => FileBinaryOp::LessThan,
+            BinaryOp::Equal => FileBinaryOp::Equal,
         }
     }
 
@@ -646,6 +631,7 @@ impl FileBinaryOp {
             FileBinaryOp::Maximum => BinaryOp::Maximum,
             FileBinaryOp::GreaterThan => BinaryOp::GreaterThan,
             FileBinaryOp::LessThan => BinaryOp::LessThan,
+            FileBinaryOp::Equal => BinaryOp::Equal,
         }
     }
 }

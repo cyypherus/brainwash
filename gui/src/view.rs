@@ -1738,9 +1738,6 @@ fn parameter_fill(value: &ParameterValue) -> f32 {
         ParameterValue::Float {
             value, min, max, ..
         } => ((*value - *min) as f32 / (*max - *min).max(1) as f32).clamp(0., 1.),
-        ParameterValue::Int { value, min, max } => {
-            ((*value - *min) as f32 / (*max - *min).max(1) as f32).clamp(0., 1.)
-        }
         ParameterValue::Time { value, .. } => (*value as f32 / 10_000.).clamp(0., 1.),
         ParameterValue::Bars {
             numerator,

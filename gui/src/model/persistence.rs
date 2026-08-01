@@ -144,17 +144,6 @@ fn project_kind(
     modules: &[Module],
     composition_ids: &HashMap<ModuleId, u32>,
 ) -> Result<ProjectModuleKind, String> {
-    if matches!(
-        module.kind(),
-        ModuleKind::Transpose
-            | ModuleKind::Adsr
-            | ModuleKind::Reverb
-            | ModuleKind::Distortion
-            | ModuleKind::Compressor
-            | ModuleKind::Flanger
-    ) {
-        return Err(format!("unprojected compound module {}", module.id.value()));
-    }
     Ok(match module.kind() {
         ModuleKind::Primitive => ProjectModuleKind::Standard(ProjectStandardModule::Primitive),
         ModuleKind::Constant
@@ -174,9 +163,10 @@ fn project_kind(
         | ModuleKind::Add
         | ModuleKind::GreaterThan
         | ModuleKind::LessThan
+        | ModuleKind::Equal
         | ModuleKind::Switch
         | ModuleKind::Filter => unreachable!(),
-        ModuleKind::Damp | ModuleKind::VariableDelay | ModuleKind::Slew => unreachable!(),
+        ModuleKind::Damp | ModuleKind::Slew => unreachable!(),
         ModuleKind::TurnRightDown => ProjectModuleKind::Routing(ProjectRoutingModule::TurnRD),
         ModuleKind::TurnDownRight => ProjectModuleKind::Routing(ProjectRoutingModule::TurnDR),
         ModuleKind::LeftSplit => ProjectModuleKind::Routing(ProjectRoutingModule::LSplit),
@@ -203,8 +193,6 @@ fn project_kind(
         ModuleKind::Freq => ProjectModuleKind::Standard(ProjectStandardModule::Freq),
         ModuleKind::Gate => ProjectModuleKind::Standard(ProjectStandardModule::Gate),
         ModuleKind::Degree => ProjectModuleKind::Standard(ProjectStandardModule::Degree),
-        ModuleKind::DegreeGate => ProjectModuleKind::Standard(ProjectStandardModule::DegreeGate),
-        ModuleKind::Rate => ProjectModuleKind::Standard(ProjectStandardModule::Rate),
         ModuleKind::Phase => ProjectModuleKind::Standard(ProjectStandardModule::Phase),
         ModuleKind::Noise => ProjectModuleKind::Standard(ProjectStandardModule::Noise),
         ModuleKind::Rise => ProjectModuleKind::Standard(ProjectStandardModule::Rise),
@@ -214,12 +202,6 @@ fn project_kind(
         ModuleKind::Comb => ProjectModuleKind::Standard(ProjectStandardModule::Comb),
         ModuleKind::Allpass => ProjectModuleKind::Standard(ProjectStandardModule::Allpass),
         ModuleKind::Delay => ProjectModuleKind::Standard(ProjectStandardModule::Delay),
-        ModuleKind::Transpose
-        | ModuleKind::Adsr
-        | ModuleKind::Reverb
-        | ModuleKind::Distortion
-        | ModuleKind::Compressor
-        | ModuleKind::Flanger => unreachable!(),
         ModuleKind::Random => ProjectModuleKind::Standard(ProjectStandardModule::Rng),
         ModuleKind::Sample => ProjectModuleKind::Standard(ProjectStandardModule::Sample),
         ModuleKind::Probe => ProjectModuleKind::Standard(ProjectStandardModule::Probe),
@@ -267,15 +249,6 @@ fn project_params(
                 connected: value.connected,
             }
         }
-        ModuleBody::DegreeGate { degree } => ProjectModuleParams::DegreeGate {
-            degree: degree.value,
-        },
-        ModuleBody::Rate { time } => ProjectModuleParams::Rate {
-            time: project_time(*time)?,
-        },
-        ModuleBody::Transpose { .. } => {
-            return Err("unprojected Transpose composition".to_string());
-        }
         ModuleBody::Phase { frequency } => ProjectModuleParams::Phase {
             frequency: project_float(*frequency),
             connected: connected_mask(&[(0, frequency.connected)]),
@@ -293,9 +266,6 @@ fn project_params(
             time: project_time(*time)?,
             connected: connected_mask(&[(0, value.connected), (1, time.connected)]),
         },
-        ModuleBody::Adsr { .. } => {
-            return Err("unprojected ADSR composition".to_string());
-        }
         ModuleBody::Envelope { phase, points } => ProjectModuleParams::Envelope {
             points: points.iter().map(project_env_point).collect(),
             connected: connected_mask(&[(0, phase.connected)]),
@@ -324,24 +294,27 @@ fn project_params(
             time: project_time(*time)?,
             feedback: project_float(*feedback),
             connected: connected_mask(&[
+                (0, feedback.connected),
+                (1, time.connected),
+                (2, input.connected),
+            ]),
+        },
+        ModuleBody::Delay {
+            input,
+            time,
+            feedback,
+        } => ProjectModuleParams::Delay {
+            time: project_time(*time)?,
+            feedback: project_float(*feedback),
+            connected: connected_mask(&[
                 (0, input.connected),
                 (1, time.connected),
                 (2, feedback.connected),
             ]),
         },
-        ModuleBody::Delay { input, time } => ProjectModuleParams::Delay {
-            time: project_time(*time)?,
-            connected: connected_mask(&[(0, input.connected), (1, time.connected)]),
-        },
         ModuleBody::DelayTap { gain, .. } => ProjectModuleParams::DelayTap {
             gain: project_float(*gain),
         },
-        ModuleBody::Reverb { .. }
-        | ModuleBody::Distortion { .. }
-        | ModuleBody::Compressor { .. }
-        | ModuleBody::Flanger { .. } => {
-            return Err("unprojected effect composition".to_string());
-        }
         ModuleBody::Random { gate } => {
             if !gate.connected {
                 return Err(format!(
@@ -563,8 +536,6 @@ fn kind_from_project(kind: ProjectModuleKind) -> (ModuleKind, Option<u32>) {
                 ProjectStandardModule::Freq => ModuleKind::Freq,
                 ProjectStandardModule::Gate => ModuleKind::Gate,
                 ProjectStandardModule::Degree => ModuleKind::Degree,
-                ProjectStandardModule::DegreeGate => ModuleKind::DegreeGate,
-                ProjectStandardModule::Rate => ModuleKind::Rate,
                 ProjectStandardModule::Phase => ModuleKind::Phase,
                 ProjectStandardModule::Noise => ModuleKind::Noise,
                 ProjectStandardModule::Rise => ModuleKind::Rise,
@@ -613,10 +584,6 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
                 parameter.value = ParameterValue::Text(label.clone());
             }
         }
-        ProjectModuleParams::DegreeGate { degree } => set_int(&mut parameters, 0, *degree),
-        ProjectModuleParams::Rate { time } => {
-            set_time(&mut parameters, 0, *time);
-        }
         ProjectModuleParams::Phase {
             frequency,
             connected,
@@ -663,11 +630,16 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             connected,
         } => {
             set_time(&mut parameters, 1, *time);
-            set_float(&mut parameters, 2, *feedback);
+            set_float(&mut parameters, 0, *feedback);
             apply_connected(&mut parameters, *connected);
         }
-        ProjectModuleParams::Delay { time, connected } => {
+        ProjectModuleParams::Delay {
+            time,
+            feedback,
+            connected,
+        } => {
             set_time(&mut parameters, 1, *time);
+            set_float(&mut parameters, 2, *feedback);
             apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Sample {
@@ -726,18 +698,6 @@ fn set_float(parameters: &mut [ModuleParameter], index: usize, value: f32) {
         } = &mut parameter.value
     {
         *target = (value * 100.0).round().clamp(*min as f32, *max as f32) as i32;
-    }
-}
-
-fn set_int(parameters: &mut [ModuleParameter], index: usize, value: i32) {
-    if let Some(parameter) = parameters.get_mut(index)
-        && let ParameterValue::Int {
-            value: target,
-            min,
-            max,
-        } = &mut parameter.value
-    {
-        *target = value.clamp(*min, *max);
     }
 }
 

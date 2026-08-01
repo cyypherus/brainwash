@@ -32,9 +32,17 @@ impl Delay {
         delayed
     }
 
-    pub(crate) fn process_at(&mut self, input: Sample, seconds: Option<Sample>) -> Sample {
+    pub(crate) fn process_at(
+        &mut self,
+        input: Sample,
+        seconds: Option<Sample>,
+        feedback: Option<Sample>,
+    ) -> Sample {
         let delayed = self.tap(seconds);
-        self.samples[self.index] = input.add(delayed.attenuate(self.feedback));
+        let feedback = feedback
+            .and_then(|feedback| Unit::new(feedback.value()))
+            .unwrap_or(self.feedback);
+        self.samples[self.index] = input.add(delayed.attenuate(feedback));
         self.index = (self.index + 1) % self.samples.len();
         delayed
     }
@@ -59,5 +67,41 @@ impl Delay {
         let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
         let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
         Sample::raw(((c3 * fraction + c2) * fraction + c1) * fraction + c0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_at_uses_connected_feedback_without_reallocation() {
+        let mut delay = Delay::new(
+            SampleRate::new(10).unwrap(),
+            Duration::Samples(crate::time::Samples::new(1)),
+            Unit::ZERO,
+        )
+        .unwrap();
+        let capacity = delay.samples.capacity();
+
+        assert_eq!(
+            delay
+                .process_at(Sample::raw(1.0), None, Some(Sample::raw(0.5)))
+                .value(),
+            0.0
+        );
+        assert_eq!(
+            delay
+                .process_at(Sample::ZERO, None, Some(Sample::raw(0.5)))
+                .value(),
+            1.0
+        );
+        assert_eq!(
+            delay
+                .process_at(Sample::ZERO, None, Some(Sample::raw(0.0)))
+                .value(),
+            0.5
+        );
+        assert_eq!(delay.samples.capacity(), capacity);
     }
 }

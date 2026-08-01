@@ -256,25 +256,17 @@ pub enum ModuleKind {
     Freq,
     Gate,
     Degree,
-    DegreeGate,
-    Rate,
-    Transpose,
     Phase,
     Noise,
     Rise,
     Fall,
     Ramp,
-    Adsr,
     Envelope,
     Filter,
     Comb,
     Allpass,
     Delay,
     DelayTap,
-    Reverb,
-    Distortion,
-    Compressor,
-    Flanger,
     Probe,
     Multiply,
     Add,
@@ -285,10 +277,10 @@ pub enum ModuleKind {
     Minimum,
     Maximum,
     Damp,
-    VariableDelay,
     Slew,
     GreaterThan,
     LessThan,
+    Equal,
     Switch,
     Random,
     Sample,
@@ -327,6 +319,12 @@ pub struct PaletteModule {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PalettePreset {
+    Transpose,
+    Adsr,
+    Reverb,
+    Distortion,
+    Compressor,
+    Flanger,
     Tube,
     Tape,
     Fuzz,
@@ -337,6 +335,8 @@ enum PalettePreset {
     Triangle,
     Saw,
     ReverseSaw,
+    DegreeGate,
+    Attenuator,
 }
 
 impl PaletteModule {
@@ -368,16 +368,6 @@ enum ModuleBody {
     Freq,
     Gate,
     Degree,
-    DegreeGate {
-        degree: IntParam,
-    },
-    Rate {
-        time: TimeParam,
-    },
-    Transpose {
-        input: InputParam,
-        semitones: FloatParam,
-    },
     Phase {
         frequency: FloatParam,
     },
@@ -392,12 +382,6 @@ enum ModuleBody {
     Ramp {
         value: FloatParam,
         time: TimeParam,
-    },
-    Adsr {
-        rise: InputParam,
-        fall: InputParam,
-        attack: FloatParam,
-        sustain: FloatParam,
     },
     Envelope {
         phase: FloatParam,
@@ -417,36 +401,11 @@ enum ModuleBody {
     Delay {
         input: FloatParam,
         time: TimeParam,
+        feedback: FloatParam,
     },
     DelayTap {
         source: DelaySourceParam,
         gain: FloatParam,
-    },
-    Reverb {
-        input: FloatParam,
-        room: FloatParam,
-        damp: FloatParam,
-        mod_depth: FloatParam,
-        diffusion: FloatParam,
-    },
-    Distortion {
-        input: FloatParam,
-        drive: FloatParam,
-        asymmetry: FloatParam,
-    },
-    Compressor {
-        input: FloatParam,
-        threshold: FloatParam,
-        ratio: FloatParam,
-        attack: FloatParam,
-        release: FloatParam,
-        makeup: FloatParam,
-    },
-    Flanger {
-        input: FloatParam,
-        rate: FloatParam,
-        depth: FloatParam,
-        feedback: FloatParam,
     },
     Random {
         gate: InputParam,
@@ -495,13 +454,6 @@ struct FloatParam {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct IntParam {
-    value: i32,
-    min: i32,
-    max: i32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TimeParam {
     value: i32,
     unit: TimeUnit,
@@ -535,11 +487,6 @@ pub enum ParameterValue {
         min: i32,
         max: i32,
         step: i32,
-    },
-    Int {
-        value: i32,
-        min: i32,
-        max: i32,
     },
     Time {
         value: i32,
@@ -636,18 +583,6 @@ fn float_parameter(name: impl Into<String>, param: FloatParam) -> ModuleParamete
             step: param.step,
         },
         connected: param.connected,
-    }
-}
-
-fn int_parameter(name: &'static str, param: IntParam) -> ModuleParameter {
-    ModuleParameter {
-        name: name.to_string(),
-        value: ParameterValue::Int {
-            value: param.value,
-            min: param.min,
-            max: param.max,
-        },
-        connected: false,
     }
 }
 
@@ -781,10 +716,6 @@ fn float_param(min: i32, max: i32, step: i32, value: i32) -> FloatParam {
         step,
         connected: true,
     }
-}
-
-fn int_param(min: i32, max: i32, value: i32) -> IntParam {
-    IntParam { value, min, max }
 }
 
 fn time_param(value: i32, unit: TimeUnit) -> TimeParam {
@@ -960,29 +891,18 @@ impl ModuleKind {
             ModuleKind::Freq
             | ModuleKind::Gate
             | ModuleKind::Degree
-            | ModuleKind::DegreeGate
-            | ModuleKind::Rate
-            | ModuleKind::Transpose
             | ModuleKind::Phase
             | ModuleKind::Noise
             | ModuleKind::Random
             | ModuleKind::Sample => ModuleCategory::Source,
-            ModuleKind::Rise
-            | ModuleKind::Fall
-            | ModuleKind::Ramp
-            | ModuleKind::Adsr
-            | ModuleKind::Envelope => ModuleCategory::Shape,
+            ModuleKind::Rise | ModuleKind::Fall | ModuleKind::Ramp | ModuleKind::Envelope => {
+                ModuleCategory::Shape
+            }
             ModuleKind::Slew => ModuleCategory::Shape,
             ModuleKind::Filter | ModuleKind::Damp => ModuleCategory::Filter,
-            ModuleKind::Comb
-            | ModuleKind::Allpass
-            | ModuleKind::Delay
-            | ModuleKind::DelayTap
-            | ModuleKind::VariableDelay
-            | ModuleKind::Reverb
-            | ModuleKind::Distortion
-            | ModuleKind::Compressor
-            | ModuleKind::Flanger => ModuleCategory::Effect,
+            ModuleKind::Comb | ModuleKind::Allpass | ModuleKind::Delay | ModuleKind::DelayTap => {
+                ModuleCategory::Effect
+            }
             ModuleKind::Constant
             | ModuleKind::Absolute
             | ModuleKind::Sine
@@ -1000,6 +920,7 @@ impl ModuleKind {
             | ModuleKind::Maximum
             | ModuleKind::GreaterThan
             | ModuleKind::LessThan
+            | ModuleKind::Equal
             | ModuleKind::Switch
             | ModuleKind::Probe => ModuleCategory::Logic,
             ModuleKind::TurnRightDown
@@ -1028,25 +949,17 @@ impl ModuleKind {
             ModuleKind::Freq => "Freq",
             ModuleKind::Gate => "Gate",
             ModuleKind::Degree => "Degree",
-            ModuleKind::DegreeGate => "Degree Gate",
-            ModuleKind::Rate => "Rate",
-            ModuleKind::Transpose => "Transpose",
             ModuleKind::Phase => "Phase",
             ModuleKind::Noise => "Noise",
             ModuleKind::Rise => "Rise",
             ModuleKind::Fall => "Fall",
             ModuleKind::Ramp => "Ramp",
-            ModuleKind::Adsr => "ADSR",
             ModuleKind::Envelope => "Envelope",
             ModuleKind::Filter => "Filter",
             ModuleKind::Comb => "Comb",
             ModuleKind::Allpass => "Allpass",
             ModuleKind::Delay => "Delay",
             ModuleKind::DelayTap => "Delay Tap",
-            ModuleKind::Reverb => "Reverb",
-            ModuleKind::Distortion => "Distortion",
-            ModuleKind::Compressor => "Compressor",
-            ModuleKind::Flanger => "Flanger",
             ModuleKind::Probe => "Probe",
             ModuleKind::Multiply => "Mul",
             ModuleKind::Add => "Add",
@@ -1057,10 +970,10 @@ impl ModuleKind {
             ModuleKind::Minimum => "Minimum",
             ModuleKind::Maximum => "Maximum",
             ModuleKind::Damp => "Damp",
-            ModuleKind::VariableDelay => "Variable Delay",
             ModuleKind::Slew => "Slew",
             ModuleKind::GreaterThan => "GT",
             ModuleKind::LessThan => "LT",
+            ModuleKind::Equal => "Equal",
             ModuleKind::Switch => "Switch",
             ModuleKind::Random => "RNG",
             ModuleKind::Sample => "Sample",
@@ -1083,7 +996,11 @@ impl ModuleKind {
 
     fn default_body(self) -> ModuleBody {
         match self {
-            ModuleKind::Primitive => ModuleBody::Primitive(AudioModule::Pass),
+            ModuleKind::Primitive => ModuleBody::Primitive(AudioModule::Binary {
+                op: BinaryOp::Add,
+                a: AudioSample::ZERO,
+                b: AudioSample::ZERO,
+            }),
             ModuleKind::Constant => ModuleBody::Primitive(AudioModule::Constant(AudioSample::ZERO)),
             ModuleKind::Absolute => {
                 ModuleBody::Primitive(AudioModule::Unary(brainwash::patch::UnaryOp::Absolute))
@@ -1106,16 +1023,6 @@ impl ModuleKind {
             ModuleKind::Freq => ModuleBody::Freq,
             ModuleKind::Gate => ModuleBody::Gate,
             ModuleKind::Degree => ModuleBody::Degree,
-            ModuleKind::DegreeGate => ModuleBody::DegreeGate {
-                degree: int_param(0, 12, 0),
-            },
-            ModuleKind::Rate => ModuleBody::Rate {
-                time: time_param(100, TimeUnit::Seconds),
-            },
-            ModuleKind::Transpose => ModuleBody::Transpose {
-                input: input_param(),
-                semitones: float_param(-2400, 2400, 100, 0),
-            },
             ModuleKind::Phase => ModuleBody::Phase {
                 frequency: float_param(1, 200_000, 100, 44_000),
             },
@@ -1131,12 +1038,6 @@ impl ModuleKind {
             ModuleKind::Ramp => ModuleBody::Ramp {
                 value: float_param(-100_000, 100_000, 10, 0),
                 time: time_param(10, TimeUnit::Seconds),
-            },
-            ModuleKind::Adsr => ModuleBody::Adsr {
-                rise: input_param(),
-                fall: input_param(),
-                attack: float_param(0, 100, 5, 25),
-                sustain: float_param(0, 100, 5, 70),
             },
             ModuleKind::Envelope => ModuleBody::Envelope {
                 phase: float_param(0, 100, 1, 0),
@@ -1171,6 +1072,7 @@ impl ModuleKind {
             ModuleKind::Delay => ModuleBody::Delay {
                 input: float_param(-100, 100, 1, 0),
                 time: time_param(4410, TimeUnit::Samples),
+                feedback: float_param(0, 99, 1, 0),
             },
             ModuleKind::DelayTap => ModuleBody::DelayTap {
                 source: DelaySourceParam {
@@ -1178,32 +1080,6 @@ impl ModuleKind {
                     options: Vec::new(),
                 },
                 gain: float_param(0, 100, 5, 50),
-            },
-            ModuleKind::Reverb => ModuleBody::Reverb {
-                input: float_param(-100, 100, 1, 0),
-                room: float_param(0, 100, 5, 50),
-                damp: float_param(0, 100, 5, 30),
-                mod_depth: float_param(0, 100, 5, 50),
-                diffusion: float_param(0, 100, 5, 50),
-            },
-            ModuleKind::Distortion => ModuleBody::Distortion {
-                input: float_param(-100, 100, 1, 0),
-                drive: float_param(10, 2000, 10, 200),
-                asymmetry: float_param(-100, 100, 5, 0),
-            },
-            ModuleKind::Compressor => ModuleBody::Compressor {
-                input: float_param(-100, 100, 1, 0),
-                threshold: float_param(1, 100, 1, 50),
-                ratio: float_param(100, 2000, 50, 400),
-                attack: float_param(0, 50, 1, 1),
-                release: float_param(1, 200, 1, 30),
-                makeup: float_param(0, 400, 10, 100),
-            },
-            ModuleKind::Flanger => ModuleBody::Flanger {
-                input: float_param(-100, 100, 1, 0),
-                rate: float_param(10, 1000, 10, 50),
-                depth: float_param(0, 100, 5, 50),
-                feedback: float_param(0, 95, 5, 35),
             },
             ModuleKind::Multiply => ModuleBody::Primitive(AudioModule::Binary {
                 op: BinaryOp::Multiply,
@@ -1248,9 +1124,6 @@ impl ModuleKind {
             ModuleKind::Damp => ModuleBody::Primitive(AudioModule::Damp {
                 coefficient: Unit::new(0.5).unwrap(),
             }),
-            ModuleKind::VariableDelay => ModuleBody::Primitive(AudioModule::VariableDelay {
-                max_time: Duration::Seconds(Seconds::new(1.0).unwrap()),
-            }),
             ModuleKind::Slew => ModuleBody::Primitive(AudioModule::Slew {
                 rise: Seconds::new(0.01).unwrap(),
                 fall: Seconds::new(0.1).unwrap(),
@@ -1262,6 +1135,11 @@ impl ModuleKind {
             }),
             ModuleKind::LessThan => ModuleBody::Primitive(AudioModule::Binary {
                 op: BinaryOp::LessThan,
+                a: AudioSample::ZERO,
+                b: AudioSample::ZERO,
+            }),
+            ModuleKind::Equal => ModuleBody::Primitive(AudioModule::Binary {
+                op: BinaryOp::Equal,
                 a: AudioSample::ZERO,
                 b: AudioSample::ZERO,
             }),
@@ -1322,18 +1200,15 @@ impl ModuleKind {
             | ModuleKind::Power
             | ModuleKind::Remainder
             | ModuleKind::Minimum
-            | ModuleKind::Maximum => None,
-            ModuleKind::Damp | ModuleKind::VariableDelay | ModuleKind::Slew => None,
-            ModuleKind::Adsr => Some(SpecialEditor::Adsr),
+            | ModuleKind::Maximum
+            | ModuleKind::Equal => None,
+            ModuleKind::Damp | ModuleKind::Slew => None,
             ModuleKind::Envelope => Some(SpecialEditor::Envelope),
             ModuleKind::Probe => Some(SpecialEditor::Probe),
             ModuleKind::Sample => Some(SpecialEditor::Sample),
             ModuleKind::Freq
             | ModuleKind::Gate
             | ModuleKind::Degree
-            | ModuleKind::DegreeGate
-            | ModuleKind::Rate
-            | ModuleKind::Transpose
             | ModuleKind::Phase
             | ModuleKind::Noise
             | ModuleKind::Rise
@@ -1344,10 +1219,6 @@ impl ModuleKind {
             | ModuleKind::Allpass
             | ModuleKind::Delay
             | ModuleKind::DelayTap
-            | ModuleKind::Reverb
-            | ModuleKind::Distortion
-            | ModuleKind::Compressor
-            | ModuleKind::Flanger
             | ModuleKind::Multiply
             | ModuleKind::Add
             | ModuleKind::GreaterThan
@@ -1370,7 +1241,6 @@ impl ModuleKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SpecialEditor {
-    Adsr,
     Envelope,
     Probe,
     Sample,
@@ -1423,23 +1293,15 @@ impl ModuleBody {
             ModuleBody::Freq => ModuleKind::Freq,
             ModuleBody::Gate => ModuleKind::Gate,
             ModuleBody::Degree => ModuleKind::Degree,
-            ModuleBody::DegreeGate { .. } => ModuleKind::DegreeGate,
-            ModuleBody::Rate { .. } => ModuleKind::Rate,
-            ModuleBody::Transpose { .. } => ModuleKind::Transpose,
             ModuleBody::Phase { .. } => ModuleKind::Phase,
             ModuleBody::Rise { .. } => ModuleKind::Rise,
             ModuleBody::Fall { .. } => ModuleKind::Fall,
             ModuleBody::Ramp { .. } => ModuleKind::Ramp,
-            ModuleBody::Adsr { .. } => ModuleKind::Adsr,
             ModuleBody::Envelope { .. } => ModuleKind::Envelope,
             ModuleBody::Comb { .. } => ModuleKind::Comb,
             ModuleBody::Allpass { .. } => ModuleKind::Allpass,
             ModuleBody::Delay { .. } => ModuleKind::Delay,
             ModuleBody::DelayTap { .. } => ModuleKind::DelayTap,
-            ModuleBody::Reverb { .. } => ModuleKind::Reverb,
-            ModuleBody::Distortion { .. } => ModuleKind::Distortion,
-            ModuleBody::Compressor { .. } => ModuleKind::Compressor,
-            ModuleBody::Flanger { .. } => ModuleKind::Flanger,
             ModuleBody::Random { .. } => ModuleKind::Random,
             ModuleBody::Sample { .. } => ModuleKind::Sample,
             ModuleBody::Probe { .. } => ModuleKind::Probe,
@@ -1497,16 +1359,6 @@ impl ModuleBody {
                 "Damp",
                 float_param(0, 100, 1, (coefficient.value() * 100.0).round() as i32),
             )],
-            ModuleBody::Primitive(AudioModule::VariableDelay { max_time }) => {
-                let seconds = match max_time {
-                    Duration::Seconds(value) => value.value(),
-                    Duration::Samples(value) => value.value() as f32 / 44_100.0,
-                };
-                vec![float_parameter(
-                    "Max",
-                    float_param(1, 1000, 1, (seconds * 100.0).round() as i32),
-                )]
-            }
             ModuleBody::Primitive(AudioModule::Slew { rise, fall }) => vec![
                 float_parameter(
                     "Rise",
@@ -1519,12 +1371,6 @@ impl ModuleBody {
             ],
             ModuleBody::Primitive(_) => Vec::new(),
             ModuleBody::Freq | ModuleBody::Gate | ModuleBody::Degree => Vec::new(),
-            ModuleBody::DegreeGate { degree } => vec![int_parameter("Deg", *degree)],
-            ModuleBody::Rate { time } => vec![time_parameter("Time", *time)],
-            ModuleBody::Transpose { input, semitones } => vec![
-                input_parameter("In", *input),
-                float_parameter("St", *semitones),
-            ],
             ModuleBody::Phase { frequency } => vec![float_parameter("Hz", *frequency)],
             ModuleBody::Rise { gate, time } | ModuleBody::Fall { gate, time } => {
                 vec![
@@ -1538,17 +1384,6 @@ impl ModuleBody {
                     time_parameter("Time", *time),
                 ]
             }
-            ModuleBody::Adsr {
-                rise,
-                fall,
-                attack,
-                sustain,
-            } => vec![
-                input_parameter("Rise", *rise),
-                input_parameter("Fall", *fall),
-                float_parameter("Atk", *attack),
-                float_parameter("Sus", *sustain),
-            ],
             ModuleBody::Envelope { phase, .. } => vec![float_parameter("Phase", *phase)],
             ModuleBody::Comb {
                 input,
@@ -1570,60 +1405,18 @@ impl ModuleBody {
                 time_parameter("Time", *time),
                 float_parameter("Fdbk", *feedback),
             ],
-            ModuleBody::Delay { input, time } => {
-                vec![float_parameter("In", *input), time_parameter("Time", *time)]
-            }
+            ModuleBody::Delay {
+                input,
+                time,
+                feedback,
+            } => vec![
+                float_parameter("Fdbk", *feedback),
+                time_parameter("Time", *time),
+                float_parameter("In", *input),
+            ],
             ModuleBody::DelayTap { source, gain } => vec![
                 delay_source_parameter("Src", source),
                 float_parameter("Gain", *gain),
-            ],
-            ModuleBody::Reverb {
-                input,
-                room,
-                damp,
-                mod_depth,
-                diffusion,
-            } => vec![
-                float_parameter("In", *input),
-                float_parameter("Room", *room),
-                float_parameter("Damp", *damp),
-                float_parameter("Mod", *mod_depth),
-                float_parameter("Diff", *diffusion),
-            ],
-            ModuleBody::Distortion {
-                input,
-                drive,
-                asymmetry,
-            } => vec![
-                float_parameter("In", *input),
-                float_parameter("Drive", *drive),
-                float_parameter("Asym", *asymmetry),
-            ],
-            ModuleBody::Compressor {
-                input,
-                threshold,
-                ratio,
-                attack,
-                release,
-                makeup,
-            } => vec![
-                float_parameter("In", *input),
-                float_parameter("Thresh", *threshold),
-                float_parameter("Ratio", *ratio),
-                float_parameter("Atk", *attack),
-                float_parameter("Rel", *release),
-                float_parameter("Gain", *makeup),
-            ],
-            ModuleBody::Flanger {
-                input,
-                rate,
-                depth,
-                feedback,
-            } => vec![
-                float_parameter("In", *input),
-                float_parameter("Rate", *rate),
-                float_parameter("Depth", *depth),
-                float_parameter("Fdbk", *feedback),
             ],
             ModuleBody::Random { gate } => vec![input_parameter("Gate", *gate)],
             ModuleBody::Sample {
@@ -1711,23 +1504,12 @@ impl ModuleBody {
     fn audio_inputs(&self) -> &'static [AudioInputKind] {
         match self {
             ModuleBody::Primitive(_) => &[],
-            ModuleBody::Freq
-            | ModuleBody::Gate
-            | ModuleBody::Degree
-            | ModuleBody::DegreeGate { .. } => &[],
-            ModuleBody::Rate { .. } => &[],
-            ModuleBody::Transpose { .. } => &[AudioInputKind::In, AudioInputKind::Semitones],
+            ModuleBody::Freq | ModuleBody::Gate | ModuleBody::Degree => &[],
             ModuleBody::Phase { .. } => &[AudioInputKind::Freq],
             ModuleBody::Rise { .. } | ModuleBody::Fall { .. } => {
                 &[AudioInputKind::Gate, AudioInputKind::Time]
             }
             ModuleBody::Ramp { .. } => &[AudioInputKind::Value, AudioInputKind::Time],
-            ModuleBody::Adsr { .. } => &[
-                AudioInputKind::Rise,
-                AudioInputKind::Fall,
-                AudioInputKind::Attack,
-                AudioInputKind::Sustain,
-            ],
             ModuleBody::Envelope { .. } => &[AudioInputKind::Phase],
             ModuleBody::Comb { .. } => &[
                 AudioInputKind::In,
@@ -1740,34 +1522,12 @@ impl ModuleBody {
                 AudioInputKind::Time,
                 AudioInputKind::Feedback,
             ],
-            ModuleBody::Delay { .. } => &[AudioInputKind::Time, AudioInputKind::In],
-            ModuleBody::DelayTap { .. } => &[],
-            ModuleBody::Reverb { .. } => &[
-                AudioInputKind::In,
-                AudioInputKind::Room,
-                AudioInputKind::Damp,
-                AudioInputKind::Mod,
-                AudioInputKind::Diff,
-            ],
-            ModuleBody::Distortion { .. } => &[
-                AudioInputKind::In,
-                AudioInputKind::Drive,
-                AudioInputKind::Asym,
-            ],
-            ModuleBody::Compressor { .. } => &[
-                AudioInputKind::In,
-                AudioInputKind::Thresh,
-                AudioInputKind::Ratio,
-                AudioInputKind::Attack,
-                AudioInputKind::Release,
-                AudioInputKind::Gain,
-            ],
-            ModuleBody::Flanger { .. } => &[
-                AudioInputKind::In,
-                AudioInputKind::Rate,
-                AudioInputKind::Depth,
+            ModuleBody::Delay { .. } => &[
                 AudioInputKind::Feedback,
+                AudioInputKind::Time,
+                AudioInputKind::In,
             ],
+            ModuleBody::DelayTap { .. } => &[],
             ModuleBody::Random { .. } => &[AudioInputKind::Gate],
             ModuleBody::Sample { .. } => &[AudioInputKind::Position],
             ModuleBody::Probe { .. } => &[AudioInputKind::In],
@@ -1885,21 +1645,6 @@ impl ModuleBody {
                 *coefficient = next;
                 changed
             }
-            ModuleBody::Primitive(AudioModule::VariableDelay { max_time }) => {
-                let ParameterValue::Float { value, .. } = parameter.value else {
-                    return false;
-                };
-                if index != 0 {
-                    return false;
-                }
-                let Some(seconds) = Seconds::new(value as f32 / 100.0) else {
-                    return false;
-                };
-                let next = Duration::Seconds(seconds);
-                let changed = *max_time != next;
-                *max_time = next;
-                changed
-            }
             ModuleBody::Primitive(AudioModule::Slew { rise, fall }) => {
                 let ParameterValue::Float { value, .. } = parameter.value else {
                     return false;
@@ -1917,12 +1662,6 @@ impl ModuleBody {
                 changed
             }
             ModuleBody::Primitive(_) => false,
-            ModuleBody::DegreeGate { degree } => set_int_param(degree, index, 0, &parameter),
-            ModuleBody::Rate { time } => set_time_param(time, index, 0, &parameter),
-            ModuleBody::Transpose { input, semitones } => {
-                set_input_param(input, index, 0, &parameter)
-                    || set_float_param(semitones, index, 1, &parameter)
-            }
             ModuleBody::Phase { frequency } => set_float_param(frequency, index, 0, &parameter),
             ModuleBody::Rise { gate, time } | ModuleBody::Fall { gate, time } => {
                 set_input_param(gate, index, 0, &parameter)
@@ -1931,17 +1670,6 @@ impl ModuleBody {
             ModuleBody::Ramp { value, time } => {
                 set_float_param(value, index, 0, &parameter)
                     || set_time_param(time, index, 1, &parameter)
-            }
-            ModuleBody::Adsr {
-                rise,
-                fall,
-                attack,
-                sustain,
-            } => {
-                set_input_param(rise, index, 0, &parameter)
-                    || set_input_param(fall, index, 1, &parameter)
-                    || set_float_param(attack, index, 2, &parameter)
-                    || set_float_param(sustain, index, 3, &parameter)
             }
             ModuleBody::Envelope { phase, .. } => set_float_param(phase, index, 0, &parameter),
             ModuleBody::Comb {
@@ -1964,61 +1692,18 @@ impl ModuleBody {
                     || set_time_param(time, index, 1, &parameter)
                     || set_float_param(feedback, index, 2, &parameter)
             }
-            ModuleBody::Delay { input, time } => {
-                set_float_param(input, index, 0, &parameter)
+            ModuleBody::Delay {
+                input,
+                time,
+                feedback,
+            } => {
+                set_float_param(feedback, index, 0, &parameter)
                     || set_time_param(time, index, 1, &parameter)
+                    || set_float_param(input, index, 2, &parameter)
             }
             ModuleBody::DelayTap { source, gain } => {
                 set_delay_source_param(source, index, 0, &parameter)
                     || set_float_param(gain, index, 1, &parameter)
-            }
-            ModuleBody::Reverb {
-                input,
-                room,
-                damp,
-                mod_depth,
-                diffusion,
-            } => {
-                set_float_param(input, index, 0, &parameter)
-                    || set_float_param(room, index, 1, &parameter)
-                    || set_float_param(damp, index, 2, &parameter)
-                    || set_float_param(mod_depth, index, 3, &parameter)
-                    || set_float_param(diffusion, index, 4, &parameter)
-            }
-            ModuleBody::Distortion {
-                input,
-                drive,
-                asymmetry,
-            } => {
-                set_float_param(input, index, 0, &parameter)
-                    || set_float_param(drive, index, 1, &parameter)
-                    || set_float_param(asymmetry, index, 2, &parameter)
-            }
-            ModuleBody::Compressor {
-                input,
-                threshold,
-                ratio,
-                attack,
-                release,
-                makeup,
-            } => {
-                set_float_param(input, index, 0, &parameter)
-                    || set_float_param(threshold, index, 1, &parameter)
-                    || set_float_param(ratio, index, 2, &parameter)
-                    || set_float_param(attack, index, 3, &parameter)
-                    || set_float_param(release, index, 4, &parameter)
-                    || set_float_param(makeup, index, 5, &parameter)
-            }
-            ModuleBody::Flanger {
-                input,
-                rate,
-                depth,
-                feedback,
-            } => {
-                set_float_param(input, index, 0, &parameter)
-                    || set_float_param(rate, index, 1, &parameter)
-                    || set_float_param(depth, index, 2, &parameter)
-                    || set_float_param(feedback, index, 3, &parameter)
             }
             ModuleBody::Random { gate } => set_input_param(gate, index, 0, &parameter),
             ModuleBody::Sample { position, .. } => set_input_param(position, index, 1, &parameter),
@@ -2093,22 +1778,6 @@ fn set_float_param(
         step: target.step,
         connected: parameter.connected,
     };
-    true
-}
-
-fn set_int_param(
-    target: &mut IntParam,
-    index: usize,
-    expected: usize,
-    parameter: &ModuleParameter,
-) -> bool {
-    if index != expected {
-        return false;
-    }
-    let ParameterValue::Int { value, .. } = &parameter.value else {
-        return false;
-    };
-    target.value = (*value).clamp(target.min, target.max);
     true
 }
 
@@ -2421,7 +2090,6 @@ impl ParameterValue {
     pub fn label(&self) -> String {
         match self {
             ParameterValue::Float { value, .. } => format!("{:.2}", *value as f32 / 100.0),
-            ParameterValue::Int { value, .. } => value.to_string(),
             ParameterValue::Time { value, unit } => match unit {
                 TimeUnit::Seconds => format!("{:.2}s", *value as f32 / 100.0),
                 TimeUnit::Samples => format!("{value} smp"),
@@ -2479,7 +2147,6 @@ impl ParameterValue {
                 numerator,
                 denominator,
             } => format!("{}/{}", numerator.max(&1), denominator.max(&1)),
-            ParameterValue::Int { value, .. } => value.to_string(),
             ParameterValue::Input => String::new(),
             ParameterValue::File { path, .. } => path.clone(),
             ParameterValue::Enum { index, options } => {
@@ -2498,17 +2165,6 @@ impl ParameterValue {
                 step,
             } => {
                 let delta = *step * if fast { 10 } else { 1 } * step_scale;
-                let next = if up {
-                    (*value + delta).min(*max)
-                } else {
-                    (*value - delta).max(*min)
-                };
-                let changed = next != *value;
-                *value = next;
-                changed
-            }
-            ParameterValue::Int { value, min, max } => {
-                let delta = if fast { 10 } else { 1 };
                 let next = if up {
                     (*value + delta).min(*max)
                 } else {
@@ -2788,6 +2444,12 @@ fn surface_extent(surface: &PatchSurface) -> (u16, u16) {
 fn module_footprint(module: &Module, composition_ports: Option<(u16, u16)>) -> (u16, u16) {
     if module.kind().is_routing() {
         return (1, 1);
+    }
+    if module.kind() == ModuleKind::Delay {
+        return match module.orientation {
+            Orientation::Right => (1, 2),
+            Orientation::Down => (2, 1),
+        };
     }
     let (inputs, outputs) =
         composition_ports.unwrap_or_else(|| (module.input_count(), module.output_count()));
@@ -3168,11 +2830,16 @@ impl GuiState {
         if category == ModuleCategory::Effect {
             modules.extend(
                 [
+                    ("Reverb", PalettePreset::Reverb),
+                    ("Distortion", PalettePreset::Distortion),
+                    ("Compressor", PalettePreset::Compressor),
+                    ("Flanger", PalettePreset::Flanger),
                     ("Tube", PalettePreset::Tube),
                     ("Tape", PalettePreset::Tape),
                     ("Fuzz", PalettePreset::Fuzz),
                     ("Fold", PalettePreset::Fold),
                     ("Clip", PalettePreset::Clip),
+                    ("Attenuator", PalettePreset::Attenuator),
                 ]
                 .map(|(name, preset)| PaletteModule {
                     kind: ModuleKind::Composition,
@@ -3183,9 +2850,23 @@ impl GuiState {
                 }),
             );
         }
+        if category == ModuleCategory::Shape {
+            modules.insert(
+                3,
+                PaletteModule {
+                    kind: ModuleKind::Composition,
+                    name: "ADSR".to_string(),
+                    user: None,
+                    preset: Some(PalettePreset::Adsr),
+                    category: ModuleCategory::Shape,
+                },
+            );
+        }
         if category == ModuleCategory::Source {
             modules.extend(
                 [
+                    ("Transpose", PalettePreset::Transpose),
+                    ("Degree Gate", PalettePreset::DegreeGate),
                     ("Sine Oscillator", PalettePreset::Sine),
                     ("Square Oscillator", PalettePreset::Square),
                     ("Triangle Oscillator", PalettePreset::Triangle),
@@ -3358,6 +3039,13 @@ impl GuiState {
         if module.kind().is_routing() {
             return 1;
         }
+        if module.kind() == ModuleKind::Delay {
+            return if module.orientation == Orientation::Right {
+                1
+            } else {
+                2
+            };
+        }
         match module.orientation {
             Orientation::Right => 1,
             Orientation::Down => self
@@ -3370,6 +3058,13 @@ impl GuiState {
     fn module_height(&self, module: &Module) -> u16 {
         if module.kind().is_routing() {
             return 1;
+        }
+        if module.kind() == ModuleKind::Delay {
+            return if module.orientation == Orientation::Right {
+                2
+            } else {
+                1
+            };
         }
         match module.orientation {
             Orientation::Right => self
@@ -3447,6 +3142,9 @@ impl GuiState {
         if module.is_composition() {
             return module.orientation == Orientation::Down;
         }
+        if module.kind() == ModuleKind::Delay {
+            return true;
+        }
         module.has_input_top()
     }
 
@@ -3456,6 +3154,9 @@ impl GuiState {
         }
         if module.is_composition() {
             return module.orientation == Orientation::Right;
+        }
+        if module.kind() == ModuleKind::Delay {
+            return true;
         }
         module.has_input_left()
     }
@@ -3485,6 +3186,14 @@ impl GuiState {
             return None;
         }
         match module.kind() {
+            ModuleKind::Delay => match module.orientation {
+                Orientation::Right => match input {
+                    1 => Some(0),
+                    2 => Some(1),
+                    _ => None,
+                },
+                Orientation::Down => (input == 0).then_some(0),
+            },
             ModuleKind::RightJoin | ModuleKind::DownJoin => (input == 0).then_some(0),
             ModuleKind::LeftSplit | ModuleKind::TurnRightDown => (input == 0).then_some(0),
             _ => (input < self.module_input_count(module) as usize).then_some(input as u16),
@@ -3496,6 +3205,14 @@ impl GuiState {
             return None;
         }
         match module.kind() {
+            ModuleKind::Delay => match module.orientation {
+                Orientation::Right => (input == 0).then_some(0),
+                Orientation::Down => match input {
+                    1 => Some(0),
+                    2 => Some(1),
+                    _ => None,
+                },
+            },
             ModuleKind::RightJoin | ModuleKind::DownJoin => (input == 1).then_some(0),
             ModuleKind::TopSplit | ModuleKind::TurnDownRight => (input == 0).then_some(0),
             _ => (input < self.module_input_count(module) as usize).then_some(input as u16),
@@ -4202,6 +3919,31 @@ impl GuiState {
         let graph = choice
             .preset
             .map(|preset| match preset {
+                PalettePreset::Transpose => brainwash::preset::transpose(Sample::ZERO),
+                PalettePreset::Adsr => {
+                    brainwash::preset::adsr(Unit::new(0.25).unwrap(), Unit::new(0.7).unwrap())
+                }
+                PalettePreset::Reverb => brainwash::preset::reverb(
+                    Unit::new(0.5).unwrap(),
+                    Unit::new(0.3).unwrap(),
+                    Unit::new(0.5).unwrap(),
+                    Unit::new(0.5).unwrap(),
+                ),
+                PalettePreset::Distortion => {
+                    brainwash::preset::distortion(Sample::new(2.0).unwrap(), Sample::ZERO)
+                }
+                PalettePreset::Compressor => brainwash::preset::compressor(
+                    Unit::new(0.5).unwrap(),
+                    CompressorRatio::new(4.0).unwrap(),
+                    Seconds::new(0.01).unwrap(),
+                    Seconds::new(0.3).unwrap(),
+                    Gain::new(1.0).unwrap(),
+                ),
+                PalettePreset::Flanger => brainwash::preset::flanger(
+                    Hertz::new(0.5).unwrap(),
+                    Unit::new(0.5).unwrap(),
+                    Unit::new(0.35).unwrap(),
+                ),
                 PalettePreset::Tube => brainwash::preset::tube(),
                 PalettePreset::Tape => brainwash::preset::tape(),
                 PalettePreset::Fuzz => brainwash::preset::fuzz(),
@@ -4222,6 +3964,8 @@ impl GuiState {
                 PalettePreset::ReverseSaw => {
                     brainwash::preset::reverse_saw(Hertz::new(440.0).unwrap(), Unit::ONE, false)
                 }
+                PalettePreset::DegreeGate => brainwash::preset::degree_gate(0),
+                PalettePreset::Attenuator => brainwash::preset::attenuator(Unit::ONE),
             })
             .and_then(|module| match module {
                 AudioModule::Composition(graph) => Some(*graph),
@@ -4295,6 +4039,15 @@ impl GuiState {
 mod tests {
     use super::*;
 
+    fn insert_preset(state: &mut GuiState, label: &str) {
+        let choice = ModuleCategory::ALL
+            .into_iter()
+            .flat_map(|category| state.palette_modules_for(category))
+            .find(|choice| choice.label() == label)
+            .unwrap();
+        state.insert_palette_module(choice);
+    }
+
     #[test]
     fn every_gui_module_kind_has_audio_mapping() {
         let rate = SampleRate::new(44_100).unwrap();
@@ -4310,6 +4063,34 @@ mod tests {
                 disabled: false,
             };
             assert!(audio_module(&module, rate, 120).is_ok(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn compound_palette_choices_are_compositions() {
+        for label in [
+            "Transpose",
+            "ADSR",
+            "Reverb",
+            "Distortion",
+            "Compressor",
+            "Flanger",
+        ] {
+            let mut state = GuiState::default();
+            insert_preset(&mut state, label);
+            assert_eq!(
+                state.modules().len(),
+                1,
+                "{label}: {}",
+                state.document_status()
+            );
+            assert_eq!(
+                state.modules()[0].kind(),
+                ModuleKind::Composition,
+                "{label}"
+            );
+            assert_eq!(state.modules()[0].label(), label);
+            assert!(state.modules()[0].composition_surface().is_some());
         }
     }
 
@@ -4374,14 +4155,8 @@ mod tests {
 
     #[test]
     fn outputs_use_the_last_occupied_cell_in_both_orientations() {
-        let mut state = GuiState::new(8, 8);
-        state.instrument_mut().root.modules.push(Module {
-            id: ModuleId::new(1),
-            position: GridPos::new(0, 0),
-            orientation: Orientation::Right,
-            body: ModuleKind::Adsr.default_body(),
-            disabled: false,
-        });
+        let mut state = GuiState::default();
+        insert_preset(&mut state, "ADSR");
         state.instrument_mut().root.modules.push(Module {
             id: ModuleId::new(2),
             position: GridPos::new(2, 3),
@@ -4395,18 +4170,13 @@ mod tests {
         assert_eq!(source.right_output_offsets, vec![Some(3)]);
         assert_eq!(
             state.module_at(GridPos::new(0, 3)).unwrap().id,
-            ModuleId::new(1)
+            source.module.id
         );
         assert_eq!(state.connections().len(), 1);
 
         state.instrument_mut().root.modules.clear();
-        state.instrument_mut().root.modules.push(Module {
-            id: ModuleId::new(1),
-            position: GridPos::new(0, 0),
-            orientation: Orientation::Down,
-            body: ModuleKind::Adsr.default_body(),
-            disabled: false,
-        });
+        insert_preset(&mut state, "ADSR");
+        state.instrument_mut().root.modules[0].orientation = Orientation::Down;
         state.instrument_mut().root.modules.push(Module {
             id: ModuleId::new(2),
             position: GridPos::new(3, 2),
@@ -4420,9 +4190,63 @@ mod tests {
         assert_eq!(source.bottom_output_offsets, vec![Some(3)]);
         assert_eq!(
             state.module_at(GridPos::new(3, 0)).unwrap().id,
-            ModuleId::new(1)
+            source.module.id
         );
         assert_eq!(state.connections().len(), 1);
+    }
+
+    #[test]
+    fn delay_uses_two_leading_signal_ports_and_a_perpendicular_feedback_port() {
+        let mut state = GuiState::new(8, 8);
+        state.instrument_mut().root.modules.push(Module {
+            id: ModuleId::new(0),
+            position: GridPos::new(2, 2),
+            orientation: Orientation::Right,
+            body: ModuleKind::Delay.default_body(),
+            disabled: false,
+        });
+        let delay = &state.modules()[0];
+        assert_eq!(
+            (state.module_width(delay), state.module_height(delay)),
+            (1, 2)
+        );
+        assert_eq!(state.top_input_offset(delay, 0), Some(0));
+        assert_eq!(state.left_input_offset(delay, 1), Some(0));
+        assert_eq!(state.left_input_offset(delay, 2), Some(1));
+        assert_eq!(state.right_output_offset(delay, 0), Some(1));
+
+        state.instrument_mut().root.modules[0].orientation = Orientation::Down;
+        let delay = &state.modules()[0];
+        assert_eq!(
+            (state.module_width(delay), state.module_height(delay)),
+            (2, 1)
+        );
+        assert_eq!(state.left_input_offset(delay, 0), Some(0));
+        assert_eq!(state.top_input_offset(delay, 1), Some(0));
+        assert_eq!(state.top_input_offset(delay, 2), Some(1));
+        assert_eq!(state.bottom_output_offset(delay, 0), Some(1));
+    }
+
+    #[test]
+    fn vertical_signal_search_never_travels_up() {
+        let mut state = GuiState::new(8, 8);
+        state.instrument_mut().root.modules.extend([
+            Module {
+                id: ModuleId::new(0),
+                position: GridPos::new(0, 2),
+                orientation: Orientation::Down,
+                body: ModuleKind::Phase.default_body(),
+                disabled: false,
+            },
+            Module {
+                id: ModuleId::new(1),
+                position: GridPos::new(0, 0),
+                orientation: Orientation::Down,
+                body: ModuleKind::Output.default_body(),
+                disabled: false,
+            },
+        ]);
+        assert!(state.connections().is_empty());
     }
 
     #[test]
@@ -4547,7 +4371,7 @@ mod tests {
                 id: ModuleId::new(3),
                 position: GridPos::new(1, 0),
                 orientation: Orientation::Right,
-                body: ModuleKind::DegreeGate.default_body(),
+                body: ModuleKind::Degree.default_body(),
                 disabled: false,
             },
             Module {
@@ -4591,10 +4415,10 @@ mod tests {
                     | ModuleKind::Add
                     | ModuleKind::GreaterThan
                     | ModuleKind::LessThan
+                    | ModuleKind::Equal
                     | ModuleKind::Switch
                     | ModuleKind::Filter
                     | ModuleKind::Damp
-                    | ModuleKind::VariableDelay
                     | ModuleKind::Slew
                     | ModuleKind::Noise
             ) {
@@ -4656,15 +4480,9 @@ mod tests {
 
     #[test]
     fn pointer_module_drag_uses_original_module_position() {
-        let mut state = GuiState::new(8, 8);
-        let module = Module {
-            id: ModuleId::new(0),
-            position: GridPos::new(1, 1),
-            orientation: Orientation::Right,
-            body: ModuleKind::Adsr.default_body(),
-            disabled: false,
-        };
-        state.instrument_mut().surface_mut().modules.push(module);
+        let mut state = GuiState::default();
+        state.instrument_mut().surface_mut().cursor = GridPos::new(1, 1);
+        insert_preset(&mut state, "ADSR");
 
         state.drag_grid_cell(GridPointerPhase::Start, GridPos::new(1, 2));
         state.drag_grid_cell(GridPointerPhase::Drag, GridPos::new(3, 3));
@@ -4822,7 +4640,7 @@ mod tests {
     #[test]
     fn complex_builtin_opens_as_an_owned_surface() {
         let mut state = GuiState::default();
-        state.insert_at_cursor(ModuleKind::Compressor, None);
+        insert_preset(&mut state, "Compressor");
         let undo = state.undo.len();
 
         state.apply(GuiAction::EditComposition);
@@ -4844,7 +4662,7 @@ mod tests {
     #[test]
     fn reverb_projection_stays_bounded() {
         let mut state = GuiState::default();
-        state.insert_at_cursor(ModuleKind::Reverb, None);
+        insert_preset(&mut state, "Reverb");
         let surface = state.modules()[0].composition_surface().unwrap();
         assert_eq!(state.grid_size(), (32, 24));
         assert!(surface.modules.len() < 30);
@@ -4871,7 +4689,7 @@ mod tests {
         }
 
         let mut state = GuiState::default();
-        state.insert_at_cursor(ModuleKind::Reverb, None);
+        insert_preset(&mut state, "Reverb");
         check(state.modules()[0].composition_surface().unwrap());
     }
 
@@ -5007,7 +4825,7 @@ mod tests {
     #[test]
     fn every_nested_reverb_composition_can_be_opened() {
         let mut state = GuiState::default();
-        state.insert_at_cursor(ModuleKind::Reverb, None);
+        insert_preset(&mut state, "Reverb");
         state.apply(GuiAction::EditComposition);
 
         let diffuser = state
@@ -5117,7 +4935,7 @@ mod tests {
     #[test]
     fn pointer_can_mutate_a_builtin_composition() {
         let mut state = GuiState::default();
-        state.insert_at_cursor(ModuleKind::Compressor, None);
+        insert_preset(&mut state, "Compressor");
         state.apply(GuiAction::EditComposition);
         let module = &state.modules()[0];
         let id = module.id;
@@ -5207,13 +5025,10 @@ impl ModuleKind {
             | ModuleKind::Remainder
             | ModuleKind::Minimum
             | ModuleKind::Maximum => self.default_body().input_count(),
-            ModuleKind::Damp | ModuleKind::VariableDelay | ModuleKind::Slew => {
-                self.default_body().input_count()
-            }
+            ModuleKind::Damp | ModuleKind::Slew => self.default_body().input_count(),
             ModuleKind::Freq
             | ModuleKind::Gate
             | ModuleKind::Degree
-            | ModuleKind::Rate
             | ModuleKind::Noise
             | ModuleKind::Random
             | ModuleKind::Sample
@@ -5223,28 +5038,22 @@ impl ModuleKind {
             | ModuleKind::TurnDownRight
             | ModuleKind::LeftSplit
             | ModuleKind::TopSplit => 1,
-            ModuleKind::DegreeGate
-            | ModuleKind::Transpose
-            | ModuleKind::Phase
+            ModuleKind::Phase
             | ModuleKind::Rise
             | ModuleKind::Fall
             | ModuleKind::Ramp
-            | ModuleKind::Adsr
             | ModuleKind::Envelope
             | ModuleKind::Filter
             | ModuleKind::Comb
             | ModuleKind::Allpass
             | ModuleKind::Delay
             | ModuleKind::DelayTap
-            | ModuleKind::Reverb
-            | ModuleKind::Distortion
-            | ModuleKind::Compressor
-            | ModuleKind::Flanger
             | ModuleKind::Probe
             | ModuleKind::Multiply
             | ModuleKind::Add
             | ModuleKind::GreaterThan
             | ModuleKind::LessThan
+            | ModuleKind::Equal
             | ModuleKind::Switch
             | ModuleKind::Output
             | ModuleKind::CompositionOutput
@@ -5268,32 +5077,23 @@ impl ModuleKind {
             | ModuleKind::Remainder
             | ModuleKind::Minimum
             | ModuleKind::Maximum => 1,
-            ModuleKind::Damp | ModuleKind::VariableDelay | ModuleKind::Slew | ModuleKind::Noise => {
-                1
-            }
+            ModuleKind::Equal => 1,
+            ModuleKind::Damp | ModuleKind::Slew | ModuleKind::Noise => 1,
             ModuleKind::Output | ModuleKind::CompositionOutput => 0,
             ModuleKind::Filter => 2,
             ModuleKind::LeftSplit | ModuleKind::TopSplit => 2,
             ModuleKind::Freq
             | ModuleKind::Gate
             | ModuleKind::Degree
-            | ModuleKind::DegreeGate
-            | ModuleKind::Rate
-            | ModuleKind::Transpose
             | ModuleKind::Phase
             | ModuleKind::Rise
             | ModuleKind::Fall
             | ModuleKind::Ramp
-            | ModuleKind::Adsr
             | ModuleKind::Envelope
             | ModuleKind::Comb
             | ModuleKind::Allpass
             | ModuleKind::Delay
             | ModuleKind::DelayTap
-            | ModuleKind::Reverb
-            | ModuleKind::Distortion
-            | ModuleKind::Compressor
-            | ModuleKind::Flanger
             | ModuleKind::Probe
             | ModuleKind::Multiply
             | ModuleKind::Add
@@ -5351,10 +5151,7 @@ fn typed_parameter_value(current: &ParameterValue, text: &str) -> Option<Paramet
             let value = text.trim();
             (!value.is_empty()).then(|| ParameterValue::Text(value.to_string()))
         }
-        ParameterValue::Int { .. }
-        | ParameterValue::Input
-        | ParameterValue::File { .. }
-        | ParameterValue::Enum { .. } => None,
+        ParameterValue::Input | ParameterValue::File { .. } | ParameterValue::Enum { .. } => None,
     }
 }
 
@@ -5404,20 +5201,12 @@ pub fn all_modules() -> &'static [ModuleKind] {
         ModuleKind::Freq,
         ModuleKind::Gate,
         ModuleKind::Degree,
-        ModuleKind::DegreeGate,
-        ModuleKind::Rate,
-        ModuleKind::Transpose,
-        ModuleKind::Adsr,
         ModuleKind::Envelope,
         ModuleKind::Rise,
         ModuleKind::Fall,
         ModuleKind::Ramp,
         ModuleKind::Filter,
         ModuleKind::Delay,
-        ModuleKind::Reverb,
-        ModuleKind::Distortion,
-        ModuleKind::Compressor,
-        ModuleKind::Flanger,
         ModuleKind::Constant,
         ModuleKind::Absolute,
         ModuleKind::Sine,
@@ -5425,8 +5214,8 @@ pub fn all_modules() -> &'static [ModuleKind] {
         ModuleKind::Atan,
         ModuleKind::Exp,
         ModuleKind::Sign,
+        ModuleKind::Equal,
         ModuleKind::Damp,
-        ModuleKind::VariableDelay,
         ModuleKind::Slew,
         ModuleKind::Add,
         ModuleKind::Multiply,

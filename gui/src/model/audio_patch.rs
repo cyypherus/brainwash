@@ -385,7 +385,7 @@ pub(super) fn output_voice_mode(
 fn module_uses_voice_controls(kind: ModuleKind) -> bool {
     matches!(
         kind,
-        ModuleKind::Freq | ModuleKind::Gate | ModuleKind::Degree | ModuleKind::DegreeGate
+        ModuleKind::Freq | ModuleKind::Gate | ModuleKind::Degree
     )
 }
 
@@ -560,20 +560,13 @@ pub(super) fn audio_module(
         | ModuleKind::Add
         | ModuleKind::GreaterThan
         | ModuleKind::LessThan
+        | ModuleKind::Equal
         | ModuleKind::Switch
         | ModuleKind::Filter => unreachable!(),
-        ModuleKind::Damp | ModuleKind::VariableDelay | ModuleKind::Slew => unreachable!(),
+        ModuleKind::Damp | ModuleKind::Slew => unreachable!(),
         ModuleKind::Freq => Ok(AudioModule::Freq),
         ModuleKind::Gate => Ok(AudioModule::Gate),
         ModuleKind::Degree => Ok(AudioModule::Degree),
-        ModuleKind::DegreeGate => Ok(AudioModule::DegreeGate {
-            target: audio_int(module, 0)?,
-        }),
-        ModuleKind::Rate => Ok(AudioModule::Constant(
-            AudioSample::new(audio_rate(module, 0, rate, bpm)?)
-                .ok_or(AudioPatchError::InvalidParameter)?,
-        )),
-        ModuleKind::Transpose => Ok(brainwash::preset::transpose(audio_sample(module, 1)?)),
         ModuleKind::Phase => Ok(AudioModule::Phase {
             frequency: Hertz::new(audio_float(module, 0)?)
                 .ok_or(AudioPatchError::InvalidParameter)?,
@@ -589,10 +582,6 @@ pub(super) fn audio_module(
             value: audio_sample(module, 0)?,
             time: audio_duration(module, 1, rate, bpm)?,
         }),
-        ModuleKind::Adsr => Ok(brainwash::preset::adsr(
-            audio_unit(module, 2)?,
-            audio_unit(module, 3)?,
-        )),
         ModuleKind::Envelope => Ok(AudioModule::Envelope {
             points: Arc::new(
                 module
@@ -632,33 +621,10 @@ pub(super) fn audio_module(
                 } else {
                     audio_duration(module, 1, rate, bpm)?
                 },
-                feedback: Unit::ZERO,
+                feedback: audio_unit(module, 0)?,
             })
         }
         ModuleKind::DelayTap => Err(AudioPatchError::InvalidParameter),
-        ModuleKind::Reverb => Ok(brainwash::preset::reverb(
-            audio_unit(module, 1)?,
-            audio_unit(module, 2)?,
-            audio_unit(module, 3)?,
-            audio_unit(module, 4)?,
-        )),
-        ModuleKind::Distortion => Ok(brainwash::preset::distortion(
-            Sample::new(audio_float(module, 1)?).ok_or(AudioPatchError::InvalidParameter)?,
-            Sample::new(audio_float(module, 2)?).ok_or(AudioPatchError::InvalidParameter)?,
-        )),
-        ModuleKind::Compressor => Ok(brainwash::preset::compressor(
-            audio_unit(module, 1)?,
-            CompressorRatio::new(audio_float(module, 2)?)
-                .ok_or(AudioPatchError::InvalidParameter)?,
-            Seconds::new(audio_float(module, 3)?).ok_or(AudioPatchError::InvalidParameter)?,
-            Seconds::new(audio_float(module, 4)?).ok_or(AudioPatchError::InvalidParameter)?,
-            Gain::new(audio_float(module, 5)?).ok_or(AudioPatchError::InvalidParameter)?,
-        )),
-        ModuleKind::Flanger => Ok(brainwash::preset::flanger(
-            Hertz::new(audio_float(module, 1)?).ok_or(AudioPatchError::InvalidParameter)?,
-            audio_unit(module, 2)?,
-            audio_unit(module, 3)?,
-        )),
         ModuleKind::Random => Ok(AudioModule::Random),
         ModuleKind::Sample => {
             let ModuleBody::Sample { samples, .. } = &module.body else {
@@ -690,8 +656,12 @@ pub(super) fn audio_module(
         | ModuleKind::LeftSplit
         | ModuleKind::TopSplit
         | ModuleKind::CompositionOutput
-        | ModuleKind::Composition => Ok(AudioModule::Pass),
-        ModuleKind::Output => Ok(AudioModule::Pass),
+        | ModuleKind::Composition
+        | ModuleKind::Output => Ok(AudioModule::Binary {
+            op: BinaryOp::Add,
+            a: AudioSample::ZERO,
+            b: AudioSample::ZERO,
+        }),
     }
 }
 
@@ -770,43 +740,6 @@ pub(super) fn composition_outputs(surface: &PatchSurface) -> Vec<ModuleId> {
     modules.into_iter().map(|module| module.id).collect()
 }
 
-fn audio_rate(
-    module: &Module,
-    parameter: usize,
-    rate: SampleRate,
-    bpm: u16,
-) -> Result<f32, AudioPatchError> {
-    let Some(value) = module.parameter(parameter).map(|parameter| parameter.value) else {
-        return Err(AudioPatchError::InvalidParameter);
-    };
-    let value = match value {
-        ParameterValue::Time {
-            value,
-            unit: TimeUnit::Hertz,
-        } => value as f32,
-        ParameterValue::Time {
-            value,
-            unit: TimeUnit::Seconds,
-        } => 100.0 / value.max(1) as f32,
-        ParameterValue::Time {
-            value,
-            unit: TimeUnit::Samples,
-        } => rate.value() as f32 / value.max(1) as f32,
-        ParameterValue::Bars {
-            numerator,
-            denominator,
-        } => bpm.max(1) as f32 * denominator.max(1) as f32 / numerator.max(1) as f32 / 240.0,
-        ParameterValue::Time {
-            unit: TimeUnit::Bars,
-            ..
-        } => return Err(AudioPatchError::InvalidParameter),
-        _ => return Err(AudioPatchError::InvalidParameter),
-    };
-    Hertz::new(value)
-        .map(Hertz::value)
-        .ok_or(AudioPatchError::InvalidParameter)
-}
-
 fn audio_duration(
     module: &Module,
     parameter: usize,
@@ -866,14 +799,6 @@ pub(super) fn audio_float(module: &Module, parameter: usize) -> Result<f32, Audi
 
 fn audio_sample(module: &Module, parameter: usize) -> Result<AudioSample, AudioPatchError> {
     AudioSample::new(audio_float(module, parameter)?).ok_or(AudioPatchError::InvalidParameter)
-}
-
-fn audio_int(module: &Module, parameter: usize) -> Result<i32, AudioPatchError> {
-    let Some(ParameterValue::Int { value, .. }) = module.parameter(parameter).map(|p| p.value)
-    else {
-        return Err(AudioPatchError::InvalidParameter);
-    };
-    Ok(value)
 }
 
 fn audio_unit(module: &Module, parameter: usize) -> Result<Unit, AudioPatchError> {

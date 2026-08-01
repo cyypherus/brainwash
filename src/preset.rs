@@ -142,6 +142,21 @@ pub fn transpose(semitones: Sample) -> Module {
     )
 }
 
+pub fn degree_gate(target: i32) -> Module {
+    let mut patch = Patch::new();
+    let degree = patch.insert(Module::Degree);
+    let target_match = binary(&mut patch, BinaryOp::Equal, 0.0, target as f32);
+    connect(&mut patch, degree, target_match, InputKind::A);
+    let gate = patch.insert(Module::Gate);
+    let gate_high = binary(&mut patch, BinaryOp::GreaterThan, 0.0, 0.5);
+    connect(&mut patch, gate, gate_high, InputKind::A);
+    let output = binary(&mut patch, BinaryOp::Multiply, 0.0, 0.0);
+    connect(&mut patch, target_match, output, InputKind::A);
+    connect(&mut patch, gate_high, output, InputKind::B);
+    set_output(&mut patch, output);
+    composition("Degree Gate", patch, [])
+}
+
 pub fn attenuator(gain: Unit) -> Module {
     let mut patch = Patch::new();
     let signal = input(&mut patch, InputKind::In, 0.0);
@@ -428,8 +443,9 @@ pub fn flanger(rate: Hertz, depth: Unit, feedback: Unit) -> Module {
     connect(&mut patch, depth_amount, sweep, InputKind::A);
     let delay_time = binary(&mut patch, BinaryOp::Add, 0.00005, 0.0);
     connect(&mut patch, sweep, delay_time, InputKind::B);
-    let delay = patch.insert(Module::VariableDelay {
-        max_time: Duration::Seconds(crate::time::Seconds::new(0.025).unwrap()),
+    let delay = patch.insert(Module::Delay {
+        time: Duration::Seconds(crate::time::Seconds::new(0.025).unwrap()),
+        feedback,
     });
     connect(&mut patch, signal, delay, InputKind::In);
     connect(&mut patch, delay_time, delay, InputKind::Time);
@@ -1198,7 +1214,48 @@ mod tests {
     }
 
     #[test]
-    fn flanger_is_a_composed_variable_delay_graph() {
+    fn degree_gate_is_a_composed_degree_equality() {
+        let module = degree_gate(4);
+        let Module::Composition(graph) = &module else {
+            panic!()
+        };
+        assert!(graph.patch().modules().iter().any(|(_, module)| matches!(
+            module,
+            Module::Binary {
+                op: BinaryOp::Equal,
+                ..
+            }
+        )));
+        let mut patch = Patch::new();
+        let gate = patch.insert(module);
+        set_output(&mut patch, gate);
+        let mut compiled = CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+        assert_eq!(
+            compiled
+                .next_with_controls(crate::compile::PatchControls {
+                    frequency: None,
+                    gate: 1.0,
+                    degree: 4,
+                })
+                .left()
+                .value(),
+            1.0
+        );
+        assert_eq!(
+            compiled
+                .next_with_controls(crate::compile::PatchControls {
+                    frequency: None,
+                    gate: 1.0,
+                    degree: 5,
+                })
+                .left()
+                .value(),
+            0.0
+        );
+    }
+
+    #[test]
+    fn flanger_is_a_composed_delay_graph() {
         let mut patch = Patch::new();
         let signal = patch.insert(Module::Constant(Sample::new(0.25).unwrap()));
         let effect = patch.insert(flanger(

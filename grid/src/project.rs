@@ -76,8 +76,6 @@ pub enum StandardModule {
     Freq,
     Gate,
     Degree,
-    DegreeGate,
-    Rate,
     Phase,
     Noise,
     Rise,
@@ -132,12 +130,6 @@ pub enum ModuleParams {
     Primitive {
         source: String,
     },
-    DegreeGate {
-        degree: i32,
-    },
-    Rate {
-        time: TimeValue,
-    },
     Phase {
         frequency: f32,
         connected: u8,
@@ -172,6 +164,7 @@ pub enum ModuleParams {
     },
     Delay {
         time: TimeValue,
+        feedback: f32,
         connected: u8,
     },
     Sample {
@@ -252,14 +245,6 @@ fn project_params_match(kind: ModuleKind, params: &ModuleParams) -> bool {
                 ModuleParams::None
             )
             | (
-                ModuleKind::Standard(StandardModule::DegreeGate),
-                ModuleParams::DegreeGate { .. }
-            )
-            | (
-                ModuleKind::Standard(StandardModule::Rate),
-                ModuleParams::Rate { .. }
-            )
-            | (
                 ModuleKind::Standard(StandardModule::Phase),
                 ModuleParams::Phase { .. }
             )
@@ -320,11 +305,14 @@ fn project_params_match(kind: ModuleKind, params: &ModuleParams) -> bool {
 
 fn validate_project_params(params: &ModuleParams) -> Result<(), String> {
     match params {
-        ModuleParams::Rate { time } => validate_project_time(*time),
         ModuleParams::Phase { frequency, .. } => validate_finite(*frequency),
-        ModuleParams::Rise { time, .. }
-        | ModuleParams::Fall { time, .. }
-        | ModuleParams::Delay { time, .. } => validate_project_time(*time),
+        ModuleParams::Rise { time, .. } | ModuleParams::Fall { time, .. } => {
+            validate_project_time(*time)
+        }
+        ModuleParams::Delay { time, feedback, .. } => {
+            validate_project_time(*time)?;
+            validate_finite(*feedback)
+        }
         ModuleParams::Ramp { value, time, .. } => {
             validate_finite(*value)?;
             validate_project_time(*time)
@@ -355,7 +343,6 @@ fn validate_project_params(params: &ModuleParams) -> Result<(), String> {
         }
         ModuleParams::None
         | ModuleParams::Primitive { .. }
-        | ModuleParams::DegreeGate { .. }
         | ModuleParams::Sample { .. }
         | ModuleParams::Probe { .. }
         | ModuleParams::Composition { .. } => Ok(()),

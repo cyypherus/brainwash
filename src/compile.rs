@@ -65,12 +65,8 @@ enum Node {
     Freq,
     Gate,
     Degree,
-    DegreeGate {
-        target: i32,
-    },
     Constant(Sample),
     Unary(UnaryOp),
-    Pass,
     Damp {
         coefficient: Unit,
         value: f32,
@@ -94,7 +90,6 @@ enum Node {
         delay: usize,
         gain: Unit,
     },
-    VariableDelay(VariableDelay),
     Slew(Slew),
     Binary {
         op: BinaryOp,
@@ -132,6 +127,8 @@ enum MeterInputs {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct GateRamp {
     mode: GateRampMode,
+    rate: SampleRate,
+    default_samples: u64,
     samples: u64,
     elapsed: u64,
     value: f32,
@@ -185,13 +182,6 @@ struct Slew {
     rise: crate::time::Seconds,
     fall: crate::time::Seconds,
     value: f32,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct VariableDelay {
-    buffer: Vec<f32>,
-    index: usize,
-    rate: SampleRate,
 }
 
 const UPDATE_FADE_FRAMES: usize = 128;
@@ -503,7 +493,7 @@ impl CompiledPatch {
         for idx in 0..self.nodes.len() {
             if let Node::DelayTap { delay, gain } = self.nodes[idx] {
                 let seconds = self.inputs[delay]
-                    .first()
+                    .get(1)
                     .copied()
                     .flatten()
                     .and_then(|source| signal_value(&self.values, source));
@@ -649,7 +639,6 @@ fn resolve_passthrough_output(
             return Ok(output);
         }
         let passthrough = match definition {
-            Module::Pass => true,
             Module::Binary {
                 op: BinaryOp::Add,
                 a,
@@ -784,13 +773,6 @@ impl Node {
             .unwrap_or(Sample::ZERO),
             Node::Gate => Sample::new(controls.gate).unwrap_or(Sample::ZERO),
             Node::Degree => Sample::new(controls.degree as f32).unwrap_or(Sample::ZERO),
-            Node::DegreeGate { target } => {
-                if controls.gate > 0.5 && controls.degree == *target {
-                    Sample::raw(1.0)
-                } else {
-                    Sample::ZERO
-                }
-            }
             Node::Constant(value) => *value,
             Node::Unary(op) => Sample::raw(match op {
                 UnaryOp::Absolute => in0.value().abs(),
@@ -800,14 +782,6 @@ impl Node {
                 UnaryOp::Exponential => in0.value().exp(),
                 UnaryOp::Sign => in0.value().signum(),
             }),
-            Node::Pass => Sample::raw(
-                inputs
-                    .iter()
-                    .flatten()
-                    .filter_map(|input| signal_value(values, *input))
-                    .map(Sample::value)
-                    .sum(),
-            ),
             Node::Damp { coefficient, value } => {
                 if let Some(input) = input(inputs, values, 1)
                     && let Some(next) = Unit::new(input.value() * 0.5)
@@ -824,7 +798,9 @@ impl Node {
                 Sample::raw(phase.next(frequency))
             }
             Node::Noise(noise) => Sample::raw(noise.next()),
-            Node::Rise(ramp) | Node::Fall(ramp) => Sample::raw(ramp.next(in0.value())),
+            Node::Rise(ramp) | Node::Fall(ramp) => {
+                Sample::raw(ramp.next(in0.value(), input(inputs, values, 1).map(Sample::value)))
+            }
             Node::Ramp(ramp) => Sample::raw(ramp.next(in0.value())),
             Node::Envelope { points } => Sample::raw(envelope_value(points, in0.value())),
             Node::Filter(_) => unreachable!(),
@@ -838,15 +814,11 @@ impl Node {
                 Sample::raw(allpass.next(in0.value()))
             }
             Node::Delay(delay) => delay.process_at(
-                input(inputs, values, 1).unwrap_or(Sample::ZERO),
+                input(inputs, values, 2).unwrap_or(Sample::ZERO),
+                input(inputs, values, 1),
                 input(inputs, values, 0),
             ),
             Node::DelayTap { .. } => Sample::ZERO,
-            Node::VariableDelay(delay) => Sample::raw(delay.next(
-                in0.value(),
-                input(inputs, values, 1).map_or(0.0, Sample::value),
-                input(inputs, values, 2).map_or(0.0, Sample::value),
-            )),
             Node::Slew(slew) => {
                 if let Some(rise) = input(inputs, values, 1) {
                     slew.rise = crate::time::Seconds::new(rise.value())
@@ -896,6 +868,13 @@ impl Node {
                             0.0
                         }
                     }
+                    BinaryOp::Equal => {
+                        if a == b {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
                 })
             }
             Node::Switch { a, b } => {
@@ -930,6 +909,8 @@ impl GateRamp {
     fn new(mode: GateRampMode, time: Duration, rate: SampleRate) -> Self {
         Self {
             mode,
+            rate,
+            default_samples: time.samples(rate).value().max(1),
             samples: time.samples(rate).value().max(1),
             elapsed: 0,
             value: match mode {
@@ -941,10 +922,14 @@ impl GateRamp {
         }
     }
 
-    fn next(&mut self, gate: f32) -> f32 {
-        let pressed = gate > 0.5;
+    fn next(&mut self, gate: f32, seconds: Option<f32>) -> f32 {
+        self.samples = seconds
+            .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+            .map(|seconds| (seconds * self.rate.value() as f32).round().max(1.0) as u64)
+            .unwrap_or(self.default_samples);
         match self.mode {
             GateRampMode::Rise => {
+                let pressed = gate > 0.5;
                 if pressed && self.last_gate <= 0.5 {
                     self.elapsed = 0;
                     self.active = true;
@@ -956,15 +941,15 @@ impl GateRamp {
                 }
             }
             GateRampMode::Fall => {
-                if pressed {
-                    self.value = 0.0;
+                let released = gate <= 0.5;
+                if !released {
                     self.active = false;
-                    self.elapsed = 0;
-                } else if self.last_gate > 0.5 {
-                    self.active = true;
-                    self.elapsed = 0;
                     self.value = 0.0;
-                } else if self.active {
+                } else if self.last_gate > 0.5 {
+                    self.elapsed = 0;
+                    self.active = true;
+                }
+                if released && self.active {
                     self.value = (self.elapsed as f32 / self.samples as f32).clamp(0.0, 1.0);
                     self.elapsed = self.elapsed.saturating_add(1);
                 }
@@ -1075,27 +1060,6 @@ impl Slew {
     }
 }
 
-impl VariableDelay {
-    fn new(rate: SampleRate, max_time: Duration) -> Self {
-        Self {
-            buffer: vec![0.0; max_time.samples(rate).value().max(2) as usize],
-            index: 0,
-            rate,
-        }
-    }
-
-    fn next(&mut self, input: f32, seconds: f32, feedback: f32) -> f32 {
-        let delay = (seconds.max(0.0) * self.rate.value() as f32)
-            .round()
-            .clamp(1.0, (self.buffer.len() - 1) as f32) as usize;
-        let read = (self.index + self.buffer.len() - delay) % self.buffer.len();
-        let delayed = self.buffer[read];
-        self.buffer[self.index] = input + delayed * feedback.clamp(-0.999, 0.999);
-        self.index = (self.index + 1) % self.buffer.len();
-        delayed
-    }
-}
-
 fn fade(old: Frame, next: Frame, position: usize) -> Frame {
     let amount = (position as f32 / (UPDATE_FADE_FRAMES - 1) as f32).clamp(0.0, 1.0);
     Frame::stereo(
@@ -1180,10 +1144,8 @@ fn create_node(
         Module::Freq => Node::Freq,
         Module::Gate => Node::Gate,
         Module::Degree => Node::Degree,
-        Module::DegreeGate { target } => Node::DegreeGate { target: *target },
         Module::Constant(value) => Node::Constant(*value),
         Module::Unary(op) => Node::Unary(*op),
-        Module::Pass => Node::Pass,
         Module::Damp { coefficient } => Node::Damp {
             coefficient: *coefficient,
             value: 0.0,
@@ -1216,9 +1178,6 @@ fn create_node(
             Node::Delay(Delay::new(rate, *time, *feedback).ok_or(CompileError::InvalidDelay)?)
         }
         Module::DelayTap(_) => return Err(CompileError::InvalidInput),
-        Module::VariableDelay { max_time } => {
-            Node::VariableDelay(VariableDelay::new(rate, *max_time))
-        }
         Module::Slew { rise, fall } => Node::Slew(Slew {
             rate,
             rise: *rise,
@@ -1383,16 +1342,30 @@ mod tests {
     }
 
     #[test]
-    fn routing_passes_are_elided_from_the_runtime_plan() {
+    fn neutral_adds_are_elided_from_the_runtime_plan() {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Constant(Sample::new(0.25).unwrap()));
-        let first = patch.insert(Module::Pass);
-        let second = patch.insert(Module::Pass);
+        let first = patch.insert(Module::Binary {
+            op: BinaryOp::Add,
+            a: Sample::ZERO,
+            b: Sample::ZERO,
+        });
+        let second = patch.insert(Module::Binary {
+            op: BinaryOp::Add,
+            a: Sample::ZERO,
+            b: Sample::ZERO,
+        });
         patch
-            .connect(patch.output_port(source, 0).unwrap(), first)
+            .connect_input(
+                patch.output_port(source, 0).unwrap(),
+                patch.input_port(first, InputKind::A).unwrap(),
+            )
             .unwrap();
         patch
-            .connect(patch.output_port(first, 0).unwrap(), second)
+            .connect_input(
+                patch.output_port(first, 0).unwrap(),
+                patch.input_port(second, InputKind::A).unwrap(),
+            )
             .unwrap();
         patch.output(patch.output_port(second, 0).unwrap()).unwrap();
 
