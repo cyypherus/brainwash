@@ -20,7 +20,6 @@ impl GuiState {
             .ok_or(AudioPatchError::MissingOutput)?;
         let connections = self.semantic_surface_connections(root_modules)?;
         let mut needed = Vec::new();
-        let mut has_output_signal = false;
         for connection in connections
             .iter()
             .filter(|connection| connection.to == output.id)
@@ -32,13 +31,7 @@ impl GuiState {
             if !self.module_input_connected(output, input as u16) {
                 continue;
             }
-            if input == 0 {
-                has_output_signal = true;
-            }
             collect_audio_inputs(connection.from, &connections, &mut needed);
-        }
-        if !has_output_signal {
-            return Err(AudioPatchError::MissingOutput);
         }
         let output_dependencies = OutputDependencies(needed.clone());
         for module in root_modules
@@ -181,7 +174,7 @@ impl GuiState {
         let output_gain = audio_float(output, 1)?;
         let output_id = patch.insert(AudioModule::Binary {
             op: BinaryOp::Multiply,
-            a: AudioSample::ZERO,
+            a: audio_sample(output, 0)?,
             b: AudioSample::new(output_gain).ok_or(AudioPatchError::InvalidParameter)?,
         });
 
@@ -195,12 +188,7 @@ impl GuiState {
                 if !self.module_input_connected(output, input as u16) {
                     continue;
                 }
-                let Some(from) = from else {
-                    if input == 0 {
-                        return Err(AudioPatchError::MissingOutput);
-                    }
-                    continue;
-                };
+                let Some(from) = from else { continue };
                 let port = patch
                     .input_port(output_id, connection.audio_input())
                     .map_err(AudioPatchError::Connect)?;
@@ -461,36 +449,41 @@ pub(super) fn gui_composition(
             .connect_input(from, port)
             .map_err(AudioPatchError::Connect)?;
     }
-    let outputs = composition_outputs(surface)
-        .into_iter()
-        .map(|id| {
-            let module = surface
-                .modules
-                .iter()
-                .find(|module| module.id == id)
-                .ok_or(AudioPatchError::MissingOutput)?;
-            let ModuleBody::CompositionOutput { label, .. } = &module.body else {
-                return Err(AudioPatchError::MissingOutput);
+    let mut outputs = Vec::new();
+    for id in composition_outputs(surface) {
+        let module = surface
+            .modules
+            .iter()
+            .find(|module| module.id == id)
+            .ok_or(AudioPatchError::MissingOutput)?;
+        let ModuleBody::CompositionOutput { label, input } = &module.body else {
+            return Err(AudioPatchError::MissingOutput);
+        };
+        let output =
+            if let Some(connection) = connections.iter().find(|connection| connection.to == id) {
+                let output = audio_id(&ids, AudioKey::Root(connection.from))
+                    .ok_or(AudioPatchError::MissingOutput)?;
+                let output_index = surface
+                    .modules
+                    .iter()
+                    .find(|module| module.id == connection.from)
+                    .is_some_and(Module::is_composition)
+                    .then_some(connection.output as u16)
+                    .unwrap_or(0);
+                patch
+                    .output_port(output, output_index)
+                    .map_err(AudioPatchError::Connect)?
+            } else {
+                let constant = patch.insert(AudioModule::Constant(
+                    AudioSample::new(input.value as f32 / 100.0)
+                        .ok_or(AudioPatchError::InvalidParameter)?,
+                ));
+                patch
+                    .output_port(constant, 0)
+                    .map_err(AudioPatchError::Connect)?
             };
-            let connection = connections
-                .iter()
-                .find(|connection| connection.to == id)
-                .ok_or(AudioPatchError::MissingOutput)?;
-            let output = audio_id(&ids, AudioKey::Root(connection.from))
-                .ok_or(AudioPatchError::MissingOutput)?;
-            let output_index = surface
-                .modules
-                .iter()
-                .find(|module| module.id == connection.from)
-                .is_some_and(Module::is_composition)
-                .then_some(connection.output as u16)
-                .unwrap_or(0);
-            patch
-                .output_port(output, output_index)
-                .map(|output| (label.clone(), output))
-                .map_err(AudioPatchError::Connect)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+        outputs.push((label.clone(), output));
+    }
     patch
         .output(outputs.first().ok_or(AudioPatchError::MissingOutput)?.1)
         .map_err(AudioPatchError::Connect)?;
@@ -573,9 +566,11 @@ pub(super) fn audio_module(
         }),
         ModuleKind::Noise => Ok(AudioModule::Noise),
         ModuleKind::Rise => Ok(AudioModule::Rise {
+            gate: audio_sample(module, 0)?,
             time: audio_duration(module, 1, rate, bpm)?,
         }),
         ModuleKind::Fall => Ok(AudioModule::Fall {
+            gate: audio_sample(module, 0)?,
             time: audio_duration(module, 1, rate, bpm)?,
         }),
         ModuleKind::Ramp => Ok(AudioModule::Ramp {
@@ -583,6 +578,7 @@ pub(super) fn audio_module(
             time: audio_duration(module, 1, rate, bpm)?,
         }),
         ModuleKind::Envelope => Ok(AudioModule::Envelope {
+            phase: audio_sample(module, 0)?,
             points: Arc::new(
                 module
                     .env_points()
@@ -600,11 +596,13 @@ pub(super) fn audio_module(
             ),
         }),
         ModuleKind::Comb => Ok(AudioModule::Comb {
+            input: audio_sample(module, 0)?,
             time: audio_duration(module, 1, rate, bpm)?,
             feedback: audio_unit(module, 2)?,
             damp: audio_unit(module, 3)?,
         }),
         ModuleKind::Allpass => Ok(AudioModule::Allpass {
+            input: audio_sample(module, 0)?,
             time: audio_duration(module, 1, rate, bpm)?,
             feedback: audio_unit(module, 2)?,
         }),
@@ -613,6 +611,7 @@ pub(super) fn audio_module(
                 unreachable!()
             };
             Ok(AudioModule::Delay {
+                input: audio_sample(module, 2)?,
                 time: if let Some(seconds) = time.exact_seconds {
                     Duration::Seconds(
                         Seconds::new(f32::from_bits(seconds))
@@ -625,16 +624,21 @@ pub(super) fn audio_module(
             })
         }
         ModuleKind::DelayTap => Err(AudioPatchError::InvalidParameter),
-        ModuleKind::Random => Ok(AudioModule::Random),
+        ModuleKind::Random => Ok(AudioModule::Random {
+            gate: audio_sample(module, 0)?,
+        }),
         ModuleKind::Sample => {
             let ModuleBody::Sample { samples, .. } = &module.body else {
                 unreachable!();
             };
             Ok(AudioModule::Sample {
+                position: audio_sample(module, 1)?,
                 samples: Arc::clone(samples),
             })
         }
-        ModuleKind::Probe => Ok(AudioModule::Probe),
+        ModuleKind::Probe => Ok(AudioModule::Probe {
+            input: audio_sample(module, 0)?,
+        }),
         ModuleKind::RightJoin | ModuleKind::DownJoin => Ok(AudioModule::Binary {
             op: BinaryOp::Add,
             a: AudioSample::ZERO,

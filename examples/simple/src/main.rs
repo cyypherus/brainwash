@@ -1,17 +1,13 @@
 use brainwash::compile::{CompiledPatch, PatchEngine};
 use brainwash::patch::{Module, Patch, Resonance};
-use brainwash::sample::Unit;
 use brainwash::time::{Hertz, SampleRate};
 
 fn main() {
     let rate = SampleRate::new(44_100).unwrap();
     let mut patch = Patch::new();
-    let osc = patch.insert(brainwash::preset::sine(
-        Hertz::new(440.0).unwrap(),
-        Unit::ONE,
-        false,
-    ));
+    let osc = patch.insert(brainwash::preset::sine(Hertz::new(440.0).unwrap()));
     let filter = patch.insert(Module::Filter {
+        input: brainwash::sample::Sample::ZERO,
         cutoff: Hertz::new(1_000.0).unwrap(),
         resonance: Resonance::new(0.707).unwrap(),
     });

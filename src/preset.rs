@@ -4,21 +4,22 @@ use crate::patch::{
 use crate::sample::{Sample, Unit};
 use crate::time::{Duration, Hertz, Seconds};
 
-pub fn sine(frequency: Hertz, gain: Unit, unipolar: bool) -> Module {
-    oscillator("Sine", frequency, gain, unipolar, |patch, phase| {
+pub fn sine(frequency: Hertz) -> Module {
+    oscillator("Sine", frequency, |patch, phase| {
         let radians = binary(patch, BinaryOp::Multiply, 0.0, std::f32::consts::TAU);
         connect(patch, phase, radians, InputKind::A);
-        let sine = patch.insert(Module::Unary(UnaryOp::Sine));
+        let sine = unary(patch, UnaryOp::Sine, 0.0);
         connect(patch, radians, sine, InputKind::In);
         sine
     })
 }
 
-pub fn square(frequency: Hertz, gain: Unit, unipolar: bool) -> Module {
-    oscillator("Square", frequency, gain, unipolar, |patch, phase| {
+pub fn square(frequency: Hertz) -> Module {
+    oscillator("Square", frequency, |patch, phase| {
         let condition = binary(patch, BinaryOp::LessThan, 0.0, 0.5);
         connect(patch, phase, condition, InputKind::A);
         let output = patch.insert(Module::Switch {
+            select: Sample::ZERO,
             a: Sample::new(-1.0).unwrap(),
             b: Sample::new(1.0).unwrap(),
         });
@@ -27,11 +28,11 @@ pub fn square(frequency: Hertz, gain: Unit, unipolar: bool) -> Module {
     })
 }
 
-pub fn triangle(frequency: Hertz, gain: Unit, unipolar: bool) -> Module {
-    oscillator("Triangle", frequency, gain, unipolar, |patch, phase| {
+pub fn triangle(frequency: Hertz) -> Module {
+    oscillator("Triangle", frequency, |patch, phase| {
         let centered = binary(patch, BinaryOp::Subtract, 0.0, 0.5);
         connect(patch, phase, centered, InputKind::A);
-        let absolute = patch.insert(Module::Unary(UnaryOp::Absolute));
+        let absolute = unary(patch, UnaryOp::Absolute, 0.0);
         connect(patch, centered, absolute, InputKind::In);
         let scaled = binary(patch, BinaryOp::Multiply, 0.0, 4.0);
         connect(patch, absolute, scaled, InputKind::A);
@@ -41,8 +42,8 @@ pub fn triangle(frequency: Hertz, gain: Unit, unipolar: bool) -> Module {
     })
 }
 
-pub fn saw(frequency: Hertz, gain: Unit, unipolar: bool) -> Module {
-    oscillator("Saw", frequency, gain, unipolar, |patch, phase| {
+pub fn saw(frequency: Hertz) -> Module {
+    oscillator("Saw", frequency, |patch, phase| {
         let scaled = binary(patch, BinaryOp::Multiply, 0.0, 2.0);
         connect(patch, phase, scaled, InputKind::A);
         let output = binary(patch, BinaryOp::Subtract, 0.0, 1.0);
@@ -51,8 +52,8 @@ pub fn saw(frequency: Hertz, gain: Unit, unipolar: bool) -> Module {
     })
 }
 
-pub fn reverse_saw(frequency: Hertz, gain: Unit, unipolar: bool) -> Module {
-    oscillator("Reverse Saw", frequency, gain, unipolar, |patch, phase| {
+pub fn reverse_saw(frequency: Hertz) -> Module {
+    oscillator("Reverse Saw", frequency, |patch, phase| {
         let scaled = binary(patch, BinaryOp::Multiply, 0.0, 2.0);
         connect(patch, phase, scaled, InputKind::A);
         let output = binary(patch, BinaryOp::Subtract, 1.0, 0.0);
@@ -64,8 +65,6 @@ pub fn reverse_saw(frequency: Hertz, gain: Unit, unipolar: bool) -> Module {
 fn oscillator(
     name: &'static str,
     frequency: Hertz,
-    gain: Unit,
-    unipolar: bool,
     shape: impl FnOnce(&mut Patch, crate::patch::ModuleId) -> crate::patch::ModuleId,
 ) -> Module {
     let mut patch = Patch::new();
@@ -73,47 +72,16 @@ fn oscillator(
         kind: InputKind::Freq,
         default: Sample::new(frequency.value()).unwrap(),
     });
-    let gain_input = patch.insert(Module::Input {
-        kind: InputKind::Gain,
-        default: Sample::new(gain.value()).unwrap(),
-    });
     let phase = patch.insert(Module::Phase { frequency });
     connect(&mut patch, frequency_input, phase, InputKind::Freq);
-    let oscillator = shape(&mut patch, phase);
-    let signal = if unipolar {
-        let offset = patch.insert(Module::Binary {
-            op: BinaryOp::Add,
-            a: Sample::ZERO,
-            b: Sample::new(1.0).unwrap(),
-        });
-        connect(&mut patch, oscillator, offset, InputKind::A);
-        let scale = patch.insert(Module::Binary {
-            op: BinaryOp::Multiply,
-            a: Sample::ZERO,
-            b: Sample::new(0.5).unwrap(),
-        });
-        connect(&mut patch, offset, scale, InputKind::A);
-        scale
-    } else {
-        oscillator
-    };
-    let output = patch.insert(Module::Binary {
-        op: BinaryOp::Multiply,
-        a: Sample::ZERO,
-        b: Sample::new(gain.value()).unwrap(),
-    });
-    connect(&mut patch, signal, output, InputKind::A);
-    connect(&mut patch, gain_input, output, InputKind::B);
+    let output = shape(&mut patch, phase);
     set_output(&mut patch, output);
     let composition_output = patch.output_id().unwrap();
     Module::Composition(Box::new(
         Composition::new(
             name,
             patch,
-            [
-                ("Frequency".to_string(), InputKind::Freq, frequency_input),
-                ("Gain".to_string(), InputKind::Gain, gain_input),
-            ],
+            [("Frequency".to_string(), InputKind::Freq, frequency_input)],
             [("Output".to_string(), composition_output)],
         )
         .unwrap(),
@@ -196,15 +164,16 @@ pub fn tube() -> Module {
     let signal = input(&mut patch, InputKind::In, 0.0);
     let positive = binary(&mut patch, BinaryOp::GreaterThan, 0.0, 0.0);
     connect(&mut patch, signal, positive, InputKind::A);
-    let positive_curve = patch.insert(Module::Unary(UnaryOp::HyperbolicTangent));
+    let positive_curve = unary(&mut patch, UnaryOp::HyperbolicTangent, 0.0);
     connect(&mut patch, signal, positive_curve, InputKind::In);
     let negative_drive = binary(&mut patch, BinaryOp::Multiply, 0.0, 1.25);
     connect(&mut patch, signal, negative_drive, InputKind::A);
-    let negative_curve = patch.insert(Module::Unary(UnaryOp::HyperbolicTangent));
+    let negative_curve = unary(&mut patch, UnaryOp::HyperbolicTangent, 0.0);
     connect(&mut patch, negative_drive, negative_curve, InputKind::In);
     let negative_level = binary(&mut patch, BinaryOp::Multiply, 0.0, 0.8);
     connect(&mut patch, negative_curve, negative_level, InputKind::A);
     let output = patch.insert(Module::Switch {
+        select: Sample::ZERO,
         a: Sample::ZERO,
         b: Sample::ZERO,
     });
@@ -220,7 +189,7 @@ pub fn tape() -> Module {
     let signal = input(&mut patch, InputKind::In, 0.0);
     let driven = binary(&mut patch, BinaryOp::Multiply, 0.0, 1.5);
     connect(&mut patch, signal, driven, InputKind::A);
-    let curve = patch.insert(Module::Unary(UnaryOp::Arctangent));
+    let curve = unary(&mut patch, UnaryOp::Arctangent, 0.0);
     connect(&mut patch, driven, curve, InputKind::In);
     let normalized = binary(&mut patch, BinaryOp::Divide, 0.0, 1.5_f32.atan());
     connect(&mut patch, curve, normalized, InputKind::A);
@@ -235,13 +204,13 @@ pub fn tape() -> Module {
 pub fn fuzz() -> Module {
     let mut patch = Patch::new();
     let signal = input(&mut patch, InputKind::In, 0.0);
-    let sign = patch.insert(Module::Unary(UnaryOp::Sign));
+    let sign = unary(&mut patch, UnaryOp::Sign, 0.0);
     connect(&mut patch, signal, sign, InputKind::In);
-    let magnitude = patch.insert(Module::Unary(UnaryOp::Absolute));
+    let magnitude = unary(&mut patch, UnaryOp::Absolute, 0.0);
     connect(&mut patch, signal, magnitude, InputKind::In);
     let scaled = binary(&mut patch, BinaryOp::Multiply, 0.0, -3.0);
     connect(&mut patch, magnitude, scaled, InputKind::A);
-    let exponential = patch.insert(Module::Unary(UnaryOp::Exponential));
+    let exponential = unary(&mut patch, UnaryOp::Exponential, 0.0);
     connect(&mut patch, scaled, exponential, InputKind::In);
     let saturated = binary(&mut patch, BinaryOp::Subtract, 1.0, 0.0);
     connect(&mut patch, exponential, saturated, InputKind::B);
@@ -272,7 +241,7 @@ pub fn fold() -> Module {
     connect(&mut patch, offset, wrapped, InputKind::A);
     let centered = binary(&mut patch, BinaryOp::Subtract, 0.0, 2.0);
     connect(&mut patch, wrapped, centered, InputKind::A);
-    let magnitude = patch.insert(Module::Unary(UnaryOp::Absolute));
+    let magnitude = unary(&mut patch, UnaryOp::Absolute, 0.0);
     connect(&mut patch, centered, magnitude, InputKind::In);
     let output = binary(&mut patch, BinaryOp::Subtract, 0.0, 1.0);
     connect(&mut patch, magnitude, output, InputKind::A);
@@ -312,8 +281,9 @@ pub fn compressor(
         kind: InputKind::Gain,
         default: Sample::new(makeup.value()).unwrap(),
     });
-    let absolute = patch.insert(Module::Unary(UnaryOp::Absolute));
+    let absolute = unary(&mut patch, UnaryOp::Absolute, 0.0);
     let envelope = patch.insert(Module::Slew {
+        input: Sample::ZERO,
         rise: attack,
         fall: release,
     });
@@ -323,6 +293,7 @@ pub fn compressor(
     let compressed = binary(&mut patch, BinaryOp::Power, 0.0, 0.0);
     let above_threshold = binary(&mut patch, BinaryOp::GreaterThan, 0.0, threshold.value());
     let reduction = patch.insert(Module::Switch {
+        select: Sample::ZERO,
         a: Sample::new(1.0).unwrap(),
         b: Sample::ZERO,
     });
@@ -404,6 +375,7 @@ pub fn adsr(attack: Unit, sustain: Unit) -> Module {
     connect(&mut patch, rise, decaying, InputKind::A);
     connect(&mut patch, attack_input, decaying, InputKind::B);
     let shaped = patch.insert(Module::Switch {
+        select: Sample::ZERO,
         a: Sample::ZERO,
         b: Sample::ZERO,
     });
@@ -434,16 +406,21 @@ pub fn flanger(rate: Hertz, depth: Unit, feedback: Unit) -> Module {
     let rate_input = input(&mut patch, InputKind::Rate, rate.value());
     let depth_input = input(&mut patch, InputKind::Depth, depth.value());
     let feedback_input = input(&mut patch, InputKind::Feedback, feedback.value());
-    let lfo = patch.insert(sine(rate, Unit::ONE, true));
+    let lfo = patch.insert(sine(rate));
     connect(&mut patch, rate_input, lfo, InputKind::Freq);
+    let lfo_offset = binary(&mut patch, BinaryOp::Add, 0.0, 1.0);
+    connect(&mut patch, lfo, lfo_offset, InputKind::A);
+    let lfo_unipolar = binary(&mut patch, BinaryOp::Multiply, 0.0, 0.5);
+    connect(&mut patch, lfo_offset, lfo_unipolar, InputKind::A);
     let depth_amount = binary(&mut patch, BinaryOp::Multiply, 0.0, depth.value());
-    connect(&mut patch, lfo, depth_amount, InputKind::A);
+    connect(&mut patch, lfo_unipolar, depth_amount, InputKind::A);
     connect(&mut patch, depth_input, depth_amount, InputKind::B);
     let sweep = binary(&mut patch, BinaryOp::Multiply, 0.0, 0.02495);
     connect(&mut patch, depth_amount, sweep, InputKind::A);
     let delay_time = binary(&mut patch, BinaryOp::Add, 0.00005, 0.0);
     connect(&mut patch, sweep, delay_time, InputKind::B);
     let delay = patch.insert(Module::Delay {
+        input: Sample::ZERO,
         time: Duration::Seconds(crate::time::Seconds::new(0.025).unwrap()),
         feedback,
     });
@@ -525,6 +502,7 @@ fn reverb_diffuser_stage(samples: usize, coefficient: f32, diffusion: Unit) -> M
     let scaled = binary(&mut patch, BinaryOp::Multiply, 0.0, coefficient);
     connect(&mut patch, diffusion_input, scaled, InputKind::A);
     let allpass = patch.insert(Module::Allpass {
+        input: Sample::ZERO,
         time: Duration::Seconds(Seconds::new(samples as f32 / 29_761.0).unwrap()),
         feedback: Unit::new(coefficient * diffusion.value()).unwrap(),
     });
@@ -568,6 +546,7 @@ fn reverb_tank(room: Unit, damp: Unit, modulation: Unit) -> Module {
     let mut delays = Vec::new();
     for delay_samples in delay_samples {
         let delay = patch.insert(Module::Delay {
+            input: Sample::ZERO,
             time: Duration::Seconds(Seconds::new((delay_samples + 32) as f32 / 29_761.0).unwrap()),
             feedback: Unit::ZERO,
         });
@@ -953,7 +932,7 @@ fn reverb_weighted_output_pair(
 fn reverb_delay_time(samples: usize, depth: f32, rate: f32, modulation: Unit) -> Module {
     let mut patch = Patch::new();
     let modulation_input = input(&mut patch, InputKind::Mod, modulation.value());
-    let oscillator = patch.insert(sine(Hertz::new(rate).unwrap(), Unit::ONE, false));
+    let oscillator = patch.insert(sine(Hertz::new(rate).unwrap()));
     let depth = binary(&mut patch, BinaryOp::Multiply, 0.0, depth / 29_761.0);
     connect(&mut patch, oscillator, depth, InputKind::A);
     let modulated = binary(&mut patch, BinaryOp::Multiply, 0.0, modulation.value());
@@ -979,7 +958,10 @@ fn reverb_feedback_path(room: Unit, damp: Unit) -> Module {
     let mixed = binary(&mut patch, BinaryOp::Add, 0.0, 0.0);
     connect(&mut patch, delayed, mixed, InputKind::A);
     connect(&mut patch, reflection, mixed, InputKind::B);
-    let damping = patch.insert(Module::Damp { coefficient: damp });
+    let damping = patch.insert(Module::Damp {
+        input: Sample::ZERO,
+        coefficient: damp,
+    });
     connect(&mut patch, mixed, damping, InputKind::In);
     connect(&mut patch, damp_input, damping, InputKind::Damp);
     let decay = patch.insert(reverb_room_decay(room));
@@ -1110,6 +1092,13 @@ fn binary(patch: &mut Patch, op: BinaryOp, a: f32, b: f32) -> crate::patch::Modu
     })
 }
 
+fn unary(patch: &mut Patch, op: UnaryOp, input: f32) -> crate::patch::ModuleId {
+    patch.insert(Module::Unary {
+        op,
+        input: Sample::new(input).unwrap(),
+    })
+}
+
 fn composition(
     name: &'static str,
     patch: Patch,
@@ -1182,14 +1171,11 @@ mod tests {
         let rate = SampleRate::new(4).unwrap();
         let frequency = Hertz::new(1.0).unwrap();
         let cases = [
-            (sine(frequency, Unit::ONE, false), [0.0, 1.0, 0.0, -1.0]),
-            (square(frequency, Unit::ONE, false), [1.0, 1.0, -1.0, -1.0]),
-            (triangle(frequency, Unit::ONE, false), [-1.0, 0.0, 1.0, 0.0]),
-            (saw(frequency, Unit::ONE, false), [-1.0, -0.5, 0.0, 0.5]),
-            (
-                reverse_saw(frequency, Unit::ONE, false),
-                [1.0, 0.5, 0.0, -0.5],
-            ),
+            (sine(frequency), [0.0, 1.0, 0.0, -1.0]),
+            (square(frequency), [1.0, 1.0, -1.0, -1.0]),
+            (triangle(frequency), [-1.0, 0.0, 1.0, 0.0]),
+            (saw(frequency), [-1.0, -0.5, 0.0, 0.5]),
+            (reverse_saw(frequency), [1.0, 0.5, 0.0, -0.5]),
         ];
 
         for (waveform, expected) in cases {
@@ -1203,6 +1189,8 @@ mod tests {
                     .iter()
                     .any(|(_, module)| matches!(module, Module::Phase { .. }))
             );
+            assert_eq!(graph.inputs().len(), 1);
+            assert_eq!(graph.inputs()[0].kind(), InputKind::Freq);
             let mut patch = Patch::new();
             let waveform = patch.insert(waveform);
             set_output(&mut patch, waveform);

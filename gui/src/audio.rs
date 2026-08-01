@@ -995,8 +995,8 @@ mod tests {
     use super::*;
     use crate::model::{GuiAction, GuiState, ModuleCategory};
     use assert_no_alloc::assert_no_alloc;
-    use brainwash::patch::{InputKind, Module, Patch, Resonance};
-    use brainwash::sample::{Sample as AudioSample, Unit};
+    use brainwash::patch::{BinaryOp, InputKind, Module, Patch, Resonance};
+    use brainwash::sample::Sample as AudioSample;
     use brainwash::scale::cmin;
 
     #[test]
@@ -1122,11 +1122,7 @@ mod tests {
         let rate = SampleRate::new(44_100).unwrap();
         let mut patch = Patch::new();
         let freq = patch.insert(Module::Freq);
-        let osc = patch.insert(brainwash::preset::saw(
-            Hertz::new(110.0).unwrap(),
-            Unit::ONE,
-            false,
-        ));
+        let osc = patch.insert(brainwash::preset::saw(Hertz::new(110.0).unwrap()));
         let port = patch.input_port(osc, InputKind::Freq).unwrap();
         patch
             .connect_input(patch.output_port(freq, 0).unwrap(), port)
@@ -1416,7 +1412,9 @@ mod tests {
         let target = telemetry_module_id();
         let mut patch = Patch::new();
         let source = patch.insert(Module::Constant(AudioSample::new(0.25).unwrap()));
-        let probe = patch.insert(Module::Probe);
+        let probe = patch.insert(Module::Probe {
+            input: AudioSample::ZERO,
+        });
         let port = patch.input_port(probe, InputKind::In).unwrap();
         patch
             .connect_input(patch.output_port(source, 0).unwrap(), port)
@@ -1782,6 +1780,7 @@ mod tests {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Constant(AudioSample::new(0.5).unwrap()));
         let lowpass = patch.insert(Module::Filter {
+            input: AudioSample::ZERO,
             cutoff: Hertz::new(1000.0).unwrap(),
             resonance: Resonance::new(0.707).unwrap(),
         });
@@ -1827,11 +1826,7 @@ mod tests {
     fn compiled_saw_patch(frequency: f32, rate: SampleRate) -> CompiledPatch {
         let mut patch = Patch::new();
         let freq = patch.insert(Module::Freq);
-        let osc = patch.insert(brainwash::preset::saw(
-            Hertz::new(frequency).unwrap(),
-            Unit::ONE,
-            false,
-        ));
+        let osc = patch.insert(brainwash::preset::saw(Hertz::new(frequency).unwrap()));
         let port = patch.input_port(osc, InputKind::Freq).unwrap();
         patch
             .connect_input(patch.output_port(freq, 0).unwrap(), port)
@@ -1849,11 +1844,7 @@ mod tests {
 
     fn unmodulated_osc_patch(rate: SampleRate) -> CompiledPatch {
         let mut patch = Patch::new();
-        let osc = patch.insert(brainwash::preset::saw(
-            Hertz::new(440.0).unwrap(),
-            Unit::ONE,
-            false,
-        ));
+        let osc = patch.insert(brainwash::preset::saw(Hertz::new(440.0).unwrap()));
         patch.output(patch.output_port(osc, 0).unwrap()).unwrap();
         CompiledPatch::new(&patch, rate).unwrap()
     }
@@ -1861,16 +1852,25 @@ mod tests {
     fn gated_osc_patch(rate: SampleRate) -> CompiledPatch {
         let mut patch = Patch::new();
         let gate = patch.insert(Module::Gate);
-        let osc = patch.insert(brainwash::preset::saw(
-            Hertz::new(440.0).unwrap(),
-            Unit::ONE,
-            false,
-        ));
-        let port = patch.input_port(osc, InputKind::Gain).unwrap();
+        let osc = patch.insert(brainwash::preset::saw(Hertz::new(440.0).unwrap()));
+        let output = patch.insert(Module::Binary {
+            op: BinaryOp::Multiply,
+            a: AudioSample::ZERO,
+            b: AudioSample::ZERO,
+        });
         patch
-            .connect_input(patch.output_port(gate, 0).unwrap(), port)
+            .connect_input(
+                patch.output_port(osc, 0).unwrap(),
+                patch.input_port(output, InputKind::A).unwrap(),
+            )
             .unwrap();
-        patch.output(patch.output_port(osc, 0).unwrap()).unwrap();
+        patch
+            .connect_input(
+                patch.output_port(gate, 0).unwrap(),
+                patch.input_port(output, InputKind::B).unwrap(),
+            )
+            .unwrap();
+        patch.output(patch.output_port(output, 0).unwrap()).unwrap();
         CompiledPatch::new(&patch, rate).unwrap()
     }
 }

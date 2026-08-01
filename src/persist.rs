@@ -120,8 +120,12 @@ enum FileModule {
     Gate,
     Degree,
     Constant(f32),
-    Unary(FileUnaryOp),
+    Unary {
+        op: FileUnaryOp,
+        input: f32,
+    },
     Damp {
+        input: f32,
         coefficient: f32,
     },
     Phase {
@@ -129,9 +133,11 @@ enum FileModule {
     },
     Noise,
     Rise {
+        gate: f32,
         time: FileDuration,
     },
     Fall {
+        gate: f32,
         time: FileDuration,
     },
     Ramp {
@@ -139,22 +145,27 @@ enum FileModule {
         time: FileDuration,
     },
     Envelope {
+        phase: f32,
         points: Vec<FileEnvPoint>,
     },
     Filter {
+        input: f32,
         cutoff: f32,
         resonance: f32,
     },
     Comb {
+        input: f32,
         time: FileDuration,
         feedback: f32,
         damp: f32,
     },
     Allpass {
+        input: f32,
         time: FileDuration,
         feedback: f32,
     },
     Delay {
+        input: f32,
         time: FileDuration,
         feedback: f32,
     },
@@ -163,6 +174,7 @@ enum FileModule {
         gain: f32,
     },
     Slew {
+        input: f32,
         rise: f32,
         fall: f32,
     },
@@ -172,14 +184,20 @@ enum FileModule {
         b: f32,
     },
     Switch {
+        select: f32,
         a: f32,
         b: f32,
     },
-    Random,
+    Random {
+        gate: f32,
+    },
     Sample {
+        position: f32,
         samples: Vec<f32>,
     },
-    Probe,
+    Probe {
+        input: f32,
+    },
     Composition {
         name: String,
         patch: Box<FilePatch>,
@@ -386,32 +404,39 @@ impl FileModule {
             Module::Gate => FileModule::Gate,
             Module::Degree => FileModule::Degree,
             Module::Constant(value) => FileModule::Constant(value.value()),
-            Module::Unary(op) => FileModule::Unary(match op {
-                UnaryOp::Absolute => FileUnaryOp::Absolute,
-                UnaryOp::Sine => FileUnaryOp::Sine,
-                UnaryOp::HyperbolicTangent => FileUnaryOp::HyperbolicTangent,
-                UnaryOp::Arctangent => FileUnaryOp::Arctangent,
-                UnaryOp::Exponential => FileUnaryOp::Exponential,
-                UnaryOp::Sign => FileUnaryOp::Sign,
-            }),
-            Module::Damp { coefficient } => FileModule::Damp {
+            Module::Unary { op, input } => FileModule::Unary {
+                op: match op {
+                    UnaryOp::Absolute => FileUnaryOp::Absolute,
+                    UnaryOp::Sine => FileUnaryOp::Sine,
+                    UnaryOp::HyperbolicTangent => FileUnaryOp::HyperbolicTangent,
+                    UnaryOp::Arctangent => FileUnaryOp::Arctangent,
+                    UnaryOp::Exponential => FileUnaryOp::Exponential,
+                    UnaryOp::Sign => FileUnaryOp::Sign,
+                },
+                input: input.value(),
+            },
+            Module::Damp { input, coefficient } => FileModule::Damp {
+                input: input.value(),
                 coefficient: coefficient.value(),
             },
             Module::Phase { frequency } => FileModule::Phase {
                 frequency: frequency.value(),
             },
             Module::Noise => FileModule::Noise,
-            Module::Rise { time } => FileModule::Rise {
+            Module::Rise { gate, time } => FileModule::Rise {
+                gate: gate.value(),
                 time: FileDuration::from_duration(time),
             },
-            Module::Fall { time } => FileModule::Fall {
+            Module::Fall { gate, time } => FileModule::Fall {
+                gate: gate.value(),
                 time: FileDuration::from_duration(time),
             },
             Module::Ramp { value, time } => FileModule::Ramp {
                 value: value.value(),
                 time: FileDuration::from_duration(time),
             },
-            Module::Envelope { points } => FileModule::Envelope {
+            Module::Envelope { phase, points } => FileModule::Envelope {
+                phase: phase.value(),
                 points: points
                     .iter()
                     .map(|point| FileEnvPoint {
@@ -421,24 +446,41 @@ impl FileModule {
                     })
                     .collect(),
             },
-            Module::Filter { cutoff, resonance } => FileModule::Filter {
+            Module::Filter {
+                input,
+                cutoff,
+                resonance,
+            } => FileModule::Filter {
+                input: input.value(),
                 cutoff: cutoff.value(),
                 resonance: resonance.value(),
             },
             Module::Comb {
+                input,
                 time,
                 feedback,
                 damp,
             } => FileModule::Comb {
+                input: input.value(),
                 time: FileDuration::from_duration(time),
                 feedback: feedback.value(),
                 damp: damp.value(),
             },
-            Module::Allpass { time, feedback } => FileModule::Allpass {
+            Module::Allpass {
+                input,
+                time,
+                feedback,
+            } => FileModule::Allpass {
+                input: input.value(),
                 time: FileDuration::from_duration(time),
                 feedback: feedback.value(),
             },
-            Module::Delay { time, feedback } => FileModule::Delay {
+            Module::Delay {
+                input,
+                time,
+                feedback,
+            } => FileModule::Delay {
+                input: input.value(),
                 time: FileDuration::from_duration(time),
                 feedback: feedback.value(),
             },
@@ -446,7 +488,8 @@ impl FileModule {
                 delay: tap.delay().0,
                 gain: tap.gain().value(),
             },
-            Module::Slew { rise, fall } => FileModule::Slew {
+            Module::Slew { input, rise, fall } => FileModule::Slew {
+                input: input.value(),
                 rise: rise.value(),
                 fall: fall.value(),
             },
@@ -455,15 +498,19 @@ impl FileModule {
                 a: a.value(),
                 b: b.value(),
             },
-            Module::Switch { a, b } => FileModule::Switch {
+            Module::Switch { select, a, b } => FileModule::Switch {
+                select: select.value(),
                 a: a.value(),
                 b: b.value(),
             },
-            Module::Random => FileModule::Random,
-            Module::Sample { samples } => FileModule::Sample {
+            Module::Random { gate } => FileModule::Random { gate: gate.value() },
+            Module::Sample { position, samples } => FileModule::Sample {
+                position: position.value(),
                 samples: samples.iter().map(|sample| sample.value()).collect(),
             },
-            Module::Probe => FileModule::Probe,
+            Module::Probe { input } => FileModule::Probe {
+                input: input.value(),
+            },
             Module::Composition(composition) => FileModule::Composition {
                 name: composition.name().to_string(),
                 patch: Box::new(FilePatch::from_patch(composition.patch())?),
@@ -492,32 +539,39 @@ impl FileModule {
             FileModule::Constant(value) => {
                 Module::Constant(Sample::new(value).ok_or(LoadError::Value)?)
             }
-            FileModule::Unary(op) => Module::Unary(match op {
-                FileUnaryOp::Absolute => UnaryOp::Absolute,
-                FileUnaryOp::Sine => UnaryOp::Sine,
-                FileUnaryOp::HyperbolicTangent => UnaryOp::HyperbolicTangent,
-                FileUnaryOp::Arctangent => UnaryOp::Arctangent,
-                FileUnaryOp::Exponential => UnaryOp::Exponential,
-                FileUnaryOp::Sign => UnaryOp::Sign,
-            }),
-            FileModule::Damp { coefficient } => Module::Damp {
+            FileModule::Unary { op, input } => Module::Unary {
+                op: match op {
+                    FileUnaryOp::Absolute => UnaryOp::Absolute,
+                    FileUnaryOp::Sine => UnaryOp::Sine,
+                    FileUnaryOp::HyperbolicTangent => UnaryOp::HyperbolicTangent,
+                    FileUnaryOp::Arctangent => UnaryOp::Arctangent,
+                    FileUnaryOp::Exponential => UnaryOp::Exponential,
+                    FileUnaryOp::Sign => UnaryOp::Sign,
+                },
+                input: Sample::new(input).ok_or(LoadError::Value)?,
+            },
+            FileModule::Damp { input, coefficient } => Module::Damp {
+                input: Sample::new(input).ok_or(LoadError::Value)?,
                 coefficient: Unit::new(coefficient).ok_or(LoadError::Value)?,
             },
             FileModule::Phase { frequency } => Module::Phase {
                 frequency: Hertz::new(frequency).ok_or(LoadError::Value)?,
             },
             FileModule::Noise => Module::Noise,
-            FileModule::Rise { time } => Module::Rise {
+            FileModule::Rise { gate, time } => Module::Rise {
+                gate: Sample::new(gate).ok_or(LoadError::Value)?,
                 time: time.into_duration()?,
             },
-            FileModule::Fall { time } => Module::Fall {
+            FileModule::Fall { gate, time } => Module::Fall {
+                gate: Sample::new(gate).ok_or(LoadError::Value)?,
                 time: time.into_duration()?,
             },
             FileModule::Ramp { value, time } => Module::Ramp {
                 value: Sample::new(value).ok_or(LoadError::Value)?,
                 time: time.into_duration()?,
             },
-            FileModule::Envelope { points } => Module::Envelope {
+            FileModule::Envelope { phase, points } => Module::Envelope {
+                phase: Sample::new(phase).ok_or(LoadError::Value)?,
                 points: Arc::new(
                     points
                         .into_iter()
@@ -531,29 +585,47 @@ impl FileModule {
                         .collect::<Result<Vec<_>, LoadError>>()?,
                 ),
             },
-            FileModule::Filter { cutoff, resonance } => Module::Filter {
+            FileModule::Filter {
+                input,
+                cutoff,
+                resonance,
+            } => Module::Filter {
+                input: Sample::new(input).ok_or(LoadError::Value)?,
                 cutoff: Hertz::new(cutoff).ok_or(LoadError::Value)?,
                 resonance: crate::patch::Resonance::new(resonance).ok_or(LoadError::Value)?,
             },
             FileModule::Comb {
+                input,
                 time,
                 feedback,
                 damp,
             } => Module::Comb {
+                input: Sample::new(input).ok_or(LoadError::Value)?,
                 time: time.into_duration()?,
                 feedback: Unit::new(feedback).ok_or(LoadError::Value)?,
                 damp: Unit::new(damp).ok_or(LoadError::Value)?,
             },
-            FileModule::Allpass { time, feedback } => Module::Allpass {
+            FileModule::Allpass {
+                input,
+                time,
+                feedback,
+            } => Module::Allpass {
+                input: Sample::new(input).ok_or(LoadError::Value)?,
                 time: time.into_duration()?,
                 feedback: Unit::new(feedback).ok_or(LoadError::Value)?,
             },
-            FileModule::Delay { time, feedback } => Module::Delay {
+            FileModule::Delay {
+                input,
+                time,
+                feedback,
+            } => Module::Delay {
+                input: Sample::new(input).ok_or(LoadError::Value)?,
                 time: time.into_duration()?,
                 feedback: Unit::new(feedback).ok_or(LoadError::Value)?,
             },
             FileModule::DelayTap { .. } => return Err(LoadError::Value),
-            FileModule::Slew { rise, fall } => Module::Slew {
+            FileModule::Slew { input, rise, fall } => Module::Slew {
+                input: Sample::new(input).ok_or(LoadError::Value)?,
                 rise: Seconds::new(rise).ok_or(LoadError::Value)?,
                 fall: Seconds::new(fall).ok_or(LoadError::Value)?,
             },
@@ -562,12 +634,16 @@ impl FileModule {
                 a: Sample::new(a).ok_or(LoadError::Value)?,
                 b: Sample::new(b).ok_or(LoadError::Value)?,
             },
-            FileModule::Switch { a, b } => Module::Switch {
+            FileModule::Switch { select, a, b } => Module::Switch {
+                select: Sample::new(select).ok_or(LoadError::Value)?,
                 a: Sample::new(a).ok_or(LoadError::Value)?,
                 b: Sample::new(b).ok_or(LoadError::Value)?,
             },
-            FileModule::Random => Module::Random,
-            FileModule::Sample { samples } => Module::Sample {
+            FileModule::Random { gate } => Module::Random {
+                gate: Sample::new(gate).ok_or(LoadError::Value)?,
+            },
+            FileModule::Sample { position, samples } => Module::Sample {
+                position: Sample::new(position).ok_or(LoadError::Value)?,
                 samples: Arc::new(
                     samples
                         .into_iter()
@@ -575,7 +651,9 @@ impl FileModule {
                         .collect::<Result<Vec<_>, _>>()?,
                 ),
             },
-            FileModule::Probe => Module::Probe,
+            FileModule::Probe { input } => Module::Probe {
+                input: Sample::new(input).ok_or(LoadError::Value)?,
+            },
             FileModule::Composition {
                 name,
                 patch,
@@ -754,6 +832,7 @@ mod tests {
             Module::Noise,
             crate::preset::tape(),
             Module::Filter {
+                input: Sample::ZERO,
                 cutoff: Hertz::new(1_000.0).unwrap(),
                 resonance: crate::patch::Resonance::new(8.0).unwrap(),
             },
@@ -772,6 +851,7 @@ mod tests {
     #[test]
     fn bipolar_envelope_round_trips() {
         let module = Module::Envelope {
+            phase: Sample::ZERO,
             points: Arc::new(vec![EnvPoint::new(
                 Unit::new(0.5).unwrap(),
                 Sample::new(-0.75).unwrap(),
@@ -789,6 +869,7 @@ mod tests {
     fn delay_tap_round_trip_preserves_delay_identity() {
         let mut patch = Patch::new();
         let delay = patch.insert(Module::Delay {
+            input: Sample::ZERO,
             time: Duration::Samples(Samples::new(2)),
             feedback: Unit::ZERO,
         });

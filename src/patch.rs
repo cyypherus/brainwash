@@ -121,8 +121,12 @@ pub enum Module {
     Gate,
     Degree,
     Constant(Sample),
-    Unary(UnaryOp),
+    Unary {
+        op: UnaryOp,
+        input: Sample,
+    },
     Damp {
+        input: Sample,
         coefficient: Unit,
     },
     Phase {
@@ -130,9 +134,11 @@ pub enum Module {
     },
     Noise,
     Rise {
+        gate: Sample,
         time: Duration,
     },
     Fall {
+        gate: Sample,
         time: Duration,
     },
     Ramp {
@@ -140,27 +146,33 @@ pub enum Module {
         time: Duration,
     },
     Envelope {
+        phase: Sample,
         points: Arc<Vec<EnvPoint>>,
     },
     Filter {
+        input: Sample,
         cutoff: Hertz,
         resonance: Resonance,
     },
     Comb {
+        input: Sample,
         time: Duration,
         feedback: Unit,
         damp: Unit,
     },
     Allpass {
+        input: Sample,
         time: Duration,
         feedback: Unit,
     },
     Delay {
+        input: Sample,
         time: Duration,
         feedback: Unit,
     },
     DelayTap(DelayTap),
     Slew {
+        input: Sample,
         rise: Seconds,
         fall: Seconds,
     },
@@ -170,14 +182,20 @@ pub enum Module {
         b: Sample,
     },
     Switch {
+        select: Sample,
         a: Sample,
         b: Sample,
     },
-    Random,
+    Random {
+        gate: Sample,
+    },
     Sample {
+        position: Sample,
         samples: Arc<Vec<Sample>>,
     },
-    Probe,
+    Probe {
+        input: Sample,
+    },
     Composition(Box<Composition>),
 }
 
@@ -685,10 +703,10 @@ impl Module {
         match self {
             Module::Input { .. } => vec![],
             Module::Freq | Module::Gate | Module::Degree | Module::Constant(_) => vec![],
-            Module::Unary(_) => vec![InputKind::In],
+            Module::Unary { .. } => vec![InputKind::In],
             Module::Damp { .. } => vec![InputKind::In, InputKind::Damp],
-            Module::Random => vec![InputKind::Gate],
-            Module::Probe => vec![InputKind::In],
+            Module::Random { .. } => vec![InputKind::Gate],
+            Module::Probe { .. } => vec![InputKind::In],
             Module::Rise { .. } | Module::Fall { .. } => vec![InputKind::Gate, InputKind::Time],
             Module::Ramp { .. } => vec![InputKind::Value, InputKind::Time],
             Module::Envelope { .. } => vec![InputKind::Phase],
@@ -788,11 +806,7 @@ mod tests {
     fn connect_rejects_multi_input_targets() {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Gate);
-        let target = patch.insert(crate::preset::sine(
-            Hertz::new(440.0).unwrap(),
-            Unit::ONE,
-            false,
-        ));
+        let target = patch.insert(crate::preset::transpose(Sample::ZERO));
 
         assert_eq!(
             patch.connect(patch.output_port(source, 0).unwrap(), target),
@@ -805,12 +819,8 @@ mod tests {
     fn checked_input_port_stores_target_slot() {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Gate);
-        let target = patch.insert(crate::preset::sine(
-            Hertz::new(440.0).unwrap(),
-            Unit::ONE,
-            false,
-        ));
-        let port = patch.input_port(target, InputKind::Gain).unwrap();
+        let target = patch.insert(crate::preset::sine(Hertz::new(440.0).unwrap()));
+        let port = patch.input_port(target, InputKind::Freq).unwrap();
 
         let source = patch.output_port(source, 0).unwrap();
         patch.connect_input(source, port).unwrap();
@@ -821,7 +831,7 @@ mod tests {
                 from: source,
                 input: InputPort {
                     module: target,
-                    input: InputKind::Gain
+                    input: InputKind::Freq
                 }
             }]
         );
@@ -830,6 +840,7 @@ mod tests {
     #[test]
     fn module_inputs_are_semantic_shape() {
         let filter = Module::Filter {
+            input: Sample::ZERO,
             cutoff: Hertz::new(1000.0).unwrap(),
             resonance: Resonance::new(0.707).unwrap(),
         };
@@ -853,6 +864,7 @@ mod tests {
     fn filter_exposes_low_and_high_outputs() {
         let mut patch = Patch::new();
         let filter = patch.insert(Module::Filter {
+            input: Sample::ZERO,
             cutoff: Hertz::new(1000.0).unwrap(),
             resonance: Resonance::new(0.707).unwrap(),
         });

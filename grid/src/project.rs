@@ -135,10 +135,12 @@ pub enum ModuleParams {
         connected: u8,
     },
     Rise {
+        gate: f32,
         time: TimeValue,
         connected: u8,
     },
     Fall {
+        gate: f32,
         time: TimeValue,
         connected: u8,
     },
@@ -148,21 +150,25 @@ pub enum ModuleParams {
         connected: u8,
     },
     Envelope {
+        phase: f32,
         points: Vec<EnvPoint>,
         connected: u8,
     },
     Comb {
+        input: f32,
         time: TimeValue,
         feedback: f32,
         damp: f32,
         connected: u8,
     },
     Allpass {
+        input: f32,
         time: TimeValue,
         feedback: f32,
         connected: u8,
     },
     Delay {
+        input: f32,
         time: TimeValue,
         feedback: f32,
         connected: u8,
@@ -172,12 +178,15 @@ pub enum ModuleParams {
         file_name: String,
         #[serde(skip)]
         samples: std::sync::Arc<Vec<f32>>,
+        position: f32,
         connected: u8,
     },
     Probe {
+        input: f32,
         connected: u8,
     },
     Output {
+        input: f32,
         gain: f32,
         connected: u8,
     },
@@ -189,6 +198,8 @@ pub enum ModuleParams {
     },
     CompositionOutput {
         label: String,
+        input: f32,
+        connected: bool,
     },
     Composition {
         inputs: u8,
@@ -197,6 +208,10 @@ pub enum ModuleParams {
     },
     DelayTap {
         gain: f32,
+    },
+    Random {
+        gate: f32,
+        connected: u8,
     },
 }
 
@@ -286,7 +301,7 @@ fn project_params_match(kind: ModuleKind, params: &ModuleParams) -> bool {
             )
             | (
                 ModuleKind::Standard(StandardModule::Rng),
-                ModuleParams::None
+                ModuleParams::Random { .. }
             )
             | (
                 ModuleKind::Standard(StandardModule::Sample),
@@ -306,10 +321,17 @@ fn project_params_match(kind: ModuleKind, params: &ModuleParams) -> bool {
 fn validate_project_params(params: &ModuleParams) -> Result<(), String> {
     match params {
         ModuleParams::Phase { frequency, .. } => validate_finite(*frequency),
-        ModuleParams::Rise { time, .. } | ModuleParams::Fall { time, .. } => {
+        ModuleParams::Rise { gate, time, .. } | ModuleParams::Fall { gate, time, .. } => {
+            validate_finite(*gate)?;
             validate_project_time(*time)
         }
-        ModuleParams::Delay { time, feedback, .. } => {
+        ModuleParams::Delay {
+            input,
+            time,
+            feedback,
+            ..
+        } => {
+            validate_finite(*input)?;
             validate_project_time(*time)?;
             validate_finite(*feedback)
         }
@@ -317,7 +339,8 @@ fn validate_project_params(params: &ModuleParams) -> Result<(), String> {
             validate_finite(*value)?;
             validate_project_time(*time)
         }
-        ModuleParams::Envelope { points, .. } => {
+        ModuleParams::Envelope { phase, points, .. } => {
+            validate_finite(*phase)?;
             for point in points {
                 validate_finite(point.time)?;
                 validate_finite(point.value)?;
@@ -325,27 +348,38 @@ fn validate_project_params(params: &ModuleParams) -> Result<(), String> {
             Ok(())
         }
         ModuleParams::Comb {
+            input,
             time,
             feedback,
             damp,
             ..
         } => {
+            validate_finite(*input)?;
             validate_project_time(*time)?;
             validate_finite(*feedback)?;
             validate_finite(*damp)
         }
-        ModuleParams::Allpass { time, feedback, .. } => {
+        ModuleParams::Allpass {
+            input,
+            time,
+            feedback,
+            ..
+        } => {
+            validate_finite(*input)?;
             validate_project_time(*time)?;
             validate_finite(*feedback)
         }
-        ModuleParams::Output { gain, .. } | ModuleParams::DelayTap { gain } => {
+        ModuleParams::Output { input, gain, .. } => {
+            validate_finite(*input)?;
             validate_finite(*gain)
         }
-        ModuleParams::None
-        | ModuleParams::Primitive { .. }
-        | ModuleParams::Sample { .. }
-        | ModuleParams::Probe { .. }
-        | ModuleParams::Composition { .. } => Ok(()),
+        ModuleParams::DelayTap { gain } => validate_finite(*gain),
+        ModuleParams::Random { gate, .. } => validate_finite(*gate),
+        ModuleParams::Sample { position, .. } => validate_finite(*position),
+        ModuleParams::Probe { input, .. } => validate_finite(*input),
+        ModuleParams::None | ModuleParams::Primitive { .. } | ModuleParams::Composition { .. } => {
+            Ok(())
+        }
         ModuleParams::CompositionInput { label, value, .. } => {
             validate_finite(*value)?;
             if label.trim().is_empty() {
@@ -354,7 +388,8 @@ fn validate_project_params(params: &ModuleParams) -> Result<(), String> {
                 Ok(())
             }
         }
-        ModuleParams::CompositionOutput { label } => {
+        ModuleParams::CompositionOutput { label, input, .. } => {
+            validate_finite(*input)?;
             if label.trim().is_empty() {
                 Err("empty composition port label".to_string())
             } else {

@@ -66,8 +66,12 @@ enum Node {
     Gate,
     Degree,
     Constant(Sample),
-    Unary(UnaryOp),
+    Unary {
+        op: UnaryOp,
+        input: Sample,
+    },
     Damp {
+        input: Sample,
         coefficient: Unit,
         value: f32,
     },
@@ -76,39 +80,69 @@ enum Node {
         frequency: Hertz,
     },
     Noise(Noise),
-    Rise(GateRamp),
-    Fall(GateRamp),
-    Ramp(Ramp),
+    Rise {
+        ramp: GateRamp,
+        gate: Sample,
+    },
+    Fall {
+        ramp: GateRamp,
+        gate: Sample,
+    },
+    Ramp {
+        ramp: Ramp,
+        value: Sample,
+    },
     Envelope {
+        phase: Sample,
         points: Arc<Vec<EnvPoint>>,
     },
-    Filter(StateVariable),
-    Comb(Comb),
-    Allpass(Allpass),
-    Delay(Delay),
+    Filter {
+        filter: StateVariable,
+        input: Sample,
+    },
+    Comb {
+        comb: Comb,
+        input: Sample,
+    },
+    Allpass {
+        allpass: Allpass,
+        input: Sample,
+    },
+    Delay {
+        delay: Delay,
+        input: Sample,
+    },
     DelayTap {
         delay: usize,
         gain: Unit,
     },
-    Slew(Slew),
+    Slew {
+        slew: Slew,
+        input: Sample,
+    },
     Binary {
         op: BinaryOp,
         a: f32,
         b: f32,
     },
     Switch {
+        select: f32,
         a: f32,
         b: f32,
     },
     Random {
+        gate: Sample,
         last_gate: f32,
         value: f32,
         seed: u32,
     },
     Sample {
+        position: Sample,
         samples: Arc<Vec<Sample>>,
     },
-    Probe,
+    Probe {
+        input: Sample,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -420,7 +454,7 @@ impl CompiledPatch {
             .enumerate()
             .filter_map(|(rank, module_index)| {
                 let (id, module) = &patch.modules()[module_index];
-                matches!(module, Module::Probe).then_some((*id, rank))
+                matches!(module, Module::Probe { .. }).then_some((*id, rank))
             })
             .collect();
         let meters = order
@@ -498,7 +532,7 @@ impl CompiledPatch {
                     .flatten()
                     .and_then(|source| signal_value(&self.values, source));
                 self.values[idx][0] = match &self.nodes[delay] {
-                    Node::Delay(delay) => delay.tap(seconds).attenuate(gain),
+                    Node::Delay { delay, .. } => delay.tap(seconds).attenuate(gain),
                     _ => Sample::ZERO,
                 };
                 continue;
@@ -529,8 +563,8 @@ impl CompiledPatch {
         }
         for (next, previous) in self.nodes.iter_mut().zip(&previous.nodes) {
             match (next, previous) {
-                (Node::Rise(next), Node::Rise(previous))
-                | (Node::Fall(next), Node::Fall(previous)) => {
+                (Node::Rise { ramp: next, .. }, Node::Rise { ramp: previous, .. })
+                | (Node::Fall { ramp: next, .. }, Node::Fall { ramp: previous, .. }) => {
                     next.elapsed = (previous.value * next.samples as f32).round() as u64;
                     next.value = previous.value;
                     next.last_gate = previous.last_gate;
@@ -744,8 +778,11 @@ impl Node {
         external: &[Option<Sample>],
         controls: PatchControls,
     ) -> [Sample; 2] {
-        let in0 = sample(inputs, values, 0);
-        if let Node::Filter(filter) = self {
+        if let Node::Filter {
+            filter,
+            input: default,
+        } = self
+        {
             if let Some(cutoff) =
                 input(inputs, values, 1).and_then(|input| filter_cutoff(input.value()))
             {
@@ -756,7 +793,8 @@ impl Node {
             {
                 filter.resonance = resonance;
             }
-            let (low, high) = filter.outputs(in0);
+            let signal = input(inputs, values, 0).unwrap_or(*default);
+            let (low, high) = filter.outputs(signal);
             return [low, high];
         }
         let output = match self {
@@ -774,21 +812,30 @@ impl Node {
             Node::Gate => Sample::new(controls.gate).unwrap_or(Sample::ZERO),
             Node::Degree => Sample::new(controls.degree as f32).unwrap_or(Sample::ZERO),
             Node::Constant(value) => *value,
-            Node::Unary(op) => Sample::raw(match op {
-                UnaryOp::Absolute => in0.value().abs(),
-                UnaryOp::Sine => in0.value().sin(),
-                UnaryOp::HyperbolicTangent => in0.value().tanh(),
-                UnaryOp::Arctangent => in0.value().atan(),
-                UnaryOp::Exponential => in0.value().exp(),
-                UnaryOp::Sign => in0.value().signum(),
-            }),
-            Node::Damp { coefficient, value } => {
+            Node::Unary { op, input: default } => {
+                let signal = input(inputs, values, 0).unwrap_or(*default);
+                Sample::raw(match op {
+                    UnaryOp::Absolute => signal.value().abs(),
+                    UnaryOp::Sine => signal.value().sin(),
+                    UnaryOp::HyperbolicTangent => signal.value().tanh(),
+                    UnaryOp::Arctangent => signal.value().atan(),
+                    UnaryOp::Exponential => signal.value().exp(),
+                    UnaryOp::Sign => signal.value().signum(),
+                })
+            }
+            Node::Damp {
+                input: default,
+                coefficient,
+                value,
+            } => {
                 if let Some(input) = input(inputs, values, 1)
                     && let Some(next) = Unit::new(input.value() * 0.5)
                 {
                     *coefficient = next;
                 }
-                *value = in0.value() * (1.0 - coefficient.value()) + *value * coefficient.value();
+                let signal = input(inputs, values, 0).unwrap_or(*default);
+                *value =
+                    signal.value() * (1.0 - coefficient.value()) + *value * coefficient.value();
                 Sample::raw(*value)
             }
             Node::Phase { phase, frequency } => {
@@ -798,28 +845,46 @@ impl Node {
                 Sample::raw(phase.next(frequency))
             }
             Node::Noise(noise) => Sample::raw(noise.next()),
-            Node::Rise(ramp) | Node::Fall(ramp) => {
-                Sample::raw(ramp.next(in0.value(), input(inputs, values, 1).map(Sample::value)))
+            Node::Rise { ramp, gate } | Node::Fall { ramp, gate } => {
+                let gate = input(inputs, values, 0).unwrap_or(*gate);
+                Sample::raw(ramp.next(gate.value(), input(inputs, values, 1).map(Sample::value)))
             }
-            Node::Ramp(ramp) => Sample::raw(ramp.next(in0.value())),
-            Node::Envelope { points } => Sample::raw(envelope_value(points, in0.value())),
-            Node::Filter(_) => unreachable!(),
-            Node::Comb(comb) => Sample::raw(comb.next(in0.value())),
-            Node::Allpass(allpass) => {
+            Node::Ramp { ramp, value } => {
+                Sample::raw(ramp.next(input(inputs, values, 0).unwrap_or(*value).value()))
+            }
+            Node::Envelope { phase, points } => {
+                let phase = input(inputs, values, 0).unwrap_or(*phase);
+                Sample::raw(envelope_value(points, phase.value()))
+            }
+            Node::Filter { .. } => unreachable!(),
+            Node::Comb {
+                comb,
+                input: default,
+            } => Sample::raw(comb.next(input(inputs, values, 0).unwrap_or(*default).value())),
+            Node::Allpass {
+                allpass,
+                input: default,
+            } => {
                 if let Some(feedback) = input(inputs, values, 2)
                     && let Some(feedback) = Unit::new(feedback.value())
                 {
                     allpass.feedback = feedback;
                 }
-                Sample::raw(allpass.next(in0.value()))
+                Sample::raw(allpass.next(input(inputs, values, 0).unwrap_or(*default).value()))
             }
-            Node::Delay(delay) => delay.process_at(
-                input(inputs, values, 2).unwrap_or(Sample::ZERO),
+            Node::Delay {
+                delay,
+                input: default,
+            } => delay.process_at(
+                input(inputs, values, 2).unwrap_or(*default),
                 input(inputs, values, 1),
                 input(inputs, values, 0),
             ),
             Node::DelayTap { .. } => Sample::ZERO,
-            Node::Slew(slew) => {
+            Node::Slew {
+                slew,
+                input: default,
+            } => {
                 if let Some(rise) = input(inputs, values, 1) {
                     slew.rise = crate::time::Seconds::new(rise.value())
                         .unwrap_or_else(|| crate::time::Seconds::new(0.0).unwrap());
@@ -828,7 +893,7 @@ impl Node {
                     slew.fall = crate::time::Seconds::new(fall.value())
                         .unwrap_or_else(|| crate::time::Seconds::new(0.0).unwrap());
                 }
-                Sample::raw(slew.next(in0.value()))
+                Sample::raw(slew.next(input(inputs, values, 0).unwrap_or(*default).value()))
             }
             Node::Binary { op, a, b } => {
                 let a = input(inputs, values, 0).map(Sample::value).unwrap_or(*a);
@@ -877,29 +942,37 @@ impl Node {
                     }
                 })
             }
-            Node::Switch { a, b } => {
+            Node::Switch { select, a, b } => {
+                let select = input(inputs, values, 0)
+                    .map(Sample::value)
+                    .unwrap_or(*select);
                 let a = input(inputs, values, 1).map(Sample::value).unwrap_or(*a);
                 let b = input(inputs, values, 2).map(Sample::value).unwrap_or(*b);
-                if in0.value() <= 0.5 {
+                if select <= 0.5 {
                     Sample::raw(a)
                 } else {
                     Sample::raw(b)
                 }
             }
             Node::Random {
+                gate,
                 last_gate,
                 value,
                 seed,
             } => {
-                if in0.value() > 0.5 && *last_gate <= 0.5 {
+                let gate = input(inputs, values, 0).unwrap_or(*gate);
+                if gate.value() > 0.5 && *last_gate <= 0.5 {
                     *seed = seed.wrapping_mul(196314165).wrapping_add(907633515);
                     *value = *seed as f32 / u32::MAX as f32;
                 }
-                *last_gate = in0.value();
+                *last_gate = gate.value();
                 Sample::raw(*value)
             }
-            Node::Sample { samples } => Sample::raw(sample_value(samples, in0.value())),
-            Node::Probe => in0,
+            Node::Sample { position, samples } => Sample::raw(sample_value(
+                samples,
+                input(inputs, values, 0).unwrap_or(*position).value(),
+            )),
+            Node::Probe { input: default } => input(inputs, values, 0).unwrap_or(*default),
         };
         [output, Sample::ZERO]
     }
@@ -1145,8 +1218,12 @@ fn create_node(
         Module::Gate => Node::Gate,
         Module::Degree => Node::Degree,
         Module::Constant(value) => Node::Constant(*value),
-        Module::Unary(op) => Node::Unary(*op),
-        Module::Damp { coefficient } => Node::Damp {
+        Module::Unary { op, input } => Node::Unary {
+            op: *op,
+            input: *input,
+        },
+        Module::Damp { input, coefficient } => Node::Damp {
+            input: *input,
             coefficient: *coefficient,
             value: 0.0,
         },
@@ -1155,53 +1232,92 @@ fn create_node(
             frequency: *frequency,
         },
         Module::Noise => Node::Noise(Noise::new()),
-        Module::Rise { time } => Node::Rise(GateRamp::new(GateRampMode::Rise, *time, rate)),
-        Module::Fall { time } => Node::Fall(GateRamp::new(GateRampMode::Fall, *time, rate)),
-        Module::Ramp { value, time } => Node::Ramp(Ramp::new(value.value(), *time, rate)),
-        Module::Envelope { points } => Node::Envelope {
+        Module::Rise { gate, time } => Node::Rise {
+            ramp: GateRamp::new(GateRampMode::Rise, *time, rate),
+            gate: *gate,
+        },
+        Module::Fall { gate, time } => Node::Fall {
+            ramp: GateRamp::new(GateRampMode::Fall, *time, rate),
+            gate: *gate,
+        },
+        Module::Ramp { value, time } => Node::Ramp {
+            ramp: Ramp::new(value.value(), *time, rate),
+            value: *value,
+        },
+        Module::Envelope { phase, points } => Node::Envelope {
+            phase: *phase,
             points: Arc::clone(points),
         },
-        Module::Filter { cutoff, resonance } => Node::Filter(StateVariable {
-            rate,
-            cutoff: *cutoff,
-            resonance: *resonance,
-            integrator_1: 0.0,
-            integrator_2: 0.0,
-        }),
+        Module::Filter {
+            input,
+            cutoff,
+            resonance,
+        } => Node::Filter {
+            filter: StateVariable {
+                rate,
+                cutoff: *cutoff,
+                resonance: *resonance,
+                integrator_1: 0.0,
+                integrator_2: 0.0,
+            },
+            input: *input,
+        },
         Module::Comb {
+            input,
             time,
             feedback,
             damp,
-        } => Node::Comb(Comb::new(rate, *time, *feedback, *damp)),
-        Module::Allpass { time, feedback } => Node::Allpass(Allpass::new(rate, *time, *feedback)),
-        Module::Delay { time, feedback } => {
-            Node::Delay(Delay::new(rate, *time, *feedback).ok_or(CompileError::InvalidDelay)?)
-        }
+        } => Node::Comb {
+            comb: Comb::new(rate, *time, *feedback, *damp),
+            input: *input,
+        },
+        Module::Allpass {
+            input,
+            time,
+            feedback,
+        } => Node::Allpass {
+            allpass: Allpass::new(rate, *time, *feedback),
+            input: *input,
+        },
+        Module::Delay {
+            input,
+            time,
+            feedback,
+        } => Node::Delay {
+            delay: Delay::new(rate, *time, *feedback).ok_or(CompileError::InvalidDelay)?,
+            input: *input,
+        },
         Module::DelayTap(_) => return Err(CompileError::InvalidInput),
-        Module::Slew { rise, fall } => Node::Slew(Slew {
-            rate,
-            rise: *rise,
-            fall: *fall,
-            value: 0.0,
-        }),
+        Module::Slew { input, rise, fall } => Node::Slew {
+            slew: Slew {
+                rate,
+                rise: *rise,
+                fall: *fall,
+                value: 0.0,
+            },
+            input: *input,
+        },
         Module::Binary { op, a, b } => Node::Binary {
             op: *op,
             a: a.value(),
             b: b.value(),
         },
-        Module::Switch { a, b } => Node::Switch {
+        Module::Switch { select, a, b } => Node::Switch {
+            select: select.value(),
             a: a.value(),
             b: b.value(),
         },
-        Module::Random => Node::Random {
+        Module::Random { gate } => Node::Random {
+            gate: *gate,
             last_gate: 0.0,
             value: 0.0,
             seed: 0x1234_5678,
         },
-        Module::Sample { samples } => Node::Sample {
+        Module::Sample { position, samples } => Node::Sample {
+            position: *position,
             samples: Arc::clone(samples),
         },
-        Module::Probe => Node::Probe,
+        Module::Probe { input } => Node::Probe { input: *input },
         Module::Composition(_) => return Err(CompileError::InvalidInput),
     })
 }
@@ -1212,10 +1328,6 @@ fn input(inputs: &[Option<Signal>], values: &[[Sample; 2]], index: usize) -> Opt
         .copied()
         .flatten()
         .and_then(|source| signal_value(values, source))
-}
-
-fn sample(inputs: &[Option<Signal>], values: &[[Sample; 2]], index: usize) -> Sample {
-    input(inputs, values, index).unwrap_or(Sample::ZERO)
 }
 
 fn signal_value(values: &[[Sample; 2]], signal: Signal) -> Option<Sample> {
@@ -1321,6 +1433,7 @@ mod tests {
         let mut patch = Patch::new();
         let signal = patch.insert(Module::Constant(Sample::new(1.0).unwrap()));
         let delay = patch.insert(Module::Delay {
+            input: Sample::ZERO,
             time: Duration::Samples(crate::time::Samples::new(2)),
             feedback: Unit::ZERO,
         });
@@ -1377,7 +1490,10 @@ mod tests {
 
     #[test]
     fn composition_boundaries_are_elided_from_the_runtime_plan() {
-        let mut module = Module::Unary(UnaryOp::Absolute);
+        let mut module = Module::Unary {
+            op: UnaryOp::Absolute,
+            input: Sample::ZERO,
+        };
         for depth in 0..16 {
             let mut patch = Patch::new();
             let input = patch.insert(Module::Input {
@@ -1462,7 +1578,9 @@ mod tests {
     fn probe_values_expose_probe_node_output() {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Constant(Sample::new(0.25).unwrap()));
-        let probe = patch.insert(Module::Probe);
+        let probe = patch.insert(Module::Probe {
+            input: Sample::ZERO,
+        });
         patch
             .connect(patch.output_port(source, 0).unwrap(), probe)
             .unwrap();
@@ -1482,6 +1600,7 @@ mod tests {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Constant(Sample::new(0.25).unwrap()));
         let lowpass = patch.insert(Module::Filter {
+            input: Sample::ZERO,
             cutoff: Hertz::new(1000.0).unwrap(),
             resonance: crate::patch::Resonance::new(0.707).unwrap(),
         });
@@ -1508,11 +1627,16 @@ mod tests {
         let mut patch = Patch::new();
         let source = patch.insert(Module::Constant(Sample::new(1.0).unwrap()));
         let filter = patch.insert(Module::Filter {
+            input: Sample::ZERO,
             cutoff: Hertz::new(1_000.0).unwrap(),
             resonance: crate::patch::Resonance::new(0.707).unwrap(),
         });
-        let low = patch.insert(Module::Probe);
-        let high = patch.insert(Module::Probe);
+        let low = patch.insert(Module::Probe {
+            input: Sample::ZERO,
+        });
+        let high = patch.insert(Module::Probe {
+            input: Sample::ZERO,
+        });
         patch
             .connect_input(
                 patch.output_port(source, 0).unwrap(),
@@ -1548,6 +1672,7 @@ mod tests {
         let mut inner = Patch::new();
         let source = inner.insert(Module::Constant(Sample::new(1.0).unwrap()));
         let filter = inner.insert(Module::Filter {
+            input: Sample::ZERO,
             cutoff: Hertz::new(1_000.0).unwrap(),
             resonance: crate::patch::Resonance::new(0.707).unwrap(),
         });
@@ -1735,6 +1860,7 @@ mod tests {
         let mut patch = Patch::new();
         let gate = patch.insert(Module::Gate);
         let fall = patch.insert(Module::Fall {
+            gate: Sample::ZERO,
             time: Duration::Samples(crate::time::Samples::new(1_024)),
         });
         let release = patch.insert(Module::Binary {
@@ -1764,10 +1890,10 @@ mod tests {
             ..PatchControls::default()
         });
         let mut next = CompiledPatch::new(&patch, rate).unwrap();
-        let Node::Fall(fall) = next
+        let Node::Fall { ramp: fall, .. } = next
             .nodes
             .iter_mut()
-            .find(|node| matches!(node, Node::Fall(_)))
+            .find(|node| matches!(node, Node::Fall { .. }))
             .unwrap()
         else {
             unreachable!()

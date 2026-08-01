@@ -1743,7 +1743,6 @@ fn parameter_fill(value: &ParameterValue) -> f32 {
             numerator,
             denominator,
         } => (*numerator as f32 / (*denominator).max(1) as f32 / 16.).clamp(0., 1.),
-        ParameterValue::Input => 1.,
         ParameterValue::File { .. } => 1.,
         ParameterValue::Enum { index, options } => {
             if options.len() <= 1 {

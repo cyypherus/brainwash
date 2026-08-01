@@ -254,10 +254,12 @@ fn project_params(
             connected: connected_mask(&[(0, frequency.connected)]),
         },
         ModuleBody::Rise { gate, time } => ProjectModuleParams::Rise {
+            gate: project_float(*gate),
             time: project_time(*time)?,
             connected: connected_mask(&[(0, gate.connected), (1, time.connected)]),
         },
         ModuleBody::Fall { gate, time } => ProjectModuleParams::Fall {
+            gate: project_float(*gate),
             time: project_time(*time)?,
             connected: connected_mask(&[(0, gate.connected), (1, time.connected)]),
         },
@@ -267,6 +269,7 @@ fn project_params(
             connected: connected_mask(&[(0, value.connected), (1, time.connected)]),
         },
         ModuleBody::Envelope { phase, points } => ProjectModuleParams::Envelope {
+            phase: project_float(*phase),
             points: points.iter().map(project_env_point).collect(),
             connected: connected_mask(&[(0, phase.connected)]),
         },
@@ -276,6 +279,7 @@ fn project_params(
             feedback,
             damp,
         } => ProjectModuleParams::Comb {
+            input: project_float(*input),
             time: project_time(*time)?,
             feedback: project_float(*feedback),
             damp: project_float(*damp),
@@ -291,19 +295,7 @@ fn project_params(
             time,
             feedback,
         } => ProjectModuleParams::Allpass {
-            time: project_time(*time)?,
-            feedback: project_float(*feedback),
-            connected: connected_mask(&[
-                (0, feedback.connected),
-                (1, time.connected),
-                (2, input.connected),
-            ]),
-        },
-        ModuleBody::Delay {
-            input,
-            time,
-            feedback,
-        } => ProjectModuleParams::Delay {
+            input: project_float(*input),
             time: project_time(*time)?,
             feedback: project_float(*feedback),
             connected: connected_mask(&[
@@ -312,18 +304,27 @@ fn project_params(
                 (2, feedback.connected),
             ]),
         },
+        ModuleBody::Delay {
+            input,
+            time,
+            feedback,
+        } => ProjectModuleParams::Delay {
+            input: project_float(*input),
+            time: project_time(*time)?,
+            feedback: project_float(*feedback),
+            connected: connected_mask(&[
+                (0, feedback.connected),
+                (1, time.connected),
+                (2, input.connected),
+            ]),
+        },
         ModuleBody::DelayTap { gain, .. } => ProjectModuleParams::DelayTap {
             gain: project_float(*gain),
         },
-        ModuleBody::Random { gate } => {
-            if !gate.connected {
-                return Err(format!(
-                    "random module {} has disconnected gate",
-                    module.id.value()
-                ));
-            }
-            ProjectModuleParams::None
-        }
+        ModuleBody::Random { gate } => ProjectModuleParams::Random {
+            gate: project_float(*gate),
+            connected: connected_mask(&[(0, gate.connected)]),
+        },
         ModuleBody::Sample {
             file_name,
             samples,
@@ -333,26 +334,23 @@ fn project_params(
             file_idx: 0,
             file_name: file_name.clone(),
             samples: Arc::new(samples.iter().map(|sample| sample.value()).collect()),
+            position: project_float(*position),
             connected: connected_mask(&[(1, position.connected)]),
         },
         ModuleBody::Probe { input } => ProjectModuleParams::Probe {
+            input: project_float(*input),
             connected: connected_mask(&[(0, input.connected)]),
         },
         ModuleBody::Output { input, gain } => ProjectModuleParams::Output {
+            input: project_float(*input),
             gain: project_float(*gain),
             connected: connected_mask(&[(0, input.connected), (1, gain.connected)]),
         },
-        ModuleBody::CompositionOutput { label, input } => {
-            if !input.connected {
-                return Err(format!(
-                    "composition output {} has disconnected input",
-                    module.id.value()
-                ));
-            }
-            ProjectModuleParams::CompositionOutput {
-                label: label.clone(),
-            }
-        }
+        ModuleBody::CompositionOutput { label, input } => ProjectModuleParams::CompositionOutput {
+            label: label.clone(),
+            input: project_float(*input),
+            connected: input.connected,
+        },
         ModuleBody::Composition { .. } => {
             let (inputs, outputs) = composition_ports
                 .get(&module.id)
@@ -579,9 +577,17 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
                 parameter.connected = *connected;
             }
         }
-        ProjectModuleParams::CompositionOutput { label } => {
+        ProjectModuleParams::CompositionOutput {
+            label,
+            input,
+            connected,
+        } => {
             if let Some(parameter) = parameters.get_mut(0) {
                 parameter.value = ParameterValue::Text(label.clone());
+            }
+            set_float(&mut parameters, 1, *input);
+            if let Some(parameter) = parameters.get_mut(1) {
+                parameter.connected = *connected;
             }
         }
         ProjectModuleParams::Phase {
@@ -593,8 +599,17 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
                 parameter.connected = connected & 1 != 0;
             }
         }
-        ProjectModuleParams::Rise { time, connected }
-        | ProjectModuleParams::Fall { time, connected } => {
+        ProjectModuleParams::Rise {
+            gate,
+            time,
+            connected,
+        }
+        | ProjectModuleParams::Fall {
+            gate,
+            time,
+            connected,
+        } => {
+            set_float(&mut parameters, 0, *gate);
             set_time(&mut parameters, 1, *time);
             apply_connected(&mut parameters, *connected);
         }
@@ -607,44 +622,56 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             set_time(&mut parameters, 1, *time);
             apply_connected(&mut parameters, *connected);
         }
-        ProjectModuleParams::Envelope { points, connected } => {
+        ProjectModuleParams::Envelope {
+            phase,
+            points,
+            connected,
+        } => {
+            set_float(&mut parameters, 0, *phase);
             if let Some(target) = module.body.env_points_mut() {
                 *target = points.iter().map(env_point_from_project).collect();
             }
             apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Comb {
+            input,
             time,
             feedback,
             damp,
             connected,
         } => {
+            set_float(&mut parameters, 0, *input);
             set_time(&mut parameters, 1, *time);
             set_float(&mut parameters, 2, *feedback);
             set_float(&mut parameters, 3, *damp);
             apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Allpass {
+            input,
             time,
             feedback,
             connected,
         } => {
+            set_float(&mut parameters, 0, *input);
             set_time(&mut parameters, 1, *time);
-            set_float(&mut parameters, 0, *feedback);
+            set_float(&mut parameters, 2, *feedback);
             apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Delay {
+            input,
             time,
             feedback,
             connected,
         } => {
+            set_float(&mut parameters, 2, *input);
             set_time(&mut parameters, 1, *time);
-            set_float(&mut parameters, 2, *feedback);
+            set_float(&mut parameters, 0, *feedback);
             apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Sample {
             file_name,
             samples,
+            position,
             connected,
             ..
         } => {
@@ -664,17 +691,28 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
                         .collect(),
                 );
             }
+            set_float(&mut parameters, 1, *position);
             apply_connected(&mut parameters, *connected);
         }
-        ProjectModuleParams::Probe { connected } => {
+        ProjectModuleParams::Probe { input, connected } => {
+            set_float(&mut parameters, 0, *input);
             apply_connected(&mut parameters, *connected);
         }
-        ProjectModuleParams::Output { gain, connected } => {
+        ProjectModuleParams::Output {
+            input,
+            gain,
+            connected,
+        } => {
+            set_float(&mut parameters, 0, *input);
             set_float(&mut parameters, 1, *gain);
             apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::DelayTap { gain } => {
             set_float(&mut parameters, 1, *gain);
+        }
+        ProjectModuleParams::Random { gate, connected } => {
+            set_float(&mut parameters, 0, *gate);
+            apply_connected(&mut parameters, *connected);
         }
     }
     for (index, parameter) in parameters.into_iter().enumerate() {

@@ -387,7 +387,7 @@ pub(super) fn composition_body(
             },
             body: ModuleBody::CompositionOutput {
                 label: declared.label().to_string(),
-                input: input_param(),
+                input: signal_param(),
             },
             disabled: false,
         });
@@ -687,8 +687,12 @@ pub(super) fn composition_body(
 
 fn graph_node_body(module: &AudioModule) -> ModuleBody {
     match module {
-        AudioModule::Delay { time, feedback } => ModuleBody::Delay {
-            input: float_param(-100, 100, 1, 0),
+        AudioModule::Delay {
+            input,
+            time,
+            feedback,
+        } => ModuleBody::Delay {
+            input: float_param(-100_000, 100_000, 1, (input.value() * 100.0).round() as i32),
             time: match time {
                 Duration::Samples(samples) => time_param(samples.value() as i32, TimeUnit::Samples),
                 Duration::Seconds(seconds) => {
@@ -711,7 +715,7 @@ pub(super) fn graph_node_label(module: &AudioModule) -> &'static str {
         AudioModule::Gate => "Gate",
         AudioModule::Degree => "Degree",
         AudioModule::Constant(_) => "Constant",
-        AudioModule::Unary(op) => match op {
+        AudioModule::Unary { op, .. } => match op {
             brainwash::patch::UnaryOp::Absolute => "Absolute",
             brainwash::patch::UnaryOp::Sine => "Sine",
             brainwash::patch::UnaryOp::HyperbolicTangent => "Tanh",
@@ -746,9 +750,9 @@ pub(super) fn graph_node_label(module: &AudioModule) -> &'static str {
             BinaryOp::Equal => "Equal",
         },
         AudioModule::Switch { .. } => "Switch",
-        AudioModule::Random => "Random",
+        AudioModule::Random { .. } => "Random",
         AudioModule::Sample { .. } => "Sample",
-        AudioModule::Probe => "Probe",
+        AudioModule::Probe { .. } => "Probe",
         AudioModule::Composition(_) => "Composition",
     }
 }

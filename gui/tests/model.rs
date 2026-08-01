@@ -2272,54 +2272,14 @@ fn gui_built_freq_osc_output_patch_uses_track_controls() {
 }
 
 #[test]
-fn gate_into_osc_gain_matches_default_gain_when_gate_is_high() {
-    let rate = SampleRate::new(44_100).unwrap();
-    let controls_high = PatchControls {
-        frequency: Hertz::new(330.0),
-        gate: 1.0,
-        degree: 0,
-    };
-    let controls_low = PatchControls {
-        frequency: Hertz::new(330.0),
-        gate: 0.0,
-        degree: 0,
-    };
+fn oscillator_composition_exposes_only_frequency() {
+    let mut state = GuiState::new(8, 8);
+    place_palette_module(&mut state, ModuleCategory::Source, "Sine Oscillator");
 
-    let mut default_state = GuiState::new(8, 8);
-    place_module_kind(&mut default_state, ModuleKind::Phase);
-    default_state.apply(GuiAction::Right);
-    place_module_kind(&mut default_state, ModuleKind::Output);
-
-    let mut gated_state = GuiState::new(8, 8);
-    gated_state.apply(GuiAction::Down);
-    place_module_kind(&mut gated_state, ModuleKind::Gate);
-    gated_state.apply(GuiAction::Up);
-    gated_state.apply(GuiAction::Right);
-    place_module_kind(&mut gated_state, ModuleKind::Phase);
-    gated_state.apply(GuiAction::Right);
-    place_module_kind(&mut gated_state, ModuleKind::Output);
-
-    let mut default_patch = default_state.compile_audio_patch(rate).unwrap();
-    let mut gated_high_patch = gated_state.compile_audio_patch(rate).unwrap();
-    let mut gated_low_patch = gated_state.compile_audio_patch(rate).unwrap();
-
-    for _ in 0..256 {
-        let default = default_patch
-            .next_with_controls(controls_high)
-            .left()
-            .value();
-        let gated = gated_high_patch
-            .next_with_controls(controls_high)
-            .left()
-            .value();
-        let silent = gated_low_patch
-            .next_with_controls(controls_low)
-            .left()
-            .value();
-
-        assert!((default - gated).abs() < 0.0001, "{default} {gated}");
-        assert!(silent.abs() < 0.0001, "{silent}");
-    }
+    let parameters = state.modules()[0].parameters();
+    assert_eq!(parameters.len(), 2);
+    assert_eq!(parameters[0].name(), "Name");
+    assert_eq!(parameters[1].name(), "Frequency");
 }
 
 #[test]
@@ -3063,6 +3023,7 @@ fn loading_restores_sample_path_and_relink_clears_missing_state() {
                 file_idx: 0,
                 file_name: sample_name.to_string(),
                 samples: std::sync::Arc::new(Vec::new()),
+                position: 0.0,
                 connected: 255,
             },
         }],
@@ -3141,6 +3102,7 @@ fn load_project_replaces_state_from_project_file() {
       x: 3,
       y: 2,
       params: Output(
+        input: 0.0,
         gain: 0.5,
         connected: 255,
       ),

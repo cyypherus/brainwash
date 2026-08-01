@@ -372,11 +372,11 @@ enum ModuleBody {
         frequency: FloatParam,
     },
     Rise {
-        gate: InputParam,
+        gate: FloatParam,
         time: TimeParam,
     },
     Fall {
-        gate: InputParam,
+        gate: FloatParam,
         time: TimeParam,
     },
     Ramp {
@@ -408,24 +408,24 @@ enum ModuleBody {
         gain: FloatParam,
     },
     Random {
-        gate: InputParam,
+        gate: FloatParam,
     },
     Sample {
         file_name: String,
         file_missing: bool,
         samples: Arc<Vec<AudioSample>>,
-        position: InputParam,
+        position: FloatParam,
     },
     Probe {
         input: FloatParam,
     },
     Output {
-        input: InputParam,
+        input: FloatParam,
         gain: FloatParam,
     },
     CompositionOutput {
         label: String,
-        input: InputParam,
+        input: FloatParam,
     },
     TurnRightDown,
     TurnDownRight,
@@ -462,11 +462,6 @@ struct TimeParam {
     exact_seconds: Option<u32>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct InputParam {
-    connected: bool,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DelaySourceParam {
     selected: Option<ModuleId>,
@@ -496,7 +491,6 @@ pub enum ParameterValue {
         numerator: i32,
         denominator: i32,
     },
-    Input,
     File {
         path: String,
         missing: bool,
@@ -601,14 +595,6 @@ fn time_parameter(name: &'static str, param: TimeParam) -> ModuleParameter {
     ModuleParameter {
         name: name.to_string(),
         value,
-        connected: param.connected,
-    }
-}
-
-fn input_parameter(name: &'static str, param: InputParam) -> ModuleParameter {
-    ModuleParameter {
-        name: name.to_string(),
-        value: ParameterValue::Input,
         connected: param.connected,
     }
 }
@@ -728,8 +714,8 @@ fn time_param(value: i32, unit: TimeUnit) -> TimeParam {
     }
 }
 
-fn input_param() -> InputParam {
-    InputParam { connected: true }
+fn signal_param() -> FloatParam {
+    float_param(-100_000, 100_000, 1, 0)
 }
 
 #[derive(Debug)]
@@ -1002,24 +988,30 @@ impl ModuleKind {
                 b: AudioSample::ZERO,
             }),
             ModuleKind::Constant => ModuleBody::Primitive(AudioModule::Constant(AudioSample::ZERO)),
-            ModuleKind::Absolute => {
-                ModuleBody::Primitive(AudioModule::Unary(brainwash::patch::UnaryOp::Absolute))
-            }
-            ModuleKind::Sine => {
-                ModuleBody::Primitive(AudioModule::Unary(brainwash::patch::UnaryOp::Sine))
-            }
-            ModuleKind::Tanh => ModuleBody::Primitive(AudioModule::Unary(
-                brainwash::patch::UnaryOp::HyperbolicTangent,
-            )),
-            ModuleKind::Atan => {
-                ModuleBody::Primitive(AudioModule::Unary(brainwash::patch::UnaryOp::Arctangent))
-            }
-            ModuleKind::Exp => {
-                ModuleBody::Primitive(AudioModule::Unary(brainwash::patch::UnaryOp::Exponential))
-            }
-            ModuleKind::Sign => {
-                ModuleBody::Primitive(AudioModule::Unary(brainwash::patch::UnaryOp::Sign))
-            }
+            ModuleKind::Absolute => ModuleBody::Primitive(AudioModule::Unary {
+                op: brainwash::patch::UnaryOp::Absolute,
+                input: AudioSample::ZERO,
+            }),
+            ModuleKind::Sine => ModuleBody::Primitive(AudioModule::Unary {
+                op: brainwash::patch::UnaryOp::Sine,
+                input: AudioSample::ZERO,
+            }),
+            ModuleKind::Tanh => ModuleBody::Primitive(AudioModule::Unary {
+                op: brainwash::patch::UnaryOp::HyperbolicTangent,
+                input: AudioSample::ZERO,
+            }),
+            ModuleKind::Atan => ModuleBody::Primitive(AudioModule::Unary {
+                op: brainwash::patch::UnaryOp::Arctangent,
+                input: AudioSample::ZERO,
+            }),
+            ModuleKind::Exp => ModuleBody::Primitive(AudioModule::Unary {
+                op: brainwash::patch::UnaryOp::Exponential,
+                input: AudioSample::ZERO,
+            }),
+            ModuleKind::Sign => ModuleBody::Primitive(AudioModule::Unary {
+                op: brainwash::patch::UnaryOp::Sign,
+                input: AudioSample::ZERO,
+            }),
             ModuleKind::Freq => ModuleBody::Freq,
             ModuleKind::Gate => ModuleBody::Gate,
             ModuleKind::Degree => ModuleBody::Degree,
@@ -1028,11 +1020,11 @@ impl ModuleKind {
             },
             ModuleKind::Noise => ModuleBody::Primitive(AudioModule::Noise),
             ModuleKind::Rise => ModuleBody::Rise {
-                gate: input_param(),
+                gate: signal_param(),
                 time: time_param(10, TimeUnit::Seconds),
             },
             ModuleKind::Fall => ModuleBody::Fall {
-                gate: input_param(),
+                gate: signal_param(),
                 time: time_param(10, TimeUnit::Seconds),
             },
             ModuleKind::Ramp => ModuleBody::Ramp {
@@ -1055,6 +1047,7 @@ impl ModuleKind {
                 ],
             },
             ModuleKind::Filter => ModuleBody::Primitive(AudioModule::Filter {
+                input: AudioSample::ZERO,
                 cutoff: Hertz::new(440.0).unwrap(),
                 resonance: Resonance::new(0.71).unwrap(),
             }),
@@ -1122,9 +1115,11 @@ impl ModuleKind {
                 b: AudioSample::ZERO,
             }),
             ModuleKind::Damp => ModuleBody::Primitive(AudioModule::Damp {
+                input: AudioSample::ZERO,
                 coefficient: Unit::new(0.5).unwrap(),
             }),
             ModuleKind::Slew => ModuleBody::Primitive(AudioModule::Slew {
+                input: AudioSample::ZERO,
                 rise: Seconds::new(0.01).unwrap(),
                 fall: Seconds::new(0.1).unwrap(),
             }),
@@ -1144,28 +1139,29 @@ impl ModuleKind {
                 b: AudioSample::ZERO,
             }),
             ModuleKind::Switch => ModuleBody::Primitive(AudioModule::Switch {
+                select: AudioSample::ZERO,
                 a: AudioSample::ZERO,
                 b: AudioSample::new(1.0).unwrap(),
             }),
             ModuleKind::Random => ModuleBody::Random {
-                gate: input_param(),
+                gate: signal_param(),
             },
             ModuleKind::Sample => ModuleBody::Sample {
                 file_name: "none".to_string(),
                 file_missing: false,
                 samples: Arc::new(Vec::new()),
-                position: input_param(),
+                position: signal_param(),
             },
             ModuleKind::Probe => ModuleBody::Probe {
                 input: float_param(-100, 100, 1, 0),
             },
             ModuleKind::Output => ModuleBody::Output {
-                input: input_param(),
+                input: signal_param(),
                 gain: float_param(0, 100, 1, 100),
             },
             ModuleKind::CompositionOutput => ModuleBody::CompositionOutput {
                 label: "Output".to_string(),
-                input: input_param(),
+                input: signal_param(),
             },
             ModuleKind::TurnRightDown => ModuleBody::TurnRightDown,
             ModuleKind::TurnDownRight => ModuleBody::TurnDownRight,
@@ -1324,6 +1320,10 @@ impl ModuleBody {
                 "Value",
                 float_param(-2000, 2000, 1, (value.value() * 100.0).round() as i32),
             )],
+            ModuleBody::Primitive(AudioModule::Unary { input, .. }) => vec![float_parameter(
+                "In",
+                float_param(-2000, 2000, 1, (input.value() * 100.0).round() as i32),
+            )],
             ModuleBody::Primitive(AudioModule::Binary { a, b, .. }) => vec![
                 float_parameter(
                     "A",
@@ -1334,8 +1334,11 @@ impl ModuleBody {
                     float_param(-2000, 2000, 1, (b.value() * 100.0).round() as i32),
                 ),
             ],
-            ModuleBody::Primitive(AudioModule::Switch { a, b }) => vec![
-                input_parameter("Sel", input_param()),
+            ModuleBody::Primitive(AudioModule::Switch { select, a, b }) => vec![
+                float_parameter(
+                    "Sel",
+                    float_param(-2000, 2000, 1, (select.value() * 100.0).round() as i32),
+                ),
                 float_parameter(
                     "A",
                     float_param(-2000, 2000, 1, (a.value() * 100.0).round() as i32),
@@ -1345,7 +1348,15 @@ impl ModuleBody {
                     float_param(-2000, 2000, 1, (b.value() * 100.0).round() as i32),
                 ),
             ],
-            ModuleBody::Primitive(AudioModule::Filter { cutoff, resonance }) => vec![
+            ModuleBody::Primitive(AudioModule::Filter {
+                input,
+                cutoff,
+                resonance,
+            }) => vec![
+                float_parameter(
+                    "In",
+                    float_param(-2000, 2000, 1, (input.value() * 100.0).round() as i32),
+                ),
                 float_parameter(
                     "Freq",
                     float_param(1, 200_000, 100, (cutoff.value() * 100.0).round() as i32),
@@ -1355,11 +1366,21 @@ impl ModuleBody {
                     float_param(10, 2000, 10, (resonance.value() * 100.0).round() as i32),
                 ),
             ],
-            ModuleBody::Primitive(AudioModule::Damp { coefficient }) => vec![float_parameter(
-                "Damp",
-                float_param(0, 100, 1, (coefficient.value() * 100.0).round() as i32),
-            )],
-            ModuleBody::Primitive(AudioModule::Slew { rise, fall }) => vec![
+            ModuleBody::Primitive(AudioModule::Damp { input, coefficient }) => vec![
+                float_parameter(
+                    "In",
+                    float_param(-2000, 2000, 1, (input.value() * 100.0).round() as i32),
+                ),
+                float_parameter(
+                    "Damp",
+                    float_param(0, 100, 1, (coefficient.value() * 100.0).round() as i32),
+                ),
+            ],
+            ModuleBody::Primitive(AudioModule::Slew { input, rise, fall }) => vec![
+                float_parameter(
+                    "In",
+                    float_param(-2000, 2000, 1, (input.value() * 100.0).round() as i32),
+                ),
                 float_parameter(
                     "Rise",
                     float_param(0, 1000, 1, (rise.value() * 100.0).round() as i32),
@@ -1374,7 +1395,7 @@ impl ModuleBody {
             ModuleBody::Phase { frequency } => vec![float_parameter("Hz", *frequency)],
             ModuleBody::Rise { gate, time } | ModuleBody::Fall { gate, time } => {
                 vec![
-                    input_parameter("Gate", *gate),
+                    float_parameter("Gate", *gate),
                     time_parameter("Time", *time),
                 ]
             }
@@ -1418,7 +1439,7 @@ impl ModuleBody {
                 delay_source_parameter("Src", source),
                 float_parameter("Gain", *gain),
             ],
-            ModuleBody::Random { gate } => vec![input_parameter("Gate", *gate)],
+            ModuleBody::Random { gate } => vec![float_parameter("Gate", *gate)],
             ModuleBody::Sample {
                 file_name,
                 file_missing,
@@ -1427,13 +1448,13 @@ impl ModuleBody {
             } => {
                 vec![
                     file_parameter("File", file_name, *file_missing),
-                    input_parameter("Pos", *position),
+                    float_parameter("Pos", *position),
                 ]
             }
             ModuleBody::Probe { input } => vec![float_parameter("In", *input)],
             ModuleBody::Output { input, gain } => {
                 vec![
-                    input_parameter("In", *input),
+                    float_parameter("In", *input),
                     float_parameter("Gain", *gain),
                 ]
             }
@@ -1443,7 +1464,7 @@ impl ModuleBody {
                     value: ParameterValue::Text(label.clone()),
                     connected: false,
                 },
-                input_parameter("In", *input),
+                float_parameter("In", *input),
             ],
             ModuleBody::TurnRightDown
             | ModuleBody::TurnDownRight
@@ -1572,6 +1593,9 @@ impl ModuleBody {
                 *value = next;
                 changed
             }
+            ModuleBody::Primitive(AudioModule::Unary { input, .. }) => {
+                set_audio_sample(input, index, 0, &parameter)
+            }
             ModuleBody::Primitive(AudioModule::Binary { a, b, .. }) => {
                 let ParameterValue::Float { value: next, .. } = parameter.value else {
                     return false;
@@ -1588,10 +1612,7 @@ impl ModuleBody {
                 *target = next;
                 changed
             }
-            ModuleBody::Primitive(AudioModule::Switch { a, b }) => {
-                if index == 0 {
-                    return matches!(parameter.value, ParameterValue::Input) && parameter.connected;
-                }
+            ModuleBody::Primitive(AudioModule::Switch { select, a, b }) => {
                 let ParameterValue::Float { value, .. } = parameter.value else {
                     return false;
                 };
@@ -1599,6 +1620,7 @@ impl ModuleBody {
                     return false;
                 };
                 let target = match index {
+                    0 => select,
                     1 => a,
                     2 => b,
                     _ => return false,
@@ -1607,12 +1629,19 @@ impl ModuleBody {
                 *target = next;
                 changed
             }
-            ModuleBody::Primitive(AudioModule::Filter { cutoff, resonance }) => {
+            ModuleBody::Primitive(AudioModule::Filter {
+                input,
+                cutoff,
+                resonance,
+            }) => {
+                if set_audio_sample(input, index, 0, &parameter) {
+                    return true;
+                }
                 let ParameterValue::Float { value, .. } = parameter.value else {
                     return false;
                 };
                 match index {
-                    0 => {
+                    1 => {
                         let Some(next) = Hertz::new(value as f32 / 100.0) else {
                             return false;
                         };
@@ -1620,7 +1649,7 @@ impl ModuleBody {
                         *cutoff = next;
                         changed
                     }
-                    1 => {
+                    2 => {
                         let Some(next) = Resonance::new(value as f32 / 100.0) else {
                             return false;
                         };
@@ -1631,11 +1660,14 @@ impl ModuleBody {
                     _ => false,
                 }
             }
-            ModuleBody::Primitive(AudioModule::Damp { coefficient }) => {
+            ModuleBody::Primitive(AudioModule::Damp { input, coefficient }) => {
+                if set_audio_sample(input, index, 0, &parameter) {
+                    return true;
+                }
                 let ParameterValue::Float { value, .. } = parameter.value else {
                     return false;
                 };
-                if index != 0 {
+                if index != 1 {
                     return false;
                 }
                 let Some(next) = Unit::new(value as f32 / 100.0) else {
@@ -1645,7 +1677,10 @@ impl ModuleBody {
                 *coefficient = next;
                 changed
             }
-            ModuleBody::Primitive(AudioModule::Slew { rise, fall }) => {
+            ModuleBody::Primitive(AudioModule::Slew { input, rise, fall }) => {
+                if set_audio_sample(input, index, 0, &parameter) {
+                    return true;
+                }
                 let ParameterValue::Float { value, .. } = parameter.value else {
                     return false;
                 };
@@ -1653,8 +1688,8 @@ impl ModuleBody {
                     return false;
                 };
                 let target = match index {
-                    0 => rise,
-                    1 => fall,
+                    1 => rise,
+                    2 => fall,
                     _ => return false,
                 };
                 let changed = *target != next;
@@ -1664,7 +1699,7 @@ impl ModuleBody {
             ModuleBody::Primitive(_) => false,
             ModuleBody::Phase { frequency } => set_float_param(frequency, index, 0, &parameter),
             ModuleBody::Rise { gate, time } | ModuleBody::Fall { gate, time } => {
-                set_input_param(gate, index, 0, &parameter)
+                set_float_param(gate, index, 0, &parameter)
                     || set_time_param(time, index, 1, &parameter)
             }
             ModuleBody::Ramp { value, time } => {
@@ -1705,16 +1740,16 @@ impl ModuleBody {
                 set_delay_source_param(source, index, 0, &parameter)
                     || set_float_param(gain, index, 1, &parameter)
             }
-            ModuleBody::Random { gate } => set_input_param(gate, index, 0, &parameter),
-            ModuleBody::Sample { position, .. } => set_input_param(position, index, 1, &parameter),
+            ModuleBody::Random { gate } => set_float_param(gate, index, 0, &parameter),
+            ModuleBody::Sample { position, .. } => set_float_param(position, index, 1, &parameter),
             ModuleBody::Probe { input } => set_float_param(input, index, 0, &parameter),
             ModuleBody::Output { input, gain } => {
-                set_input_param(input, index, 0, &parameter)
+                set_float_param(input, index, 0, &parameter)
                     || set_float_param(gain, index, 1, &parameter)
             }
             ModuleBody::CompositionOutput { label, input } => match index {
                 0 => set_text_param(label, &parameter),
-                1 => set_input_param(input, index, 1, &parameter),
+                1 => set_float_param(input, index, 1, &parameter),
                 _ => false,
             },
             ModuleBody::Freq
@@ -1748,6 +1783,25 @@ impl ModuleBody {
             },
         }
     }
+}
+
+fn set_audio_sample(
+    target: &mut AudioSample,
+    index: usize,
+    expected: usize,
+    parameter: &ModuleParameter,
+) -> bool {
+    if index != expected {
+        return false;
+    }
+    let ParameterValue::Float { value, .. } = parameter.value else {
+        return false;
+    };
+    let Some(value) = AudioSample::new(value as f32 / 100.0) else {
+        return false;
+    };
+    *target = value;
+    true
 }
 
 fn set_float_param(
@@ -1806,19 +1860,6 @@ fn set_time_param(
             target.exact_seconds = None;
         }
         _ => return false,
-    }
-    target.connected = parameter.connected;
-    true
-}
-
-fn set_input_param(
-    target: &mut InputParam,
-    index: usize,
-    expected: usize,
-    parameter: &ModuleParameter,
-) -> bool {
-    if index != expected || !matches!(parameter.value, ParameterValue::Input) {
-        return false;
     }
     target.connected = parameter.connected;
     true
@@ -2100,7 +2141,6 @@ impl ParameterValue {
                 numerator,
                 denominator,
             } => format!("{}/{}", numerator.max(&1), denominator.max(&1)),
-            ParameterValue::Input => "input".to_string(),
             ParameterValue::File { path, missing } => {
                 if *missing {
                     format!("missing: {path}")
@@ -2131,7 +2171,6 @@ impl ParameterValue {
             ParameterValue::Float { .. }
                 | ParameterValue::Time { .. }
                 | ParameterValue::Bars { .. }
-                | ParameterValue::Input
         )
     }
 
@@ -2147,7 +2186,6 @@ impl ParameterValue {
                 numerator,
                 denominator,
             } => format!("{}/{}", numerator.max(&1), denominator.max(&1)),
-            ParameterValue::Input => String::new(),
             ParameterValue::File { path, .. } => path.clone(),
             ParameterValue::Enum { index, options } => {
                 options.get(*index).cloned().unwrap_or_default()
@@ -2206,7 +2244,7 @@ impl ParameterValue {
                 }
                 before != (*numerator, *denominator)
             }
-            ParameterValue::Input | ParameterValue::File { .. } | ParameterValue::Text(_) => false,
+            ParameterValue::File { .. } | ParameterValue::Text(_) => false,
             ParameterValue::Enum { index, options } => {
                 if options.is_empty() {
                     return false;
@@ -3949,20 +3987,12 @@ impl GuiState {
                 PalettePreset::Fuzz => brainwash::preset::fuzz(),
                 PalettePreset::Fold => brainwash::preset::fold(),
                 PalettePreset::Clip => brainwash::preset::clip(),
-                PalettePreset::Sine => {
-                    brainwash::preset::sine(Hertz::new(440.0).unwrap(), Unit::ONE, false)
-                }
-                PalettePreset::Square => {
-                    brainwash::preset::square(Hertz::new(440.0).unwrap(), Unit::ONE, false)
-                }
-                PalettePreset::Triangle => {
-                    brainwash::preset::triangle(Hertz::new(440.0).unwrap(), Unit::ONE, false)
-                }
-                PalettePreset::Saw => {
-                    brainwash::preset::saw(Hertz::new(440.0).unwrap(), Unit::ONE, false)
-                }
+                PalettePreset::Sine => brainwash::preset::sine(Hertz::new(440.0).unwrap()),
+                PalettePreset::Square => brainwash::preset::square(Hertz::new(440.0).unwrap()),
+                PalettePreset::Triangle => brainwash::preset::triangle(Hertz::new(440.0).unwrap()),
+                PalettePreset::Saw => brainwash::preset::saw(Hertz::new(440.0).unwrap()),
                 PalettePreset::ReverseSaw => {
-                    brainwash::preset::reverse_saw(Hertz::new(440.0).unwrap(), Unit::ONE, false)
+                    brainwash::preset::reverse_saw(Hertz::new(440.0).unwrap())
                 }
                 PalettePreset::DegreeGate => brainwash::preset::degree_gate(0),
                 PalettePreset::Attenuator => brainwash::preset::attenuator(Unit::ONE),
@@ -4321,11 +4351,11 @@ mod tests {
                 file_name: "sample.wav".to_string(),
                 file_missing: false,
                 samples: Arc::new(vec![expected]),
-                position: input_param(),
+                position: signal_param(),
             },
             disabled: false,
         };
-        let AudioModule::Sample { samples } =
+        let AudioModule::Sample { samples, .. } =
             audio_module(&module, SampleRate::new(44_100).unwrap(), 120).unwrap()
         else {
             panic!()
@@ -4501,9 +4531,9 @@ mod tests {
             panic!()
         };
         assert_eq!(kernel.output_count(), 2);
-        assert_eq!(body.parameters().len(), 2);
+        assert_eq!(body.parameters().len(), 3);
 
-        let changed = body.set_parameter(1, float_parameter("Q", float_param(10, 2000, 10, 800)));
+        let changed = body.set_parameter(2, float_parameter("Q", float_param(10, 2000, 10, 800)));
         let ModuleBody::Primitive(AudioModule::Filter { resonance, .. }) = body else {
             panic!()
         };
@@ -4537,6 +4567,21 @@ mod tests {
             }
             _ => panic!("wrong body"),
         }
+    }
+
+    #[test]
+    fn switch_exposes_three_float_inputs() {
+        let body = ModuleKind::Switch.default_body();
+        let parameters = body.parameters();
+        assert_eq!(parameters.len(), 3);
+        assert!(
+            parameters
+                .iter()
+                .all(|parameter| matches!(parameter.value(), ParameterValue::Float { .. }))
+        );
+        assert_eq!(parameters[0].name(), "Sel");
+        assert_eq!(parameters[1].name(), "A");
+        assert_eq!(parameters[2].name(), "B");
     }
 
     #[test]
@@ -5212,7 +5257,7 @@ fn typed_parameter_value(current: &ParameterValue, text: &str) -> Option<Paramet
             let value = text.trim();
             (!value.is_empty()).then(|| ParameterValue::Text(value.to_string()))
         }
-        ParameterValue::Input | ParameterValue::File { .. } | ParameterValue::Enum { .. } => None,
+        ParameterValue::File { .. } | ParameterValue::Enum { .. } => None,
     }
 }
 
