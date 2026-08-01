@@ -4068,13 +4068,25 @@ mod tests {
 
     #[test]
     fn compound_palette_choices_are_compositions() {
-        for label in [
-            "Transpose",
-            "ADSR",
-            "Reverb",
-            "Distortion",
-            "Compressor",
-            "Flanger",
+        for (label, name) in [
+            ("Transpose", "Transpose"),
+            ("Degree Gate", "Degree Gate"),
+            ("Sine Oscillator", "Sine"),
+            ("Square Oscillator", "Square"),
+            ("Triangle Oscillator", "Triangle"),
+            ("Saw Oscillator", "Saw"),
+            ("Reverse Saw Oscillator", "Reverse Saw"),
+            ("ADSR", "ADSR"),
+            ("Reverb", "Reverb"),
+            ("Distortion", "Distortion"),
+            ("Compressor", "Compressor"),
+            ("Flanger", "Flanger"),
+            ("Tube", "Tube"),
+            ("Tape", "Tape"),
+            ("Fuzz", "Fuzz"),
+            ("Fold", "Fold"),
+            ("Clip", "Clip"),
+            ("Attenuator", "Attenuator"),
         ] {
             let mut state = GuiState::default();
             insert_preset(&mut state, label);
@@ -4089,7 +4101,7 @@ mod tests {
                 ModuleKind::Composition,
                 "{label}"
             );
-            assert_eq!(state.modules()[0].label(), label);
+            assert_eq!(state.modules()[0].label(), name);
             assert!(state.modules()[0].composition_surface().is_some());
         }
     }
@@ -4193,6 +4205,55 @@ mod tests {
             source.module.id
         );
         assert_eq!(state.connections().len(), 1);
+    }
+
+    #[test]
+    fn every_module_places_its_outputs_at_its_trailing_end() {
+        let mut state = GuiState::default();
+        for kind in all_modules().iter().copied() {
+            for orientation in [Orientation::Right, Orientation::Down] {
+                state.instrument_mut().root.modules.clear();
+                state.instrument_mut().root.modules.push(Module {
+                    id: ModuleId::new(0),
+                    position: GridPos::new(0, 0),
+                    orientation,
+                    body: kind.default_body(),
+                    disabled: false,
+                });
+                let module = &state.modules()[0];
+                let outputs = state.module_output_count(module);
+                if outputs == 0 {
+                    continue;
+                }
+                if kind.is_routing() {
+                    for output in 0..outputs as usize {
+                        assert!(
+                            state
+                                .right_output_offset(module, output)
+                                .is_none_or(|offset| offset == 0)
+                                && state
+                                    .bottom_output_offset(module, output)
+                                    .is_none_or(|offset| offset == 0),
+                            "{kind:?} {orientation:?}"
+                        );
+                    }
+                    continue;
+                }
+                let last = outputs as usize - 1;
+                match orientation {
+                    Orientation::Right => assert_eq!(
+                        state.right_output_offset(module, last),
+                        Some(state.module_height(module) - 1),
+                        "{kind:?}"
+                    ),
+                    Orientation::Down => assert_eq!(
+                        state.bottom_output_offset(module, last),
+                        Some(state.module_width(module) - 1),
+                        "{kind:?}"
+                    ),
+                }
+            }
+        }
     }
 
     #[test]
