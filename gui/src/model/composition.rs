@@ -24,22 +24,6 @@ pub(super) fn sync_delay_sources(surface: &mut PatchSurface) {
 }
 
 fn composition_input_position(module: &Module, input: usize) -> Option<(u16, u16)> {
-    if module.kind() == ModuleKind::Delay {
-        return match module.orientation {
-            Orientation::Right => match input {
-                0 => Some((module.position.x, module.position.y)),
-                1 => Some((module.position.x, module.position.y)),
-                2 => Some((module.position.x, module.position.y + 1)),
-                _ => None,
-            },
-            Orientation::Down => match input {
-                0 => Some((module.position.x, module.position.y)),
-                1 => Some((module.position.x, module.position.y)),
-                2 => Some((module.position.x + 1, module.position.y)),
-                _ => None,
-            },
-        };
-    }
     Some(match module.orientation {
         Orientation::Down => (module.position.x + input as u16, module.position.y),
         Orientation::Right => (module.position.x, module.position.y + input as u16),
@@ -57,14 +41,14 @@ pub(super) fn composition_body(
         (9, 8),
         (20, 0),
         (20, 10),
-        (22, 1),
-        (22, 3),
-        (22, 5),
-        (22, 7),
-        (22, 11),
-        (22, 13),
-        (22, 15),
-        (22, 17),
+        (21, 0),
+        (23, 2),
+        (25, 4),
+        (27, 6),
+        (21, 10),
+        (23, 12),
+        (25, 14),
+        (27, 16),
         (18, 0),
         (18, 1),
         (18, 2),
@@ -280,11 +264,11 @@ pub(super) fn composition_body(
             .iter()
             .find_map(|(id, projected)| (*id == *core_id).then_some(*projected))
             .expect("projected module exists");
-        let body = if let Some(input) = graph
+        let exposed_input = graph
             .inputs()
             .iter()
-            .find(|input| input.module() == *core_id)
-        {
+            .find(|input| input.module() == *core_id);
+        let mut body = if let Some(input) = exposed_input {
             let default = match node {
                 AudioModule::Input { default, .. } => default.value(),
                 _ => 0.0,
@@ -332,6 +316,13 @@ pub(super) fn composition_body(
                 _ => graph_node_body(node),
             }
         };
+        if let ModuleBody::Delay { feedback, .. } = &mut body
+            && !connections.iter().any(|(_, input)| {
+                input.module() == *core_id && input.kind() == AudioInputKind::Feedback
+            })
+        {
+            feedback.connected = false;
+        }
         let position = if graph.name() == "FDN Tank" && entries.len() == FDN_POSITIONS.len() {
             let index = entries.iter().position(|(id, _)| *id == *core_id)?;
             let (x, y) = FDN_POSITIONS[index];

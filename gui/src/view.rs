@@ -1981,7 +1981,9 @@ fn module_tile<'a>(
         _ => {
             if module.has_input_left {
                 for index in 0..input_count {
-                    let y = port_axis(index);
+                    let Some(offset) = module.left_input_offsets[index as usize] else {
+                        continue;
+                    };
                     let port_id = if index == 0 && output_count == 0 {
                         id + 3
                     } else {
@@ -1995,14 +1997,16 @@ fn module_tile<'a>(
                             alpha,
                             app,
                         )
-                        .offset(PORT_INSET - meter_inset, y - meter_inset),
+                        .offset(PORT_INSET - meter_inset, port_axis(offset) - meter_inset),
                     );
                 }
             }
 
             if module.has_input_top {
                 for index in 0..input_count {
-                    let x = port_axis(index);
+                    let Some(offset) = module.top_input_offsets[index as usize] else {
+                        continue;
+                    };
                     layers.push(
                         input_port(
                             id + 31_000 + index as u64,
@@ -2011,7 +2015,7 @@ fn module_tile<'a>(
                             alpha,
                             app,
                         )
-                        .offset(x - meter_inset, PORT_INSET - meter_inset),
+                        .offset(port_axis(offset) - meter_inset, PORT_INSET - meter_inset),
                     );
                 }
             }
@@ -2057,6 +2061,9 @@ fn module_tile<'a>(
     } else if kind != ModuleKind::Probe {
         if module.has_input_left {
             for index in 0..input_count {
+                let Some(offset) = module.left_input_offsets[index as usize] else {
+                    continue;
+                };
                 layers.push(
                     port_label(
                         id + 36_000 + index as u64,
@@ -2064,12 +2071,15 @@ fn module_tile<'a>(
                         alpha,
                         app,
                     )
-                    .offset(0., index as f32 * (CELL + GAP)),
+                    .offset(0., offset as f32 * (CELL + GAP)),
                 );
             }
         }
         if module.has_input_top {
             for index in 0..input_count {
+                let Some(offset) = module.top_input_offsets[index as usize] else {
+                    continue;
+                };
                 layers.push(
                     port_label(
                         id + 37_000 + index as u64,
@@ -2077,7 +2087,7 @@ fn module_tile<'a>(
                         alpha,
                         app,
                     )
-                    .offset(index as f32 * (CELL + GAP), 0.),
+                    .offset(offset as f32 * (CELL + GAP), 0.),
                 );
             }
         }

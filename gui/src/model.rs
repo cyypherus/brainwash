@@ -2483,12 +2483,6 @@ fn module_footprint(module: &Module, composition_ports: Option<(u16, u16)>) -> (
     if module.kind().is_routing() {
         return (1, 1);
     }
-    if module.kind() == ModuleKind::Delay {
-        return match module.orientation {
-            Orientation::Right => (1, 2),
-            Orientation::Down => (2, 1),
-        };
-    }
     let (inputs, outputs) =
         composition_ports.unwrap_or_else(|| (module.input_count(), module.output_count()));
     match module.orientation {
@@ -3085,13 +3079,6 @@ impl GuiState {
         if module.kind().is_routing() {
             return 1;
         }
-        if module.kind() == ModuleKind::Delay {
-            return if module.orientation == Orientation::Right {
-                1
-            } else {
-                2
-            };
-        }
         match module.orientation {
             Orientation::Right => 1,
             Orientation::Down => self
@@ -3104,13 +3091,6 @@ impl GuiState {
     fn module_height(&self, module: &Module) -> u16 {
         if module.kind().is_routing() {
             return 1;
-        }
-        if module.kind() == ModuleKind::Delay {
-            return if module.orientation == Orientation::Right {
-                2
-            } else {
-                1
-            };
         }
         match module.orientation {
             Orientation::Right => self
@@ -3188,9 +3168,6 @@ impl GuiState {
         if module.is_composition() {
             return module.orientation == Orientation::Down;
         }
-        if module.kind() == ModuleKind::Delay {
-            return true;
-        }
         module.has_input_top()
     }
 
@@ -3200,9 +3177,6 @@ impl GuiState {
         }
         if module.is_composition() {
             return module.orientation == Orientation::Right;
-        }
-        if module.kind() == ModuleKind::Delay {
-            return true;
         }
         module.has_input_left()
     }
@@ -3232,14 +3206,6 @@ impl GuiState {
             return None;
         }
         match module.kind() {
-            ModuleKind::Delay => match module.orientation {
-                Orientation::Right => match input {
-                    1 => Some(0),
-                    2 => Some(1),
-                    _ => None,
-                },
-                Orientation::Down => (input == 0).then_some(0),
-            },
             ModuleKind::RightJoin | ModuleKind::DownJoin => (input == 0).then_some(0),
             ModuleKind::LeftSplit | ModuleKind::TurnRightDown => (input == 0).then_some(0),
             _ => (input < self.module_input_count(module) as usize).then_some(input as u16),
@@ -3251,14 +3217,6 @@ impl GuiState {
             return None;
         }
         match module.kind() {
-            ModuleKind::Delay => match module.orientation {
-                Orientation::Right => (input == 0).then_some(0),
-                Orientation::Down => match input {
-                    1 => Some(0),
-                    2 => Some(1),
-                    _ => None,
-                },
-            },
             ModuleKind::RightJoin | ModuleKind::DownJoin => (input == 1).then_some(0),
             ModuleKind::TopSplit | ModuleKind::TurnDownRight => (input == 0).then_some(0),
             _ => (input < self.module_input_count(module) as usize).then_some(input as u16),
@@ -4345,7 +4303,7 @@ mod tests {
     }
 
     #[test]
-    fn delay_uses_two_leading_signal_ports_and_a_perpendicular_feedback_port() {
+    fn delay_uses_the_standard_module_geometry() {
         let mut state = GuiState::new(8, 8);
         state.instrument_mut().root.modules.push(Module {
             id: ModuleId::new(0),
@@ -4357,23 +4315,23 @@ mod tests {
         let delay = &state.modules()[0];
         assert_eq!(
             (state.module_width(delay), state.module_height(delay)),
-            (1, 2)
+            (1, 3)
         );
-        assert_eq!(state.top_input_offset(delay, 0), Some(0));
-        assert_eq!(state.left_input_offset(delay, 1), Some(0));
-        assert_eq!(state.left_input_offset(delay, 2), Some(1));
-        assert_eq!(state.right_output_offset(delay, 0), Some(1));
+        assert_eq!(state.left_input_offset(delay, 0), Some(0));
+        assert_eq!(state.left_input_offset(delay, 1), Some(1));
+        assert_eq!(state.left_input_offset(delay, 2), Some(2));
+        assert_eq!(state.right_output_offset(delay, 0), Some(2));
 
         state.instrument_mut().root.modules[0].orientation = Orientation::Down;
         let delay = &state.modules()[0];
         assert_eq!(
             (state.module_width(delay), state.module_height(delay)),
-            (2, 1)
+            (3, 1)
         );
-        assert_eq!(state.left_input_offset(delay, 0), Some(0));
-        assert_eq!(state.top_input_offset(delay, 1), Some(0));
-        assert_eq!(state.top_input_offset(delay, 2), Some(1));
-        assert_eq!(state.bottom_output_offset(delay, 0), Some(1));
+        assert_eq!(state.top_input_offset(delay, 0), Some(0));
+        assert_eq!(state.top_input_offset(delay, 1), Some(1));
+        assert_eq!(state.top_input_offset(delay, 2), Some(2));
+        assert_eq!(state.bottom_output_offset(delay, 0), Some(2));
     }
 
     #[test]
