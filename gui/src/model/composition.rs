@@ -182,56 +182,99 @@ pub(super) fn composition_body(
         .map(|(index, (id, _))| (*id, ModuleId::new(*next_module_id + index as u32)))
         .collect::<Vec<_>>();
     *next_module_id += ids.len() as u32;
-    let linear = graph.outputs().len() == 1
+    let mut direct = graph.outputs().len() == 1
         && entries.iter().all(|(id, _)| {
             connections
                 .iter()
                 .filter(|(from, _)| from.module() == *id)
                 .count()
                 <= 1
-                && connections
-                    .iter()
-                    .filter(|(_, input)| input.module() == *id)
-                    .count()
-                    <= 1
-        });
-    let mut positions = HashMap::new();
+        })
+        && {
+            let mut reachable = vec![graph.outputs()[0].port().module()];
+            let mut index = 0;
+            while index < reachable.len() {
+                let target = reachable[index];
+                for (from, input) in &connections {
+                    if input.module() == target && !reachable.contains(&from.module()) {
+                        reachable.push(from.module());
+                    }
+                }
+                index += 1;
+            }
+            reachable.len() == entries.len()
+        };
+    let mut positions: HashMap<brainwash::patch::ModuleId, GridPos> = HashMap::new();
     let mut fallback_output_y = 0;
-    if linear {
+    if direct {
+        let mut columns = HashMap::new();
         for core_id in &ordered {
-            let node = entries
+            let x = connections
                 .iter()
-                .find_map(|(id, module)| (*id == *core_id).then_some(module))
-                .expect("composition module exists");
-            let incoming = connections
-                .iter()
-                .find(|(_, input)| input.module() == *core_id);
-            let x = incoming
-                .and_then(|(from, _)| positions.get(&from.module()))
-                .map_or(0, |position: &GridPos| position.x + 1);
-            let y = incoming
-                .and_then(|(from, input)| {
-                    let source = entries
-                        .iter()
-                        .find_map(|(id, module)| (*id == from.module()).then_some(module))?;
-                    let source_position = positions.get(&from.module())?;
-                    let source_height = source
-                        .input_kinds()
-                        .len()
-                        .max(source.output_count() as usize)
-                        .max(1) as u16;
-                    let source_y =
-                        source_position.y + source_height - source.output_count() + from.index();
-                    let input_index =
-                        node.input_kinds()
-                            .iter()
-                            .position(|kind| *kind == input.kind())? as u16;
-                    source_y.checked_sub(input_index)
-                })
+                .filter(|(_, input)| input.module() == *core_id)
+                .filter_map(|(from, _)| columns.get(&from.module()))
+                .map(|x| x + 1)
+                .max()
                 .unwrap_or(0);
-            positions.insert(*core_id, GridPos::new(x, y));
+            columns.insert(*core_id, x);
         }
-    } else {
+        let mut rows = HashMap::from([(graph.outputs()[0].port().module(), 0_i32)]);
+        for target_id in ordered.iter().rev() {
+            let target_y = *rows
+                .get(target_id)
+                .expect("module reaches composition output");
+            let target = entries
+                .iter()
+                .find_map(|(id, module)| (*id == *target_id).then_some(module))
+                .expect("composition module exists");
+            for (from, input) in connections
+                .iter()
+                .filter(|(_, input)| input.module() == *target_id)
+            {
+                let source = entries
+                    .iter()
+                    .find_map(|(id, module)| (*id == from.module()).then_some(module))
+                    .expect("composition module exists");
+                let source_height = source
+                    .input_kinds()
+                    .len()
+                    .max(source.output_count() as usize)
+                    .max(1) as i32;
+                let source_output =
+                    source_height - i32::from(source.output_count()) + i32::from(from.index());
+                let target_input = target
+                    .input_kinds()
+                    .iter()
+                    .position(|kind| *kind == input.kind())
+                    .expect("composition input exists") as i32;
+                rows.insert(from.module(), target_y + target_input - source_output);
+            }
+        }
+        let shift = -rows.values().copied().min().unwrap_or(0).min(0);
+        for core_id in &ordered {
+            positions.insert(
+                *core_id,
+                GridPos::new(columns[core_id], (rows[core_id] + shift) as u16),
+            );
+        }
+        let mut occupied = HashSet::new();
+        for (core_id, node) in &entries {
+            let position = positions[core_id];
+            let height = node
+                .input_kinds()
+                .len()
+                .max(node.output_count() as usize)
+                .max(1) as u16;
+            if (position.y..position.y + height)
+                .any(|y| !occupied.insert(GridPos::new(position.x, y)))
+            {
+                direct = false;
+                positions.clear();
+                break;
+            }
+        }
+    }
+    if !direct {
         let mut x = 0;
         let mut y = 0;
         for core_id in &ordered {
@@ -391,7 +434,7 @@ pub(super) fn composition_body(
             && entries.len() == OUTPUT_DECODER_POSITIONS.len()
         {
             GridPos::new(31, 17 + index as u16)
-        } else if graph.outputs().len() == 1 && linear {
+        } else if graph.outputs().len() == 1 && direct {
             let source_ports = source_module.composition_surface().map(composition_ports);
             let (_, source_height) = module_footprint(source_module, source_ports);
             GridPos::new(
@@ -432,7 +475,7 @@ pub(super) fn composition_body(
             position,
             orientation: if graph.outputs().len() == 1
                 && graph.name() != "Output Decoder"
-                && !linear
+                && !direct
             {
                 Orientation::Down
             } else {
