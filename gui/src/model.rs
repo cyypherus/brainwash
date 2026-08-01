@@ -2970,6 +2970,14 @@ impl GuiState {
         self.selected_palette_choice().name
     }
 
+    pub(crate) fn palette_index_selected(&self, index: usize) -> bool {
+        self.mode == Mode::Palette && self.palette_index == index
+    }
+
+    pub(crate) fn filtered_palette_index_selected(&self, index: usize) -> bool {
+        self.palette_searching && self.palette_filter_index == index
+    }
+
     pub fn module_at(&self, position: GridPos) -> Option<&Module> {
         self.modules()
             .iter()
@@ -4134,6 +4142,40 @@ mod tests {
             assert_eq!(state.modules()[0].label(), name);
             assert!(state.modules()[0].composition_surface().is_some());
         }
+    }
+
+    #[test]
+    fn palette_selection_identifies_one_row_when_kinds_repeat() {
+        let mut state = GuiState::default();
+        state.open_category(ModuleCategory::Effect);
+        let modules = state.palette_modules();
+        let composition_rows = modules
+            .iter()
+            .enumerate()
+            .filter_map(|(index, module)| {
+                (module.kind() == ModuleKind::Composition).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        assert!(composition_rows.len() > 1);
+
+        state.choose_palette_index(composition_rows[1]);
+
+        let selected = (0..modules.len())
+            .filter(|index| state.palette_index_selected(*index))
+            .collect::<Vec<_>>();
+        assert_eq!(selected, vec![composition_rows[1]]);
+
+        state.apply(GuiAction::Search);
+        for character in "oscillator".chars() {
+            state.apply(GuiAction::InputChar(character));
+        }
+        let filtered = state.filtered_palette_modules();
+        assert!(filtered.len() > 1);
+        state.choose_filtered_palette_index(1);
+        let selected = (0..filtered.len())
+            .filter(|index| state.filtered_palette_index_selected(*index))
+            .collect::<Vec<_>>();
+        assert_eq!(selected, vec![1]);
     }
 
     #[test]

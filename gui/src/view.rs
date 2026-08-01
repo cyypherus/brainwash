@@ -231,7 +231,7 @@ fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
                 filtered_module_choice(
                     index,
                     module,
-                    Some(module.kind()) == state.selected_filtered_palette_module(),
+                    state.filtered_palette_index_selected(index),
                     content_width,
                     app,
                 )
@@ -266,8 +266,7 @@ fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
             .iter()
             .enumerate()
             .map(|(index, module)| {
-                let selected = state.mode() == Mode::Palette
-                    && module.kind() == state.selected_palette_module();
+                let selected = state.palette_index_selected(index);
                 module_choice(index, module, selected, content_width, app)
             })
             .collect::<Vec<_>>();
