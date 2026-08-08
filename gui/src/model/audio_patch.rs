@@ -396,7 +396,7 @@ pub(super) fn gui_composition(
     rate: SampleRate,
     bpm: u16,
 ) -> Result<AudioModule, AudioPatchError> {
-    let ModuleBody::Composition { name, surface } = &owner.body else {
+    let ModuleBody::Composition { name, surface, .. } = &owner.body else {
         return Err(AudioPatchError::InvalidParameter);
     };
     let mut patch = Patch::new();

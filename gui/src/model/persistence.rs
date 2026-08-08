@@ -88,13 +88,13 @@ fn project_compositions_from_surface(
         let Some(surface) = module.composition_surface() else {
             continue;
         };
-        let ModuleBody::Composition { name, .. } = &module.body else {
+        let ModuleBody::Composition { name, category, .. } = &module.body else {
             unreachable!();
         };
         compositions.push(ProjectCompositionDef {
             id: module.id.value(),
             name: name.clone(),
-            color: (0, 0, 0),
+            color: category.rgb(),
             modules: project_modules_from_surface(surface, ids, ports)?,
         });
         compositions.extend(project_compositions_from_surface(surface, ids, ports)?);
@@ -351,7 +351,7 @@ fn project_params(
             input: project_float(*input),
             connected: input.connected,
         },
-        ModuleBody::Composition { .. } => {
+        ModuleBody::Composition { category, .. } => {
             let (inputs, outputs) = composition_ports
                 .get(&module.id)
                 .copied()
@@ -359,7 +359,7 @@ fn project_params(
             ProjectModuleParams::Composition {
                 inputs,
                 outputs,
-                color: (0, 0, 0),
+                color: category.rgb(),
             }
         }
     })
@@ -446,9 +446,14 @@ fn surface_from_project_modules(
                 let definition = compositions
                     .get(&composition_id)
                     .ok_or_else(|| format!("missing composition {}", composition_id))?;
+                let category = match module.body {
+                    ModuleBody::Composition { category, .. } => category,
+                    _ => unreachable!(),
+                };
                 module.body = ModuleBody::Composition {
                     name: definition.name.clone(),
                     surface: surface_from_project_modules(&definition.modules, compositions)?,
+                    category,
                 };
             }
             Ok(module)
@@ -557,9 +562,12 @@ fn kind_from_project(kind: ProjectModuleKind) -> (ModuleKind, Option<u32>) {
 fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
     let mut parameters = module.body.parameters();
     match params {
-        ProjectModuleParams::None
-        | ProjectModuleParams::Primitive { .. }
-        | ProjectModuleParams::Composition { .. } => {}
+        ProjectModuleParams::None | ProjectModuleParams::Primitive { .. } => {}
+        ProjectModuleParams::Composition { color, .. } => {
+            if let ModuleBody::Composition { category, .. } = &mut module.body {
+                *category = ModuleCategory::from_rgb(*color);
+            }
+        }
         ProjectModuleParams::CompositionInput {
             label,
             kind,

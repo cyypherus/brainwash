@@ -679,6 +679,7 @@ pub(super) fn composition_body(
                 cursor: GridPos::new(0, 0),
                 modules,
             },
+            category: ModuleCategory::Composition,
         });
     }
     for (core_source, projected_source) in &ids {
@@ -778,6 +779,7 @@ pub(super) fn composition_body(
             cursor: GridPos::new(0, 0),
             modules,
         },
+        category: ModuleCategory::Composition,
     })
 }
 

@@ -224,12 +224,17 @@ fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
     let content = if state.palette_searching() {
         let filter = state.palette_filter().to_string();
         let modules = state.filtered_palette_modules();
-        let description = modules
+        let selected = modules
             .iter()
             .enumerate()
             .find(|(index, _)| state.filtered_palette_index_selected(*index))
-            .map(|(_, module)| module.description())
+            .map(|(_, module)| module);
+        let description = selected
+            .map(|module| module.description())
             .unwrap_or("Search by module name or purpose");
+        let context = selected
+            .map(|module| format!("{} · {}", module.category().label(), module.source_label()))
+            .unwrap_or_else(|| "All categories · Modules, patches, and saved work".to_string());
         let choices = modules
             .iter()
             .enumerate()
@@ -260,12 +265,21 @@ fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
                     .pad_y(7.),
             ])
             .width(content_width),
-            column_spaced(6., choices),
+            text(213, context)
+                .font_size(11)
+                .fill(module_color(
+                    selected
+                        .map(|module| module.category())
+                        .unwrap_or(ModuleCategory::Composition),
+                ))
+                .view()
+                .build(app),
             text(212, description)
                 .font_size(12)
                 .fill(quiet())
                 .view()
                 .build(app),
+            column_spaced(6., choices),
         ]
     } else {
         let categories = ModuleCategory::ALL
@@ -273,28 +287,51 @@ fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
             .map(|category| category_button(*category, *category == state.palette_category(), app))
             .collect::<Vec<_>>();
         let modules = state.palette_modules();
-        let description = modules
+        let selected = modules
             .iter()
             .enumerate()
             .find(|(index, _)| state.palette_index_selected(*index))
-            .map(|(_, module)| module.description())
+            .map(|(_, module)| module);
+        let description = selected
+            .map(|module| module.description())
             .unwrap_or("No modules in this category");
-        let choices = modules
-            .iter()
-            .enumerate()
-            .map(|(index, module)| {
-                let selected = state.palette_index_selected(index);
-                module_choice(index, module, selected, content_width, app)
-            })
-            .collect::<Vec<_>>();
+        let context = selected
+            .map(|module| module.source_label())
+            .unwrap_or("Empty category");
+        let mut choices = Vec::new();
+        let mut group = None;
+        for (index, module) in modules.iter().enumerate() {
+            if group != Some(module.source_label()) {
+                group = Some(module.source_label());
+                choices.push(
+                    text(220 + index as u64, module.source_label().to_uppercase())
+                        .font_size(10)
+                        .fill(quiet())
+                        .view()
+                        .build(app),
+                );
+            }
+            choices.push(module_choice(
+                index,
+                module,
+                state.palette_index_selected(index),
+                content_width,
+                app,
+            ));
+        }
         vec![
             row_spaced(6., categories),
-            column_spaced(6., choices),
+            text(213, context)
+                .font_size(11)
+                .fill(module_color(state.palette_category()))
+                .view()
+                .build(app),
             text(212, description)
                 .font_size(12)
                 .fill(quiet())
                 .view()
                 .build(app),
+            column_spaced(6., choices),
         ]
     };
 
@@ -357,7 +394,7 @@ fn palette_panel_size(state: &GuiState) -> (f32, f32) {
             + GAP
             + rows_height(modules.len(), PALETTE_ROW_HEIGHT, GAP)
             + GAP
-            + 15.;
+            + 32.;
         (width, height)
     } else {
         let modules = state.palette_modules();
@@ -374,6 +411,13 @@ fn palette_panel_size(state: &GuiState) -> (f32, f32) {
             .map(|category| row_width(category.label(), 13.))
             .sum::<f32>()
             + GAP * ModuleCategory::ALL.len().saturating_sub(1) as f32;
+        let groups = modules
+            .iter()
+            .map(PaletteModule::source_label)
+            .fold((0usize, None), |(count, previous), source| {
+                (count + usize::from(previous != Some(source)), Some(source))
+            })
+            .0;
         let width = title_w
             .max(module_w + PANEL_PAD)
             .max(category_w + PANEL_PAD)
@@ -384,8 +428,9 @@ fn palette_panel_size(state: &GuiState) -> (f32, f32) {
             + PALETTE_ROW_HEIGHT
             + GAP
             + rows_height(modules.len(), PALETTE_ROW_HEIGHT, GAP)
+            + groups as f32 * 21.
             + GAP
-            + 15.;
+            + 32.;
         (width, height)
     }
 }
@@ -1861,7 +1906,7 @@ fn module_tile<'a>(
                 if module.module.disabled() {
                     Color::from_rgb8(160, 42, 54)
                 } else {
-                    module_color(kind.category())
+                    module_color(module.module.display_category())
                 }
                 .with_alpha(alpha),
             )
@@ -4751,7 +4796,7 @@ fn action_id(action: GuiAction) -> u64 {
         GuiAction::Search => 69,
         GuiAction::EditComposition => 70,
         GuiAction::ExitComposition => 71,
-        GuiAction::Palette(category) => 1_100 + category_index(category) as u64,
+        GuiAction::Palette(category) => 1_100 + category.index() as u64,
         GuiAction::PaletteLeft => 21,
         GuiAction::PaletteRight => 22,
         GuiAction::PaletteUp => 23,
@@ -4784,13 +4829,6 @@ fn action_id(action: GuiAction) -> u64 {
         GuiAction::DeletePoint => 57,
         GuiAction::ToggleCurve => 58,
     }
-}
-
-fn category_index(category: ModuleCategory) -> usize {
-    ModuleCategory::ALL
-        .iter()
-        .position(|candidate| *candidate == category)
-        .unwrap_or(0)
 }
 
 fn mode_text(state: &GuiState) -> String {
@@ -4856,20 +4894,12 @@ fn cell_id(position: GridPos) -> u64 {
 }
 
 fn module_color(category: ModuleCategory) -> Color {
-    match category {
-        ModuleCategory::Source => Color::from_rgb8(34, 139, 132),
-        ModuleCategory::Shape => Color::from_rgb8(188, 112, 42),
-        ModuleCategory::Filter => Color::from_rgb8(80, 125, 202),
-        ModuleCategory::Effect => Color::from_rgb8(154, 86, 178),
-        ModuleCategory::Logic => Color::from_rgb8(190, 76, 91),
-        ModuleCategory::Routing => Color::from_rgb8(110, 128, 84),
-        ModuleCategory::Composition => Color::from_rgb8(96, 112, 140),
-        ModuleCategory::Output => Color::from_rgb8(214, 171, 68),
-    }
+    let (red, green, blue) = category.rgb();
+    Color::from_rgb8(red, green, blue)
 }
 
 fn palette_module_color(module: &PaletteModule) -> Color {
-    module_color(module.kind().category())
+    module_color(module.category())
 }
 
 fn bg() -> Color {
@@ -4906,18 +4936,20 @@ mod tests {
 
     #[test]
     fn effect_preset_uses_its_placed_composition_color() {
-        let mut state = GuiState::default();
+        let mut state = GuiState::new(32, 24);
         state.open_category(ModuleCategory::Effect);
         let modules = state.palette_modules();
-        let reverb = modules
+        let index = modules
             .iter()
-            .find(|module| module.label() == "Reverb")
+            .position(|module| module.label() == "Reverb")
             .unwrap();
+        let browser_color = palette_module_color(&modules[index]);
+        state.choose_palette_index(index);
+        state.apply(GuiAction::Confirm);
+        let placed = state.module_at(GridPos::new(0, 0)).unwrap();
 
-        assert_eq!(
-            palette_module_color(reverb),
-            module_color(ModuleCategory::Composition)
-        );
+        assert_eq!(browser_color, module_color(placed.display_category()));
+        assert_eq!(placed.display_category(), ModuleCategory::Effect);
     }
 
     #[test]

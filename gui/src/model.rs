@@ -380,6 +380,16 @@ impl PaletteModule {
         }
         self.kind.description()
     }
+
+    pub fn source_label(&self) -> &'static str {
+        if self.user.is_some() {
+            "Saved"
+        } else if self.preset.is_some() {
+            "Patch"
+        } else {
+            "Module"
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -470,6 +480,7 @@ enum ModuleBody {
     Composition {
         name: String,
         surface: PatchSurface,
+        category: ModuleCategory,
     },
 }
 
@@ -766,7 +777,7 @@ pub struct GuiState {
     step_size: usize,
     probe_len: u32,
     palette_category: ModuleCategory,
-    palette_index: usize,
+    palette_indices: [usize; ModuleCategory::ALL.len()],
     palette_searching: bool,
     palette_filter: String,
     palette_filter_index: usize,
@@ -1024,7 +1035,7 @@ impl ModuleKind {
             Self::Fall => "Fall away from a gate signal",
             Self::Ramp => "Move toward a value over time",
             Self::Envelope => "Shape a signal with a drawn envelope",
-            Self::Filter => "Low-pass a signal with resonance",
+            Self::Filter => "Low pass a signal with resonance",
             Self::Comb => "Add a delayed signal back to itself",
             Self::Allpass => "Shift phase without changing amplitude",
             Self::Delay => "Store a signal for delay taps",
@@ -1260,6 +1271,7 @@ impl ModuleKind {
             ModuleKind::Composition => ModuleBody::Composition {
                 name: "Composition".to_string(),
                 surface: PatchSurface::new(),
+                category: ModuleCategory::Composition,
             },
         }
     }
@@ -1329,7 +1341,11 @@ impl ModuleBody {
     fn duplicate(&self, next_module_id: &mut u32) -> Self {
         match self {
             ModuleBody::Primitive(_) => self.clone(),
-            Self::Composition { name, surface } => {
+            Self::Composition {
+                name,
+                surface,
+                category,
+            } => {
                 let mut duplicate = PatchSurface {
                     cursor: surface.cursor,
                     modules: surface
@@ -1360,6 +1376,7 @@ impl ModuleBody {
                 Self::Composition {
                     name: name.clone(),
                     surface: duplicate,
+                    category: *category,
                 }
             }
             _ => self.clone(),
@@ -1555,7 +1572,7 @@ impl ModuleBody {
             | ModuleBody::TopSplit
             | ModuleBody::RightJoin
             | ModuleBody::DownJoin => Vec::new(),
-            ModuleBody::Composition { name, surface } => {
+            ModuleBody::Composition { name, surface, .. } => {
                 let mut parameters = vec![ModuleParameter {
                     name: "Name".to_string(),
                     value: ParameterValue::Text(name.clone()),
@@ -1844,7 +1861,7 @@ impl ModuleBody {
             | ModuleBody::TopSplit
             | ModuleBody::RightJoin
             | ModuleBody::DownJoin => false,
-            ModuleBody::Composition { name, surface } => {
+            ModuleBody::Composition { name, surface, .. } => {
                 if index == 0 {
                     return set_text_param(name, &parameter);
                 }
@@ -2002,6 +2019,33 @@ impl ModuleCategory {
             ModuleCategory::Output => "Output",
         }
     }
+
+    pub(crate) fn rgb(self) -> (u8, u8, u8) {
+        match self {
+            Self::Source => (34, 139, 132),
+            Self::Shape => (188, 112, 42),
+            Self::Filter => (80, 125, 202),
+            Self::Effect => (154, 86, 178),
+            Self::Logic => (190, 76, 91),
+            Self::Routing => (110, 128, 84),
+            Self::Composition => (96, 112, 140),
+            Self::Output => (214, 171, 68),
+        }
+    }
+
+    pub(crate) fn from_rgb(rgb: (u8, u8, u8)) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|category| category.rgb() == rgb)
+            .unwrap_or(Self::Composition)
+    }
+
+    pub(crate) fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|category| *category == self)
+            .unwrap()
+    }
 }
 
 impl Module {
@@ -2052,6 +2096,13 @@ impl Module {
             ModuleBody::Primitive(module) => graph_node_label(module),
             ModuleBody::Composition { name, .. } => name,
             _ => self.kind().label(),
+        }
+    }
+
+    pub(crate) fn display_category(&self) -> ModuleCategory {
+        match self.body {
+            ModuleBody::Composition { category, .. } => category,
+            _ => self.kind().category(),
         }
     }
 
@@ -2614,7 +2665,7 @@ impl GuiState {
             step_size: 1,
             probe_len: 4410,
             palette_category: ModuleCategory::Source,
-            palette_index: 0,
+            palette_indices: [0; ModuleCategory::ALL.len()],
             palette_searching: false,
             palette_filter: String::new(),
             palette_filter_index: 0,
@@ -3022,6 +3073,8 @@ impl GuiState {
             .filter(|module| {
                 module.label().to_lowercase().contains(&filter)
                     || module.description().to_lowercase().contains(&filter)
+                    || module.category().label().to_lowercase().contains(&filter)
+                    || module.source_label().to_lowercase().contains(&filter)
             })
             .collect()
     }
@@ -3034,7 +3087,14 @@ impl GuiState {
 
     fn selected_palette_choice(&self) -> PaletteModule {
         let modules = self.palette_modules();
-        modules[self.palette_index.min(modules.len().saturating_sub(1))].clone()
+        modules[self
+            .selected_palette_index()
+            .min(modules.len().saturating_sub(1))]
+        .clone()
+    }
+
+    fn selected_palette_index(&self) -> usize {
+        self.palette_indices[self.palette_category.index()]
     }
 
     pub fn selected_filtered_palette_module(&self) -> Option<ModuleKind> {
@@ -3051,7 +3111,7 @@ impl GuiState {
     }
 
     pub(crate) fn palette_index_selected(&self, index: usize) -> bool {
-        self.mode == Mode::Palette && self.palette_index == index
+        self.mode == Mode::Palette && self.selected_palette_index() == index
     }
 
     pub(crate) fn filtered_palette_index_selected(&self, index: usize) -> bool {
@@ -3997,12 +4057,13 @@ impl GuiState {
         let max = ModuleCategory::ALL.len() as i16 - 1;
         let next = (current as i16 + delta).clamp(0, max) as usize;
         self.palette_category = ModuleCategory::ALL[next];
-        self.palette_index = 0;
     }
 
     fn move_palette_selection(&mut self, delta: i16) {
         let max = self.palette_modules().len().saturating_sub(1) as i16;
-        self.palette_index = (self.palette_index as i16 + delta).clamp(0, max) as usize;
+        let category = self.palette_category.index();
+        self.palette_indices[category] =
+            (self.palette_indices[category] as i16 + delta).clamp(0, max) as usize;
     }
 
     fn insert_palette_module(&mut self, choice: PaletteModule) {
@@ -4059,10 +4120,15 @@ impl GuiState {
                     .and_then(|index| self.user_compositions.get(index))
                     .cloned()
             });
-        self.insert_at_cursor(choice.kind, graph);
+        self.insert_at_cursor(choice.kind, graph, choice.category);
     }
 
-    fn insert_at_cursor(&mut self, kind: ModuleKind, graph: Option<brainwash::patch::Composition>) {
+    fn insert_at_cursor(
+        &mut self,
+        kind: ModuleKind,
+        graph: Option<brainwash::patch::Composition>,
+        category: ModuleCategory,
+    ) {
         let cursor = self.cursor();
         let before = self.snapshot();
         let id = ModuleId::new(self.next_module_id);
@@ -4092,6 +4158,12 @@ impl GuiState {
                 };
                 body = projected;
             }
+        }
+        if let ModuleBody::Composition {
+            category: target, ..
+        } = &mut body
+        {
+            *target = category;
         }
         let module = Module {
             id,

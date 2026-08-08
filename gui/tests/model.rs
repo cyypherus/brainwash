@@ -94,7 +94,7 @@ fn palette_places_selected_module_at_cursor() {
 }
 
 #[test]
-fn palette_category_changes_reset_selection() {
+fn palette_category_changes_open_the_remembered_selection() {
     let mut state = GuiState::new(8, 8);
     state.apply(GuiAction::OpenPalette);
     state.apply(GuiAction::PaletteRight);
@@ -104,7 +104,7 @@ fn palette_category_changes_reset_selection() {
 }
 
 #[test]
-fn direct_palette_category_opens_and_resets_selection() {
+fn direct_palette_category_preserves_each_category_selection() {
     let mut state = GuiState::new(8, 8);
 
     state.apply(GuiAction::Palette(ModuleCategory::Effect));
@@ -115,6 +115,14 @@ fn direct_palette_category_opens_and_resets_selection() {
     state.apply(GuiAction::Palette(ModuleCategory::Filter));
     assert_eq!(state.palette_category(), ModuleCategory::Filter);
     assert_eq!(state.selected_palette_module(), ModuleKind::Filter);
+
+    state.apply(GuiAction::Palette(ModuleCategory::Effect));
+    assert_eq!(state.selected_palette_module(), ModuleKind::Comb);
+
+    state.apply(GuiAction::Cancel);
+    state.apply(GuiAction::OpenPalette);
+    assert_eq!(state.palette_category(), ModuleCategory::Effect);
+    assert_eq!(state.selected_palette_module(), ModuleKind::Comb);
 }
 
 #[test]
@@ -675,6 +683,29 @@ fn nested_compositions_round_trip_through_project_files() {
     );
 
     let _ = fs::remove_file(path);
+}
+
+#[test]
+fn palette_color_category_survives_project_round_trip() {
+    let mut state = GuiState::new(32, 24);
+    place_palette_module(&mut state, ModuleCategory::Effect, "Reverb");
+    let first = project_path("effect-color-first");
+    let second = project_path("effect-color-second");
+    assert!(state.save_project(&first));
+
+    let mut loaded = GuiState::new(32, 24);
+    loaded.load_project(&first).unwrap();
+    assert!(loaded.save_project(&second));
+    let project = brainwash_grid::project::load(&second).unwrap();
+    let brainwash_grid::project::ModuleParams::Composition { color, .. } =
+        &project.modules[0].params
+    else {
+        panic!("expected composition parameters");
+    };
+    assert_eq!(*color, (154, 86, 178));
+
+    let _ = fs::remove_file(first);
+    let _ = fs::remove_file(second);
 }
 
 #[test]
@@ -3362,6 +3393,9 @@ fn place_module(state: &mut GuiState, category_rights: usize, selection_downs: u
 
 fn place_module_kind(state: &mut GuiState, kind: ModuleKind) {
     state.apply(GuiAction::Palette(kind.category()));
+    for _ in all_modules() {
+        state.apply(GuiAction::PaletteUp);
+    }
     let index = all_modules()
         .iter()
         .filter(|module| module.category() == kind.category())
@@ -3375,6 +3409,9 @@ fn place_module_kind(state: &mut GuiState, kind: ModuleKind) {
 
 fn place_palette_module(state: &mut GuiState, category: ModuleCategory, label: &str) {
     state.apply(GuiAction::Palette(category));
+    for _ in all_modules() {
+        state.apply(GuiAction::PaletteUp);
+    }
     while state.selected_palette_label() != label {
         state.apply(GuiAction::PaletteDown);
     }

@@ -70,7 +70,6 @@ impl GuiState {
         self.palette_filter.clear();
         self.palette_filter_index = 0;
         self.palette_category = category;
-        self.palette_index = 0;
     }
 
     pub(crate) fn choose_palette_index(&mut self, index: usize) {
@@ -78,7 +77,8 @@ impl GuiState {
         self.palette_searching = false;
         self.palette_filter.clear();
         self.palette_filter_index = 0;
-        self.palette_index = index.min(self.palette_modules().len().saturating_sub(1));
+        self.palette_indices[self.palette_category.index()] =
+            index.min(self.palette_modules().len().saturating_sub(1));
     }
 
     pub(crate) fn choose_filtered_palette_index(&mut self, index: usize) {
@@ -532,7 +532,6 @@ impl GuiState {
                 self.palette_searching = false;
                 self.palette_filter.clear();
                 self.palette_filter_index = 0;
-                self.palette_index = 0;
             }
             GuiAction::Palette(category) => self.open_category(category),
             GuiAction::TogglePlay => self.playing = !self.playing,
