@@ -70,6 +70,8 @@ impl GuiState {
         self.palette_filter.clear();
         self.palette_filter_index = 0;
         self.palette_category = category;
+        self.palette_family = None;
+        self.palette_family_index = 0;
     }
 
     pub(crate) fn choose_palette_index(&mut self, index: usize) {
@@ -77,8 +79,13 @@ impl GuiState {
         self.palette_searching = false;
         self.palette_filter.clear();
         self.palette_filter_index = 0;
-        self.palette_indices[self.palette_category.index()] =
-            index.min(self.palette_modules().len().saturating_sub(1));
+        if self.palette_family.is_some() {
+            self.palette_family_index =
+                index.min(self.visible_palette_entries().len().saturating_sub(1));
+        } else {
+            self.palette_indices[self.palette_category.index()] =
+                index.min(self.visible_palette_entries().len().saturating_sub(1));
+        }
     }
 
     pub(crate) fn choose_filtered_palette_index(&mut self, index: usize) {
@@ -86,6 +93,19 @@ impl GuiState {
         self.palette_searching = true;
         self.palette_filter_index =
             index.min(self.filtered_palette_modules().len().saturating_sub(1));
+    }
+
+    pub(crate) fn open_palette_family(&mut self, index: usize) {
+        self.choose_palette_index(index);
+        if let PaletteEntry::Family(family) = self.selected_palette_entry() {
+            self.palette_family = Some(family);
+            self.palette_family_index = 0;
+        }
+    }
+
+    pub(crate) fn close_palette_family(&mut self) {
+        self.palette_family = None;
+        self.palette_family_index = 0;
     }
 
     pub(crate) fn click_grid_cell(&mut self, position: GridPos) {
@@ -532,6 +552,8 @@ impl GuiState {
                 self.palette_searching = false;
                 self.palette_filter.clear();
                 self.palette_filter_index = 0;
+                self.palette_family = None;
+                self.palette_family_index = 0;
             }
             GuiAction::Palette(category) => self.open_category(category),
             GuiAction::TogglePlay => self.playing = !self.playing,
@@ -721,11 +743,21 @@ impl GuiState {
             GuiAction::PaletteUp | GuiAction::Up => self.move_palette_selection(-1),
             GuiAction::PaletteDown | GuiAction::Down => self.move_palette_selection(1),
             GuiAction::Confirm | GuiAction::OpenPalette => {
-                let module = self.selected_palette_choice();
-                self.insert_palette_module(module);
-                self.mode = Mode::Normal;
+                if let Some(module) = self.selected_palette_choice() {
+                    self.insert_palette_module(module);
+                    self.mode = Mode::Normal;
+                } else if let PaletteEntry::Family(family) = self.selected_palette_entry() {
+                    self.palette_family = Some(family);
+                    self.palette_family_index = 0;
+                }
             }
-            GuiAction::Cancel | GuiAction::Edit => self.mode = Mode::Normal,
+            GuiAction::Cancel | GuiAction::Edit => {
+                if self.palette_family.take().is_some() {
+                    self.palette_family_index = 0;
+                } else {
+                    self.mode = Mode::Normal;
+                }
+            }
             GuiAction::Search => {
                 self.palette_filter.clear();
                 self.palette_filter_index = 0;

@@ -1,7 +1,7 @@
 use crate::model::{
     EnvPointerPhase, GridPointerPhase, GridPos, GridRenderModule, GridViewSize, GuiAction,
-    GuiState, Mode, Module, ModuleCategory, ModuleId, ModuleKind, Orientation, PaletteModule,
-    ParameterValue,
+    GuiState, Mode, Module, ModuleCategory, ModuleId, ModuleKind, Orientation, PaletteEntry,
+    PaletteModule, ParameterValue,
 };
 use brainwash_grid::bounded_delta;
 use haven::*;
@@ -224,17 +224,6 @@ fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
     let content = if state.palette_searching() {
         let filter = state.palette_filter().to_string();
         let modules = state.filtered_palette_modules();
-        let selected = modules
-            .iter()
-            .enumerate()
-            .find(|(index, _)| state.filtered_palette_index_selected(*index))
-            .map(|(_, module)| module);
-        let description = selected
-            .map(|module| module.description())
-            .unwrap_or("Search by module name or purpose");
-        let context = selected
-            .map(|module| format!("{} · {}", module.category().label(), module.source_label()))
-            .unwrap_or_else(|| "All categories · Modules, patches, and saved work".to_string());
         let choices = modules
             .iter()
             .enumerate()
@@ -265,20 +254,6 @@ fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
                     .pad_y(7.),
             ])
             .width(content_width),
-            text(213, context)
-                .font_size(11)
-                .fill(module_color(
-                    selected
-                        .map(|module| module.category())
-                        .unwrap_or(ModuleCategory::Composition),
-                ))
-                .view()
-                .build(app),
-            text(212, description)
-                .font_size(12)
-                .fill(quiet())
-                .view()
-                .build(app),
             column_spaced(6., choices),
         ]
     } else {
@@ -286,53 +261,34 @@ fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
             .iter()
             .map(|category| category_button(*category, *category == state.palette_category(), app))
             .collect::<Vec<_>>();
-        let modules = state.palette_modules();
-        let selected = modules
+        let mut content = vec![row_spaced(6., categories)];
+        if let Some(family) = state.palette_family_label() {
+            content.push(family_back(family, content_width, app));
+        }
+        let choices = state
+            .visible_palette_entries()
             .iter()
             .enumerate()
-            .find(|(index, _)| state.palette_index_selected(*index))
-            .map(|(_, module)| module);
-        let description = selected
-            .map(|module| module.description())
-            .unwrap_or("No modules in this category");
-        let context = selected
-            .map(|module| module.source_label())
-            .unwrap_or("Empty category");
-        let mut choices = Vec::new();
-        let mut group = None;
-        for (index, module) in modules.iter().enumerate() {
-            if group != Some(module.source_label()) {
-                group = Some(module.source_label());
-                choices.push(
-                    text(220 + index as u64, module.source_label().to_uppercase())
-                        .font_size(10)
-                        .fill(quiet())
-                        .view()
-                        .build(app),
-                );
-            }
-            choices.push(module_choice(
-                index,
-                module,
-                state.palette_index_selected(index),
-                content_width,
-                app,
-            ));
-        }
-        vec![
-            row_spaced(6., categories),
-            text(213, context)
-                .font_size(11)
-                .fill(module_color(state.palette_category()))
-                .view()
-                .build(app),
-            text(212, description)
-                .font_size(12)
-                .fill(quiet())
-                .view()
-                .build(app),
-            column_spaced(6., choices),
-        ]
+            .map(|(index, entry)| match entry {
+                PaletteEntry::Module(module) => module_choice(
+                    index,
+                    module,
+                    state.palette_index_selected(index),
+                    content_width,
+                    app,
+                ),
+                PaletteEntry::Family(_) => family_choice(
+                    index,
+                    entry.label(),
+                    state.palette_index_selected(index),
+                    state.palette_category(),
+                    content_width,
+                    app,
+                ),
+            })
+            .collect();
+        content.push(column_spaced(6., choices));
+        content
     };
 
     stack(vec![
@@ -375,62 +331,41 @@ fn palette_panel_size(state: &GuiState) -> (f32, f32) {
             .iter()
             .map(|kind| row_width(kind.label(), 13.))
             .fold(0., f32::max);
-        let description_w = modules
-            .iter()
-            .map(|module| text_width(module.description(), 12.))
-            .fold(
-                text_width("Search by module name or purpose", 12.),
-                f32::max,
-            );
         let search_w = text_width(&format!("/{}", state.palette_filter()), 14.) + 18.;
-        let width = title_w
-            .max(module_w + PANEL_PAD)
-            .max(search_w + PANEL_PAD)
-            .max(description_w + PANEL_PAD);
+        let width = title_w.max(module_w + PANEL_PAD).max(search_w + PANEL_PAD);
         let height = PANEL_PAD
             + TITLE_H
             + TITLE_GAP
             + SEARCH_H
             + GAP
-            + rows_height(modules.len(), PALETTE_ROW_HEIGHT, GAP)
-            + GAP
-            + 32.;
+            + rows_height(modules.len(), PALETTE_ROW_HEIGHT, GAP);
         (width, height)
     } else {
-        let modules = state.palette_modules();
-        let module_w = modules
+        let entries = state.visible_palette_entries();
+        let module_w = entries
             .iter()
-            .map(|kind| row_width(kind.label(), 13.))
-            .fold(0., f32::max);
-        let description_w = modules
-            .iter()
-            .map(|module| text_width(module.description(), 12.))
+            .map(|entry| row_width(entry.label(), 13.))
             .fold(0., f32::max);
         let category_w = ModuleCategory::ALL
             .iter()
             .map(|category| row_width(category.label(), 13.))
             .sum::<f32>()
             + GAP * ModuleCategory::ALL.len().saturating_sub(1) as f32;
-        let groups = modules
-            .iter()
-            .map(PaletteModule::source_label)
-            .fold((0usize, None), |(count, previous), source| {
-                (count + usize::from(previous != Some(source)), Some(source))
-            })
-            .0;
         let width = title_w
             .max(module_w + PANEL_PAD)
-            .max(category_w + PANEL_PAD)
-            .max(description_w + PANEL_PAD);
+            .max(category_w + PANEL_PAD);
+        let family_h = if state.palette_family_label().is_some() {
+            PALETTE_ROW_HEIGHT + GAP
+        } else {
+            0.
+        };
         let height = PANEL_PAD
             + TITLE_H
             + TITLE_GAP
             + PALETTE_ROW_HEIGHT
             + GAP
-            + rows_height(modules.len(), PALETTE_ROW_HEIGHT, GAP)
-            + groups as f32 * 21.
-            + GAP
-            + 32.;
+            + family_h
+            + rows_height(entries.len(), PALETTE_ROW_HEIGHT, GAP);
         (width, height)
     }
 }
@@ -2491,6 +2426,73 @@ fn module_choice<'a>(
             .width(width)
             .height(PALETTE_ROW_HEIGHT),
         palette_module_label(id + 200, module, app),
+    ])
+}
+
+fn family_choice<'a>(
+    index: usize,
+    label: &str,
+    selected: bool,
+    category: ModuleCategory,
+    width: f32,
+    app: &mut PaneState,
+) -> View<'a, GuiState> {
+    let id = 2_700 + index as u64;
+    let color = module_color(category);
+    stack(vec![
+        rect(id)
+            .fill(if selected {
+                color.with_alpha(0.74)
+            } else {
+                color.with_alpha(0.22)
+            })
+            .stroke(if selected { color } else { line() }, Stroke::new(1.))
+            .corner_rounding(6.)
+            .view()
+            .gesture(gesture::click(id + 100).button(MouseButton::Left).run(
+                move |state: &mut GuiState, _app, event| {
+                    if matches!(event.state, ClickPhase::Completed) {
+                        state.open_palette_family(index);
+                    }
+                },
+            ))
+            .build(app)
+            .width(width)
+            .height(PALETTE_ROW_HEIGHT),
+        text(id + 200, format!("{label} ›"))
+            .font_size(13)
+            .fill(fg())
+            .view()
+            .build(app)
+            .pad_x(10.)
+            .pad_y(5.),
+    ])
+}
+
+fn family_back<'a>(label: &str, width: f32, app: &mut PaneState) -> View<'a, GuiState> {
+    stack(vec![
+        rect(215)
+            .fill(field())
+            .stroke(line(), Stroke::new(1.))
+            .corner_rounding(6.)
+            .view()
+            .gesture(gesture::click(216).button(MouseButton::Left).run(
+                |state: &mut GuiState, _app, event| {
+                    if matches!(event.state, ClickPhase::Completed) {
+                        state.close_palette_family();
+                    }
+                },
+            ))
+            .build(app)
+            .width(width)
+            .height(PALETTE_ROW_HEIGHT),
+        text(217, format!("‹ {label}"))
+            .font_size(13)
+            .fill(fg())
+            .view()
+            .build(app)
+            .pad_x(10.)
+            .pad_y(5.),
     ])
 }
 

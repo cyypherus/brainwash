@@ -1105,6 +1105,8 @@ fn haven_palette_background_stays_top_aligned_when_switching_tabs() {
 fn haven_routing_palette_draws_a_leading_icon_for_every_module() {
     let mut state = GuiState::new(8, 8);
     state.apply(GuiAction::Palette(ModuleCategory::Routing));
+    state.apply(GuiAction::PaletteDown);
+    state.apply(GuiAction::Confirm);
     let mut pane = PaneBuilder::new("main", main_view).build();
     let (frame, _) = pane.redraw(&mut state, 760, 560, 1.0);
     let icons = frame
@@ -1118,6 +1120,11 @@ fn haven_routing_palette_draws_a_leading_icon_for_every_module() {
         })
         .count();
     assert_eq!(icons, 6);
+
+    state.apply(GuiAction::Cancel);
+    assert_eq!(state.mode(), Mode::Palette);
+    state.apply(GuiAction::Cancel);
+    assert_eq!(state.mode(), Mode::Normal);
 }
 
 #[test]
@@ -3392,28 +3399,35 @@ fn place_module(state: &mut GuiState, category_rights: usize, selection_downs: u
 }
 
 fn place_module_kind(state: &mut GuiState, kind: ModuleKind) {
-    state.apply(GuiAction::Palette(kind.category()));
-    for _ in all_modules() {
-        state.apply(GuiAction::PaletteUp);
+    state.apply(GuiAction::OpenPalette);
+    state.apply(GuiAction::Search);
+    for character in kind.label().chars() {
+        state.apply(GuiAction::InputChar(character));
     }
-    let index = all_modules()
+    let index = state
+        .filtered_palette_modules()
         .iter()
-        .filter(|module| module.category() == kind.category())
-        .position(|module| *module == kind)
+        .position(|module| module.kind() == kind && module.label() == kind.label())
         .unwrap();
     for _ in 0..index {
-        state.apply(GuiAction::PaletteDown);
+        state.apply(GuiAction::Down);
     }
     state.apply(GuiAction::Confirm);
 }
 
 fn place_palette_module(state: &mut GuiState, category: ModuleCategory, label: &str) {
-    state.apply(GuiAction::Palette(category));
-    for _ in all_modules() {
-        state.apply(GuiAction::PaletteUp);
+    state.apply(GuiAction::OpenPalette);
+    state.apply(GuiAction::Search);
+    for character in label.chars() {
+        state.apply(GuiAction::InputChar(character));
     }
-    while state.selected_palette_label() != label {
-        state.apply(GuiAction::PaletteDown);
+    let index = state
+        .filtered_palette_modules()
+        .iter()
+        .position(|module| module.category() == category && module.label() == label)
+        .unwrap();
+    for _ in 0..index {
+        state.apply(GuiAction::Down);
     }
     state.apply(GuiAction::Confirm);
 }
