@@ -223,8 +223,14 @@ fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
     let content_width = width - 24.;
     let content = if state.palette_searching() {
         let filter = state.palette_filter().to_string();
-        let modules = state
-            .filtered_palette_modules()
+        let modules = state.filtered_palette_modules();
+        let description = modules
+            .iter()
+            .enumerate()
+            .find(|(index, _)| state.filtered_palette_index_selected(*index))
+            .map(|(_, module)| module.description())
+            .unwrap_or("Search by module name or purpose");
+        let choices = modules
             .iter()
             .enumerate()
             .map(|(index, module)| {
@@ -254,15 +260,26 @@ fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
                     .pad_y(7.),
             ])
             .width(content_width),
-            column_spaced(6., modules),
+            column_spaced(6., choices),
+            text(212, description)
+                .font_size(12)
+                .fill(quiet())
+                .view()
+                .build(app),
         ]
     } else {
         let categories = ModuleCategory::ALL
             .iter()
             .map(|category| category_button(*category, *category == state.palette_category(), app))
             .collect::<Vec<_>>();
-        let modules = state
-            .palette_modules()
+        let modules = state.palette_modules();
+        let description = modules
+            .iter()
+            .enumerate()
+            .find(|(index, _)| state.palette_index_selected(*index))
+            .map(|(_, module)| module.description())
+            .unwrap_or("No modules in this category");
+        let choices = modules
             .iter()
             .enumerate()
             .map(|(index, module)| {
@@ -270,7 +287,15 @@ fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
                 module_choice(index, module, selected, content_width, app)
             })
             .collect::<Vec<_>>();
-        vec![row_spaced(6., categories), column_spaced(6., modules)]
+        vec![
+            row_spaced(6., categories),
+            column_spaced(6., choices),
+            text(212, description)
+                .font_size(12)
+                .fill(quiet())
+                .view()
+                .build(app),
+        ]
     };
 
     stack(vec![
@@ -313,20 +338,36 @@ fn palette_panel_size(state: &GuiState) -> (f32, f32) {
             .iter()
             .map(|kind| row_width(kind.label(), 13.))
             .fold(0., f32::max);
+        let description_w = modules
+            .iter()
+            .map(|module| text_width(module.description(), 12.))
+            .fold(
+                text_width("Search by module name or purpose", 12.),
+                f32::max,
+            );
         let search_w = text_width(&format!("/{}", state.palette_filter()), 14.) + 18.;
-        let width = title_w.max(module_w + PANEL_PAD).max(search_w + PANEL_PAD);
+        let width = title_w
+            .max(module_w + PANEL_PAD)
+            .max(search_w + PANEL_PAD)
+            .max(description_w + PANEL_PAD);
         let height = PANEL_PAD
             + TITLE_H
             + TITLE_GAP
             + SEARCH_H
             + GAP
-            + rows_height(modules.len(), PALETTE_ROW_HEIGHT, GAP);
+            + rows_height(modules.len(), PALETTE_ROW_HEIGHT, GAP)
+            + GAP
+            + 15.;
         (width, height)
     } else {
         let modules = state.palette_modules();
         let module_w = modules
             .iter()
             .map(|kind| row_width(kind.label(), 13.))
+            .fold(0., f32::max);
+        let description_w = modules
+            .iter()
+            .map(|module| text_width(module.description(), 12.))
             .fold(0., f32::max);
         let category_w = ModuleCategory::ALL
             .iter()
@@ -335,13 +376,16 @@ fn palette_panel_size(state: &GuiState) -> (f32, f32) {
             + GAP * ModuleCategory::ALL.len().saturating_sub(1) as f32;
         let width = title_w
             .max(module_w + PANEL_PAD)
-            .max(category_w + PANEL_PAD);
+            .max(category_w + PANEL_PAD)
+            .max(description_w + PANEL_PAD);
         let height = PANEL_PAD
             + TITLE_H
             + TITLE_GAP
             + PALETTE_ROW_HEIGHT
             + GAP
-            + rows_height(modules.len(), PALETTE_ROW_HEIGHT, GAP);
+            + rows_height(modules.len(), PALETTE_ROW_HEIGHT, GAP)
+            + GAP
+            + 15.;
         (width, height)
     }
 }
@@ -2380,7 +2424,7 @@ fn module_choice<'a>(
     app: &mut PaneState,
 ) -> View<'a, GuiState> {
     let id = 2_000 + index as u64;
-    let color = module_color(module.category());
+    let color = palette_module_color(module);
     stack(vec![
         rect(id)
             .fill(if selected {
@@ -2413,7 +2457,7 @@ fn filtered_module_choice<'a>(
     app: &mut PaneState,
 ) -> View<'a, GuiState> {
     let id = 2_500 + index as u64;
-    let color = module_color(module.category());
+    let color = palette_module_color(module);
     stack(vec![
         rect(id)
             .fill(if selected {
@@ -4824,6 +4868,10 @@ fn module_color(category: ModuleCategory) -> Color {
     }
 }
 
+fn palette_module_color(module: &PaletteModule) -> Color {
+    module_color(module.kind().category())
+}
+
 fn bg() -> Color {
     Color::from_rgb8(12, 14, 18)
 }
@@ -4855,6 +4903,22 @@ fn accent() -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effect_preset_uses_its_placed_composition_color() {
+        let mut state = GuiState::default();
+        state.open_category(ModuleCategory::Effect);
+        let modules = state.palette_modules();
+        let reverb = modules
+            .iter()
+            .find(|module| module.label() == "Reverb")
+            .unwrap();
+
+        assert_eq!(
+            palette_module_color(reverb),
+            module_color(ModuleCategory::Composition)
+        );
+    }
 
     #[test]
     fn horizontal_connection_segment_uses_port_edges() {

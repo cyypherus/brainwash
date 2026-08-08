@@ -351,6 +351,35 @@ impl PaletteModule {
     pub fn category(&self) -> ModuleCategory {
         self.category
     }
+
+    pub fn description(&self) -> &'static str {
+        if self.user.is_some() {
+            return "Saved composition";
+        }
+        if let Some(preset) = self.preset {
+            return match preset {
+                PalettePreset::Transpose => "Shift pitch by scale degree",
+                PalettePreset::Adsr => "Shape a signal with attack, decay, sustain, and release",
+                PalettePreset::Reverb => "Add a reverberant space",
+                PalettePreset::Distortion => "Add driven harmonic distortion",
+                PalettePreset::Compressor => "Control a signal's dynamic range",
+                PalettePreset::Flanger => "Add a modulated comb-filter effect",
+                PalettePreset::Tube => "Add tube-style saturation",
+                PalettePreset::Tape => "Add tape-style saturation",
+                PalettePreset::Fuzz => "Add aggressive fuzz distortion",
+                PalettePreset::Fold => "Fold signals beyond the amplitude limits",
+                PalettePreset::Clip => "Clip signals beyond the amplitude limits",
+                PalettePreset::Sine => "Generate a sine wave",
+                PalettePreset::Square => "Generate a square wave",
+                PalettePreset::Triangle => "Generate a triangle wave",
+                PalettePreset::Saw => "Generate a rising saw wave",
+                PalettePreset::ReverseSaw => "Generate a falling saw wave",
+                PalettePreset::DegreeGate => "Gate a selected scale degree",
+                PalettePreset::Attenuator => "Reduce signal amplitude",
+            };
+        }
+        self.kind.description()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -973,6 +1002,60 @@ impl ModuleKind {
             ModuleKind::CompositionInput => "Sub In",
             ModuleKind::CompositionOutput => "Sub Out",
             ModuleKind::Composition => "Composition",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Primitive => "Combine two signals with a selectable function",
+            Self::Constant => "Generate a constant value",
+            Self::Absolute => "Make negative values positive",
+            Self::Sine => "Apply the sine function to a signal",
+            Self::Tanh => "Apply smooth saturation to a signal",
+            Self::Atan => "Apply arctangent saturation to a signal",
+            Self::Exp => "Raise e to a signal's value",
+            Self::Sign => "Reduce a signal to its sign",
+            Self::Freq => "Read the current note frequency",
+            Self::Gate => "Read the current note gate",
+            Self::Degree => "Read the current scale degree",
+            Self::Phase => "Generate an oscillator phase",
+            Self::Noise => "Generate noise",
+            Self::Rise => "Rise toward a gate signal",
+            Self::Fall => "Fall away from a gate signal",
+            Self::Ramp => "Move toward a value over time",
+            Self::Envelope => "Shape a signal with a drawn envelope",
+            Self::Filter => "Low-pass a signal with resonance",
+            Self::Comb => "Add a delayed signal back to itself",
+            Self::Allpass => "Shift phase without changing amplitude",
+            Self::Delay => "Store a signal for delay taps",
+            Self::DelayTap => "Read a delayed signal",
+            Self::Probe => "Inspect a signal",
+            Self::Multiply => "Multiply two signals",
+            Self::Add => "Add two signals",
+            Self::Subtract => "Subtract one signal from another",
+            Self::Divide => "Divide one signal by another",
+            Self::Power => "Raise one signal to another's power",
+            Self::Remainder => "Take the remainder of two signals",
+            Self::Minimum => "Take the lower of two signals",
+            Self::Maximum => "Take the higher of two signals",
+            Self::Damp => "Smooth rapid signal changes",
+            Self::Slew => "Limit how quickly a signal rises and falls",
+            Self::GreaterThan => "Test whether one signal is greater",
+            Self::LessThan => "Test whether one signal is lower",
+            Self::Equal => "Test whether two signals are equal",
+            Self::Switch => "Choose between two signals",
+            Self::Random => "Generate a random value on each trigger",
+            Self::Sample => "Play an audio sample",
+            Self::Output => "Send audio to the track output",
+            Self::TurnRightDown => "Route a signal from right to down",
+            Self::TurnDownRight => "Route a signal from down to right",
+            Self::LeftSplit => "Split a signal entering from the left",
+            Self::TopSplit => "Split a signal entering from the top",
+            Self::RightJoin => "Join two signals toward the right",
+            Self::DownJoin => "Join two signals downward",
+            Self::CompositionInput => "Expose an input inside a composition",
+            Self::CompositionOutput => "Expose an output inside a composition",
+            Self::Composition => "Build a reusable group of modules",
         }
     }
 
@@ -2936,7 +3019,10 @@ impl GuiState {
         ModuleCategory::ALL
             .into_iter()
             .flat_map(|category| self.palette_modules_for(category))
-            .filter(|module| module.label().to_lowercase().contains(&filter))
+            .filter(|module| {
+                module.label().to_lowercase().contains(&filter)
+                    || module.description().to_lowercase().contains(&filter)
+            })
             .collect()
     }
 
@@ -4150,6 +4236,25 @@ mod tests {
             .filter(|index| state.filtered_palette_index_selected(*index))
             .collect::<Vec<_>>();
         assert_eq!(selected, vec![1]);
+    }
+
+    #[test]
+    fn palette_search_matches_module_purpose() {
+        let mut state = GuiState::default();
+        state.apply(GuiAction::OpenPalette);
+        state.apply(GuiAction::Search);
+        for character in "dynamic range".chars() {
+            state.apply(GuiAction::InputChar(character));
+        }
+
+        assert_eq!(
+            state
+                .filtered_palette_modules()
+                .iter()
+                .map(PaletteModule::label)
+                .collect::<Vec<_>>(),
+            vec!["Compressor"]
+        );
     }
 
     #[test]
