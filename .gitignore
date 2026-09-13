@@ -8,3 +8,4 @@ traces/
 *.DS_Store
 .cargo/
 .zed/
+*.bw
