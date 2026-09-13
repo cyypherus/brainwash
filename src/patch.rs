@@ -31,6 +31,24 @@ pub enum UnaryOp {
     Sign,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Waveform {
+    Sine,
+    Square,
+    Triangle,
+    Saw,
+    ReverseSaw,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SaturationCurve {
+    Tube,
+    Tape,
+    Fuzz,
+    Fold,
+    Clip,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum InputKind {
     In,
@@ -120,6 +138,7 @@ pub enum Module {
     Freq,
     Gate,
     Degree,
+    Expression,
     Constant(Sample),
     Unary {
         op: UnaryOp,
@@ -131,6 +150,16 @@ pub enum Module {
     },
     Phase {
         frequency: Hertz,
+    },
+    Oscillator {
+        waveform: Waveform,
+        frequency: Hertz,
+    },
+    Saturation {
+        curve: SaturationCurve,
+        input: Sample,
+        drive: Sample,
+        asymmetry: Sample,
     },
     Noise,
     Rise {
@@ -593,40 +622,10 @@ impl Composition {
                 return Err(CompositionError::MissingInput);
             }
         }
-        let mut indegree = vec![0usize; patch.modules.len()];
-        let mut outgoing = vec![Vec::new(); patch.modules.len()];
-        for connection in &patch.connections {
-            let source = patch
-                .modules
-                .iter()
-                .position(|(id, _)| *id == connection.from.module)
-                .ok_or(CompositionError::MissingInput)?;
-            let target = patch
-                .modules
-                .iter()
-                .position(|(id, _)| *id == connection.input.module)
-                .ok_or(CompositionError::MissingInput)?;
-            outgoing[source].push(target);
-            indegree[target] += 1;
-        }
-        let mut ready = indegree
-            .iter()
-            .enumerate()
-            .filter_map(|(index, count)| (*count == 0).then_some(index))
-            .collect::<Vec<_>>();
-        let mut visited = 0;
-        while let Some(source) = ready.pop() {
-            visited += 1;
-            for target in &outgoing[source] {
-                indegree[*target] -= 1;
-                if indegree[*target] == 0 {
-                    ready.push(*target);
-                }
-            }
-        }
-        if visited != patch.modules.len() {
-            return Err(CompositionError::Cycle);
-        }
+        crate::compile::check_composition_cycles(&patch).map_err(|error| match error {
+            crate::compile::CompileError::Cycle => CompositionError::Cycle,
+            _ => CompositionError::MissingInput,
+        })?;
         Ok(Self {
             name,
             patch,
@@ -702,7 +701,11 @@ impl Module {
     pub fn input_kinds(&self) -> Vec<InputKind> {
         match self {
             Module::Input { .. } => vec![],
-            Module::Freq | Module::Gate | Module::Degree | Module::Constant(_) => vec![],
+            Module::Freq
+            | Module::Gate
+            | Module::Degree
+            | Module::Expression
+            | Module::Constant(_) => vec![],
             Module::Unary { .. } => vec![InputKind::In],
             Module::Damp { .. } => vec![InputKind::In, InputKind::Damp],
             Module::Random { .. } => vec![InputKind::Gate],
@@ -725,7 +728,8 @@ impl Module {
             Module::Slew { .. } => vec![InputKind::In, InputKind::Rise, InputKind::Fall],
             Module::Sample { .. } => vec![InputKind::Position],
             Module::Binary { .. } => vec![InputKind::A, InputKind::B],
-            Module::Phase { .. } => vec![InputKind::Freq],
+            Module::Phase { .. } | Module::Oscillator { .. } => vec![InputKind::Freq],
+            Module::Saturation { .. } => vec![InputKind::In, InputKind::Drive, InputKind::Asym],
             Module::Noise => vec![],
             Module::Switch { .. } => vec![InputKind::Select, InputKind::A, InputKind::B],
             Module::Composition(composition) => {

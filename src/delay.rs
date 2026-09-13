@@ -58,6 +58,7 @@ impl Delay {
         let index = position.floor() as usize;
         let fraction = position - index as f32;
         let len = self.samples.len();
+        let index = if index == len { 0 } else { index };
         let y0 = self.samples[(index + len - 1) % len].value();
         let y1 = self.samples[index].value();
         let y2 = self.samples[(index + 1) % len].value();
@@ -73,6 +74,45 @@ impl Delay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fractional_tap_wraps_rounded_buffer_boundary() {
+        let mut delay = Delay::new(
+            SampleRate::new(44_100).unwrap(),
+            Duration::Samples(crate::time::Samples::new(1103)),
+            Unit::ZERO,
+        )
+        .unwrap();
+        delay.index = 1;
+        delay.samples[0] = Sample::raw(0.25);
+        let seconds = Sample::raw(1.0000001 / 44_100.0);
+        assert!((delay.tap(Some(seconds)).value() - 0.25).abs() < 0.000001);
+    }
+
+    #[test]
+    fn flanger_survives_sustained_fractional_delay_modulation() {
+        use crate::patch::{InputKind, Patch};
+        use crate::time::Hertz;
+        let mut patch = Patch::new();
+        let source = patch.insert(crate::preset::sine(Hertz::new(220.0).unwrap()));
+        let effect = patch.insert(crate::preset::flanger(
+            Hertz::new(0.5).unwrap(),
+            Unit::new(0.5).unwrap(),
+            Unit::new(0.3).unwrap(),
+        ));
+        patch
+            .connect_input(
+                patch.output_port(source, 0).unwrap(),
+                patch.input_port(effect, InputKind::In).unwrap(),
+            )
+            .unwrap();
+        patch.output(patch.output_port(effect, 0).unwrap()).unwrap();
+        let mut compiled =
+            crate::compile::CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+        for _ in 0..1_000_000 {
+            assert!(compiled.next().left().value().is_finite());
+        }
+    }
 
     #[test]
     fn process_at_uses_connected_feedback_without_reallocation() {

@@ -3,13 +3,13 @@ use brainwash::compile::{CompiledPatch, PatchControls};
 use brainwash::compile::{PatchEngine, UpdateRejected};
 use brainwash::patch::ModuleId as AudioModuleId;
 use brainwash::sample::Frame;
-use brainwash::time::{Hertz, SampleRate};
-use brainwash::track::{NoteEvent, Track};
+use brainwash::sequence::{Player, VOICES};
+use brainwash::time::SampleRate;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::fmt;
-use std::num::NonZeroU8;
+use std::num::{NonZeroU8, NonZeroU16};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
@@ -21,8 +21,9 @@ pub struct AudioRuntime {
 pub struct AudioHandle {
     patch_pending: Producer<PatchBank>,
     patch_retired: Consumer<PatchBank>,
-    track_pending: Producer<TrackRuntime>,
-    track_retired: Consumer<TrackRuntime>,
+    track_pending: Producer<Player>,
+    track_retired: Consumer<Player>,
+    sequence_waiting: Option<Player>,
     play_pending: Producer<bool>,
     probe_bus: Arc<ProbeBus>,
     meter_bus: Arc<MeterBus>,
@@ -86,7 +87,6 @@ pub enum AudioStartError {
 
 const PLAY_FADE_FRAMES: f32 = 256.0;
 const PLAY_COMMAND_LIMIT: usize = 2;
-const VOICES: usize = 6;
 const PROBE_SLOTS: usize = 8;
 const PROBE_HISTORY: usize = 88_200;
 const PROBE_WRITE_BIT: u32 = 1 << 31;
@@ -155,6 +155,7 @@ impl AudioRuntime {
                 patch_retired,
                 track_pending,
                 track_retired,
+                sequence_waiting: None,
                 play_pending,
                 probe_bus,
                 meter_bus,
@@ -239,18 +240,33 @@ impl AudioHandle {
         self.meter_bus.values(module, voice)
     }
 
-    pub fn submit_track(&mut self, track: Track, bpm: u16) -> Result<(), AudioCommandRejected> {
-        let result = self
-            .track_pending
-            .push(TrackRuntime::new(track, bpm, self.rate))
-            .map_err(|_| AudioCommandRejected);
+    pub(crate) fn playhead(&self) -> f32 {
+        f32::from_bits(self.probe_bus.playhead.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn submit_sequence(
+        &mut self,
+        sequence: brainwash::sequence::Sequence,
+        bpm: u16,
+        scale: brainwash::scale::Scale,
+    ) {
+        self.sequence_waiting = Some(Player::new(
+            sequence,
+            NonZeroU16::new(bpm).unwrap(),
+            self.rate,
+            scale,
+        ));
         self.collect_retired();
-        result
     }
 
     pub fn collect_retired(&mut self) {
         while self.patch_retired.pop().is_ok() {}
         while self.track_retired.pop().is_ok() {}
+        if let Some(sequence) = self.sequence_waiting.take()
+            && let Err(rtrb::PushError::Full(sequence)) = self.track_pending.push(sequence)
+        {
+            self.sequence_waiting = Some(sequence);
+        }
     }
 }
 
@@ -267,8 +283,8 @@ fn build_stream<T>(
     config: &cpal::StreamConfig,
     patch_pending: Consumer<PatchBank>,
     patch_retired: Producer<PatchBank>,
-    track_pending: Consumer<TrackRuntime>,
-    track_retired: Producer<TrackRuntime>,
+    track_pending: Consumer<Player>,
+    track_retired: Producer<Player>,
     play_pending: Consumer<bool>,
     probe_bus: Arc<ProbeBus>,
     meter_bus: Arc<MeterBus>,
@@ -320,10 +336,10 @@ fn write_output<T>(
     play_pending: &mut Consumer<bool>,
     playing: &mut bool,
     engine: &mut VoicePatchRuntime,
-    track_pending: &mut Consumer<TrackRuntime>,
-    track_retired: &mut Producer<TrackRuntime>,
-    track: &mut Option<TrackRuntime>,
-    retired_track: &mut Option<TrackRuntime>,
+    track_pending: &mut Consumer<Player>,
+    track_retired: &mut Producer<Player>,
+    track: &mut Option<Player>,
+    retired_track: &mut Option<Player>,
     gain: &mut f32,
 ) where
     T: Sample + FromSample<f32>,
@@ -353,9 +369,16 @@ fn write_output<T>(
         }
         let controls = track
             .as_mut()
-            .map(|track| track.next(*playing))
+            .filter(|_| *playing)
+            .map(Player::advance)
             .unwrap_or_default();
         write_frame(output, engine.next_frame(controls), *gain);
+    }
+    if let Some(track) = track {
+        engine
+            .probe_bus
+            .playhead
+            .store(track.playhead().to_bits(), Ordering::Relaxed);
     }
 }
 
@@ -452,6 +475,7 @@ struct ProbeBus {
     values: Box<[AtomicU32]>,
     sample_generations: Box<[AtomicU32]>,
     cursor: AtomicUsize,
+    playhead: AtomicU32,
 }
 
 impl ProbeBus {
@@ -469,6 +493,7 @@ impl ProbeBus {
             values: values.into_boxed_slice(),
             sample_generations: sample_generations.into_boxed_slice(),
             cursor: AtomicUsize::new(0),
+            playhead: AtomicU32::new(0),
         }
     }
 
@@ -865,108 +890,7 @@ fn record_meter_values(bus: &MeterBus, meters: &MeterRoutes, voice: usize, engin
     }
 }
 
-struct TrackRuntime {
-    track: Track,
-    bpm: f32,
-    bars: f32,
-    rate: SampleRate,
-    phase: f32,
-    voices: [Voice; VOICES],
-    age: usize,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct Voice {
-    pitch: u8,
-    frequency: f32,
-    gate: f32,
-    degree: i32,
-    age: usize,
-}
-
-impl TrackRuntime {
-    fn new(track: Track, bpm: u16, rate: SampleRate) -> Self {
-        let bars = track.bar_count().max(1) as f32;
-        Self {
-            track,
-            bpm: bpm.max(1) as f32,
-            bars,
-            rate,
-            phase: 0.0,
-            voices: [Voice::default(); VOICES],
-            age: 0,
-        }
-    }
-
-    fn next(&mut self, playing: bool) -> [PatchControls; VOICES] {
-        if !playing {
-            return [PatchControls::default(); VOICES];
-        }
-        self.advance();
-        self.voices.map(|voice| PatchControls {
-            frequency: Hertz::new(voice.frequency),
-            gate: voice.gate,
-            degree: voice.degree,
-        })
-    }
-
-    fn advance(&mut self) {
-        let bars_per_second = self.bpm / 60.0 / 4.0 / self.bars;
-        self.phase = (self.phase + bars_per_second / self.rate.value() as f32).fract();
-        let mut events = [None; 64];
-        let count = self.track.play_into(self.phase, &mut events);
-        for event in events.into_iter().take(count).flatten() {
-            self.apply_event(event);
-        }
-    }
-
-    fn apply_event(&mut self, event: NoteEvent) {
-        match event {
-            NoteEvent::Press { pitch, degree } => {
-                let index = self
-                    .voices
-                    .iter()
-                    .position(|voice| voice.pitch == pitch && voice.gate > 0.5)
-                    .or_else(|| {
-                        self.voices
-                            .iter()
-                            .position(|voice| voice.pitch == pitch && voice.gate < 0.5)
-                    })
-                    .or_else(|| {
-                        self.voices
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, voice)| voice.gate < 0.5)
-                            .min_by_key(|(_, voice)| voice.age)
-                            .map(|(index, _)| index)
-                    })
-                    .unwrap_or(0);
-                self.age += 1;
-                self.voices[index] = Voice {
-                    pitch,
-                    frequency: 440.0 * 2.0f32.powf((pitch as f32 - 69.0) / 12.0),
-                    gate: 1.0,
-                    degree,
-                    age: self.age,
-                };
-            }
-            NoteEvent::Release { pitch } => {
-                if let Some(voice) = self
-                    .voices
-                    .iter_mut()
-                    .find(|voice| voice.pitch == pitch && voice.gate > 0.5)
-                {
-                    voice.gate = 0.0;
-                }
-            }
-        }
-    }
-}
-
-fn return_retired_track(
-    retired_output: &mut Producer<TrackRuntime>,
-    retired: &mut Option<TrackRuntime>,
-) {
+fn return_retired_track(retired_output: &mut Producer<Player>, retired: &mut Option<Player>) {
     if let Some(track) = retired.take()
         && let Err(error) = retired_output.push(track)
     {
@@ -976,16 +900,18 @@ fn return_retired_track(
 }
 
 fn accept_track(
-    pending: &mut Consumer<TrackRuntime>,
-    track: &mut Option<TrackRuntime>,
-    retired: &mut Option<TrackRuntime>,
+    pending: &mut Consumer<Player>,
+    track: &mut Option<Player>,
+    retired: &mut Option<Player>,
 ) {
     if retired.is_some() {
         return;
     }
     if let Ok(next) = pending.pop() {
-        if let Some(old) = track.replace(next) {
-            *retired = Some(old);
+        if let Some(player) = track {
+            *retired = Some(player.replace(next));
+        } else {
+            *track = Some(next);
         }
     }
 }
@@ -998,6 +924,90 @@ mod tests {
     use brainwash::patch::{BinaryOp, InputKind, Module, Patch, Resonance};
     use brainwash::sample::Sample as AudioSample;
     use brainwash::scale::cmin;
+    use brainwash::sequence::parse_sequence;
+    use brainwash::time::Hertz;
+
+    #[test]
+    fn painted_audio_sustains_glides_and_routes_expression_without_allocating() {
+        use brainwash::sequence::{Sequence, Stroke};
+        let rate = SampleRate::new(1000).unwrap();
+        let sequence = Sequence::new(
+            vec![Stroke::try_from(vec![[0.0, 60.0, -1.0], [1.0, 72.0, 1.0]]).unwrap()],
+            1,
+        )
+        .unwrap();
+        let mut runtime = Player::new(sequence, NonZeroU16::new(120).unwrap(), rate, cmin());
+        let mut patch = Patch::new();
+        let expression = patch.insert(Module::Expression);
+        patch
+            .output(patch.output_port(expression, 0).unwrap())
+            .unwrap();
+        let mut engine = CompiledPatch::new(&patch, rate).unwrap();
+        let mut first = None;
+        let mut last = None;
+        assert_no_alloc(|| {
+            for _ in 0..1000 {
+                let controls = runtime.advance();
+                assert_eq!(controls[0].gate, 1.0);
+                let frame = engine.next_with_controls(controls[0]);
+                assert_eq!(frame.left().value(), controls[0].expression);
+                if first.is_none() {
+                    first = Some(controls[0]);
+                }
+                last = Some(controls[0]);
+            }
+        });
+        let first = first.unwrap();
+        let last = last.unwrap();
+        assert!(last.frequency.unwrap().value() > first.frequency.unwrap().value() * 1.4);
+        assert!((last.expression - first.expression) > 0.99);
+    }
+
+    #[test]
+    fn painted_edit_preserves_transport_and_sustained_gate() {
+        use brainwash::sequence::{Sequence, Stroke};
+        let mut sequence = Sequence::new(
+            vec![Stroke::try_from(vec![[0.0, 60.0, 0.0], [1.0, 72.0, 1.0]]).unwrap()],
+            1,
+        )
+        .unwrap();
+        let rate = SampleRate::new(1000).unwrap();
+        let mut playing = Player::new(
+            sequence.clone(),
+            NonZeroU16::new(120).unwrap(),
+            rate,
+            cmin(),
+        );
+        for _ in 0..800 {
+            assert_eq!(playing.advance()[0].gate, 1.0);
+        }
+        assert_eq!(playing.advance()[0].gate, 1.0);
+        let phase = playing.playhead();
+        sequence = Sequence::new(
+            vec![Stroke::try_from(vec![[0.0, 60.0, -1.0], [1.0, 72.0, -1.0]]).unwrap()],
+            1,
+        )
+        .unwrap();
+        let (mut input, mut output) = RingBuffer::new(1);
+        assert!(
+            input
+                .push(Player::new(
+                    sequence,
+                    NonZeroU16::new(120).unwrap(),
+                    rate,
+                    cmin()
+                ))
+                .is_ok()
+        );
+        let mut playing = Some(playing);
+        let mut retired = None;
+        assert_no_alloc(|| accept_track(&mut output, &mut playing, &mut retired));
+        let playing = playing.as_mut().unwrap();
+        assert_eq!(playing.playhead(), phase);
+        let controls = playing.advance();
+        assert_eq!(controls[0].gate, 1.0);
+        assert_eq!(controls[0].expression, -1.0);
+    }
 
     #[test]
     fn set_playing_reports_rejection_when_queue_is_full() {
@@ -1021,6 +1031,7 @@ mod tests {
             patch_retired,
             track_pending,
             track_retired,
+            sequence_waiting: None,
             play_pending,
             probe_bus: Arc::new(ProbeBus::new()),
             meter_bus: Arc::new(MeterBus::new()),
@@ -1055,6 +1066,7 @@ mod tests {
             patch_retired,
             track_pending,
             track_retired,
+            sequence_waiting: None,
             play_pending,
             probe_bus: Arc::new(ProbeBus::new()),
             meter_bus: Arc::new(MeterBus::new()),
@@ -1066,7 +1078,7 @@ mod tests {
         state.apply(GuiAction::OpenPalette);
         state.apply(GuiAction::Confirm);
         state.apply(GuiAction::Right);
-        state.apply(GuiAction::Palette(ModuleCategory::Output));
+        state.apply(GuiAction::Palette(ModuleCategory::Composition));
         state.apply(GuiAction::Confirm);
         let mut valid = drain_latest_patch(&mut callback_patch_pending)
             .expect("valid gui patch should publish audio");
@@ -1089,32 +1101,64 @@ mod tests {
     }
 
     #[test]
-    fn submit_track_reports_rejection_when_queue_is_full() {
+    fn sequence_queue_keeps_the_latest_edit_under_backpressure() {
         let mut handle = test_handle();
-
-        assert_eq!(
-            handle.submit_track(Track::parse("{0}", &cmin()).unwrap(), 120),
-            Ok(())
-        );
-        assert_eq!(
-            handle.submit_track(Track::parse("{2}", &cmin()).unwrap(), 120),
-            Ok(())
-        );
-        assert_eq!(
-            handle.submit_track(Track::parse("{4}", &cmin()).unwrap(), 120),
-            Err(AudioCommandRejected)
-        );
+        for text in ["{0}", "{2}", "{4}", "{7}"] {
+            handle.submit_sequence(parse_sequence(text, &cmin()).unwrap(), 120, cmin());
+        }
+        let latest = handle.sequence_waiting.as_mut().unwrap();
+        assert_eq!(latest.advance()[0].degree, 7);
     }
 
     #[test]
     fn track_runtime_exposes_polyphonic_voice_controls() {
-        let track = Track::parse("{0&2}", &cmin()).unwrap();
-        let mut runtime = TrackRuntime::new(track, 120, SampleRate::new(44_100).unwrap());
+        let track = parse_sequence("{0&2}", &cmin()).unwrap();
+        let mut runtime = Player::new(
+            track,
+            NonZeroU16::new(120).unwrap(),
+            SampleRate::new(44_100).unwrap(),
+            cmin(),
+        );
 
-        let controls = runtime.next(true);
+        let controls = runtime.advance();
         let active = controls.iter().filter(|control| control.gate > 0.5).count();
 
         assert_eq!(active, 2);
+    }
+
+    #[test]
+    fn overlapping_full_level_voices_are_hard_limited_at_output() {
+        let rate = SampleRate::new(44_100).unwrap();
+        let mut patch = Patch::new();
+        let gate = patch.insert(Module::Gate);
+        patch.output(patch.output_port(gate, 0).unwrap()).unwrap();
+        let (_pending_input, pending_output) = RingBuffer::new(2);
+        let (retired_input, _retired_output) = RingBuffer::new(2);
+        let mut runtime = VoicePatchRuntime::new(
+            PatchBank::new(CompiledPatch::new(&patch, rate).unwrap()),
+            pending_output,
+            retired_input,
+            Arc::new(ProbeBus::new()),
+            Arc::new(MeterBus::new()),
+        );
+        for count in [6, 1, 3, 0, 6] {
+            let controls = std::array::from_fn(|index| PatchControls {
+                gate: if index < count { 1.0 } else { 0.0 },
+                ..Default::default()
+            });
+            let frame = runtime.next_with_controls(controls);
+            assert_eq!(frame.left().value(), count as f32);
+            let mut output = [0.0_f32; 2];
+            write_frame(&mut output, frame, 1.0);
+            assert_eq!(output, [(count as f32).min(1.0); 2]);
+        }
+        let frame = Frame::stereo(
+            AudioSample::new(-6.0).unwrap(),
+            AudioSample::new(6.0).unwrap(),
+        );
+        let mut output = [0.0_f32; 2];
+        write_frame(&mut output, frame, 1.0);
+        assert_eq!(output, [-1.0, 1.0]);
     }
 
     #[test]
@@ -1143,11 +1187,13 @@ mod tests {
             frequency: Hertz::new(220.0),
             gate: 1.0,
             degree: 0,
+            expression: 0.0,
         };
         controls[1] = PatchControls {
             frequency: Hertz::new(330.0),
             gate: 1.0,
             degree: 2,
+            expression: 0.0,
         };
 
         let mut audible = false;
@@ -1190,6 +1236,7 @@ mod tests {
             frequency: Hertz::new(330.0),
             gate: 1.0,
             degree: 0,
+            expression: 0.0,
         };
 
         for _ in 0..256 {
@@ -1319,6 +1366,7 @@ mod tests {
             frequency: Hertz::new(330.0),
             gate: 1.0,
             degree: 0,
+            expression: 0.0,
         }; VOICES];
 
         runtime.next_with_controls(controls);
@@ -1454,10 +1502,11 @@ mod tests {
         let mut retired = None;
         assert!(
             pending_input
-                .push(TrackRuntime::new(
-                    Track::parse("{0&2}", &cmin()).unwrap(),
-                    120,
+                .push(Player::new(
+                    parse_sequence("{0&2}", &cmin()).unwrap(),
+                    NonZeroU16::new(120).unwrap(),
                     rate,
+                    cmin(),
                 ))
                 .is_ok()
         );
@@ -1465,16 +1514,24 @@ mod tests {
         assert_no_alloc(|| {
             return_retired_track(&mut retired_input, &mut retired);
             accept_track(&mut pending_output, &mut track, &mut retired);
-            let _ = track.as_mut().map(|track| track.next(true));
+            let controls = track.as_mut().unwrap().advance();
+            assert_eq!(
+                controls
+                    .iter()
+                    .filter(|control| control.gate == 1.0)
+                    .count(),
+                2
+            );
         });
         assert!(track.is_some());
 
         assert!(
             pending_input
-                .push(TrackRuntime::new(
-                    Track::parse("{4}", &cmin()).unwrap(),
-                    120,
+                .push(Player::new(
+                    parse_sequence("{4}", &cmin()).unwrap(),
+                    NonZeroU16::new(120).unwrap(),
                     rate,
+                    cmin(),
                 ))
                 .is_ok()
         );
@@ -1517,19 +1574,21 @@ mod tests {
         );
         assert!(
             track_input
-                .push(TrackRuntime::new(
-                    Track::parse("{0&2}", &cmin()).unwrap(),
-                    120,
+                .push(Player::new(
+                    parse_sequence("{0&2}", &cmin()).unwrap(),
+                    NonZeroU16::new(120).unwrap(),
                     rate,
+                    cmin(),
                 ))
                 .is_ok()
         );
         assert!(
             track_input
-                .push(TrackRuntime::new(
-                    Track::parse("{4}", &cmin()).unwrap(),
-                    120,
+                .push(Player::new(
+                    parse_sequence("{4}", &cmin()).unwrap(),
+                    NonZeroU16::new(120).unwrap(),
                     rate,
+                    cmin(),
                 ))
                 .is_ok()
         );
@@ -1615,10 +1674,11 @@ mod tests {
         );
         assert!(
             track_retired_input
-                .push(TrackRuntime::new(
-                    Track::parse("{7}", &cmin()).unwrap(),
-                    120,
+                .push(Player::new(
+                    parse_sequence("{7}", &cmin()).unwrap(),
+                    NonZeroU16::new(120).unwrap(),
                     rate,
+                    cmin(),
                 ))
                 .is_ok()
         );
@@ -1636,19 +1696,21 @@ mod tests {
         );
         assert!(
             track_input
-                .push(TrackRuntime::new(
-                    Track::parse("{0&2}", &cmin()).unwrap(),
-                    120,
+                .push(Player::new(
+                    parse_sequence("{0&2}", &cmin()).unwrap(),
+                    NonZeroU16::new(120).unwrap(),
                     rate,
+                    cmin(),
                 ))
                 .is_ok()
         );
         assert!(
             track_input
-                .push(TrackRuntime::new(
-                    Track::parse("{4}", &cmin()).unwrap(),
-                    120,
+                .push(Player::new(
+                    parse_sequence("{4}", &cmin()).unwrap(),
+                    NonZeroU16::new(120).unwrap(),
                     rate,
+                    cmin(),
                 ))
                 .is_ok()
         );
@@ -1808,6 +1870,7 @@ mod tests {
             patch_retired,
             track_pending,
             track_retired,
+            sequence_waiting: None,
             play_pending,
             probe_bus: Arc::new(ProbeBus::new()),
             meter_bus: Arc::new(MeterBus::new()),

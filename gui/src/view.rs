@@ -1,10 +1,12 @@
 use crate::model::{
     EnvPointerPhase, GridPointerPhase, GridPos, GridRenderModule, GridViewSize, GuiAction,
-    GuiState, Mode, Module, ModuleCategory, ModuleId, ModuleKind, Orientation, PaletteEntry,
-    PaletteModule, ParameterValue,
+    GuiState, Mode, Module, ModuleCategory, ModuleId, ModuleKind, Orientation, PaletteModule,
+    ParameterValue,
 };
 use brainwash_grid::bounded_delta;
 use haven::*;
+
+mod painting;
 
 const ROOT: u64 = 1;
 const CELL: f32 = 30.;
@@ -23,22 +25,23 @@ const PREVIEW_ID_OFFSET: u64 = 100_000;
 const PALETTE_ICON_SIZE: f32 = 17.;
 
 pub fn main_view<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
-    let side_panel = column_spaced(
-        PANEL_GAP,
-        vec![document_bar(state, app), shortcut_panel(state, app)],
-    );
-
-    let mut layers = vec![
-        row_spaced_aligned(
+    let columns = vec![
+        if state.painting.open {
+            painting::painting_panel(state, app).expand()
+        } else {
+            patch_panel(state, app).expand()
+        },
+        column_spaced(
             PANEL_GAP,
-            Align::TopLeading,
+            vec![document_bar(state, app), shortcut_panel(state, app)],
+        ),
+    ];
+    let mut layers = vec![
+        column_spaced(
+            PANEL_GAP,
             vec![
-                column_spaced(
-                    PANEL_GAP,
-                    vec![toolbar(state, app), patch_panel(state, app).expand()],
-                )
-                .expand(),
-                side_panel,
+                toolbar(state, app),
+                row_spaced_aligned(PANEL_GAP, Align::TopLeading, columns).expand(),
             ],
         )
         .pad(PANEL_GAP)
@@ -52,7 +55,6 @@ pub fn main_view<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
             | Mode::SaveConfirm
             | Mode::ExportPrompt
             | Mode::ExportConfirm
-            | Mode::TrackPrompt
             | Mode::TrackSettings { .. }
     ) {
         let prompt_height = if matches!(state.mode(), Mode::LoadConfirm | Mode::SaveConfirm) {
@@ -73,11 +75,11 @@ pub fn main_view<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSt
     ];
     if matches!(state.mode(), Mode::Palette) || state.palette_searching() {
         root_layers.push(
-            column_aligned(
-                Align::TopCenter,
-                vec![space().height(TITLE_BAR_SPACE), palette_panel(state, app)],
-            )
-            .expand(),
+            palette_panel(state)
+                .pad_top(TITLE_BAR_SPACE)
+                .pad_x(PANEL_GAP)
+                .pad_bottom(PANEL_GAP)
+                .expand(),
         );
     }
     stack(root_layers).align(Align::TopLeading)
@@ -120,71 +122,97 @@ fn toolbar<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
             state.playing(),
             app,
         )
-        .width(50.),
-        action_button(
-            binding!(state.meters_button),
-            "Meters",
-            GuiAction::ToggleMeters,
-            state.show_meters(),
+        .width(60.),
+        command_button(
+            binding!(state.synth_button),
+            73_000,
+            "Synth",
+            !state.painting.open,
+            |state| {
+                if state.painting.open {
+                    state.toggle_sequence();
+                }
+            },
             app,
-        ),
+        )
+        .width(65.),
+        command_button(
+            binding!(state.sequence_button),
+            73_010,
+            "Sequence",
+            state.painting.open,
+            |state| {
+                if !state.painting.open {
+                    state.toggle_sequence();
+                }
+            },
+            app,
+        )
+        .width(85.),
+    ];
+    if !state.painting.open {
+        actions.push(space().width(12.));
+        actions.push(
+            action_button(
+                binding!(state.meters_button),
+                "Meters",
+                GuiAction::ToggleMeters,
+                state.show_meters(),
+                app,
+            )
+            .width(75.),
+        );
+        actions.push(
+            action_button(
+                binding!(state.modules_button),
+                "Modules",
+                GuiAction::OpenModules,
+                false,
+                app,
+            )
+            .width(75.),
+        );
+        if state.composition_depth() > 0 && matches!(state.mode(), Mode::Normal) {
+            actions.push(
+                action_button(
+                    binding!(state.save_module_button),
+                    "Save Module",
+                    GuiAction::SaveModule,
+                    false,
+                    app,
+                )
+                .width(105.),
+            );
+        }
+    }
+    actions.extend([
+        space().expand(),
         action_button(
             binding!(state.load_button),
             "Open",
             GuiAction::Load,
             false,
             app,
-        ),
-        action_button(
-            binding!(state.save_button),
-            "Save",
-            GuiAction::Save,
-            false,
-            app,
-        ),
-    ];
-    if state.composition_depth() > 0 && matches!(state.mode(), Mode::Normal) {
-        actions.push(action_button(
-            binding!(state.save_module_button),
-            "Save Module",
-            GuiAction::SaveModule,
-            false,
-            app,
-        ));
-    }
-    actions.extend([
+        )
+        .width(65.),
         action_button(
             binding!(state.export_button),
             "Export",
             GuiAction::Export,
             false,
             app,
-        ),
+        )
+        .width(65.),
         action_button(
-            binding!(state.modules_button),
-            "Modules",
-            GuiAction::OpenModules,
+            binding!(state.save_button),
+            "Save",
+            GuiAction::Save,
             false,
             app,
-        ),
-        action_button(
-            binding!(state.track_button),
-            "Track",
-            GuiAction::TrackEdit,
-            false,
-            app,
-        ),
-        status_chip(
-            format!(
-                "{} / {}",
-                state.active_instrument() + 1,
-                state.instrument_count()
-            ),
-            panel(),
-            app,
-        ),
+        )
+        .width(60.),
     ]);
-    row_spaced_aligned(PANEL_GAP, Align::TopLeading, actions)
+    row_spaced_aligned(6., Align::TopLeading, actions).height(32.)
 }
 
 fn document_bar<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
@@ -218,156 +246,199 @@ fn document_bar<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSta
     .height(20.)
 }
 
-fn palette_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiState> {
-    let (width, height) = palette_panel_size(state);
-    let content_width = width - 24.;
-    let content = if state.palette_searching() {
-        let filter = state.palette_filter().to_string();
-        let modules = state.filtered_palette_modules();
-        let choices = modules
-            .iter()
-            .enumerate()
-            .map(|(index, module)| {
+fn palette_panel<'a>(state: &'a GuiState) -> View<'a, GuiState> {
+    draw(move |area, app: &mut PaneState| {
+        let width = area.width.min(1600.);
+        let content_width = (width - 24.).max(1.);
+        let column_width = content_width.min(240.);
+        let mut rows = Vec::new();
+        let mut selected_y = 0.;
+        let mut content_height = 0.;
+        if state.palette_searching() {
+            let modules = state.filtered_palette_modules();
+            for (index, module) in modules.iter().enumerate() {
+                let y = index as f32 * (PALETTE_ROW_HEIGHT + 6.);
+                if state.filtered_palette_index_selected(index) {
+                    selected_y = y;
+                }
+                rows.push((0., y, index, module.clone()));
+            }
+            content_height = rows_height(modules.len(), PALETTE_ROW_HEIGHT, 6.);
+        } else {
+            for (column, category) in ModuleCategory::ALL.iter().enumerate() {
+                let mut y = PALETTE_ROW_HEIGHT + 12.;
+                let mut section = "";
+                for (index, module) in state.palette_modules_for(*category).into_iter().enumerate()
+                {
+                    if module.section() != section {
+                        if !section.is_empty() {
+                            y += 12.;
+                        }
+                        y += PALETTE_ROW_HEIGHT + 6.;
+                        section = module.section();
+                    }
+                    if *category == state.palette_category() && state.palette_index_selected(index)
+                    {
+                        selected_y = y;
+                    }
+                    rows.push((column as f32 * (column_width + 12.), y, index, module));
+                    y += PALETTE_ROW_HEIGHT + 6.;
+                }
+                content_height = content_height.max(y);
+            }
+            content_height = (content_height - 6.).max(0.);
+        }
+        let height = (content_height + 70.).min(area.height);
+        let viewport_height = (height - 70.).max(1.);
+        let max_scroll = (content_height - viewport_height).max(0.);
+        let offset = if state.palette_searching() {
+            state
+                .palette_scroll
+                .unwrap_or(selected_y - viewport_height * 0.5)
+        } else {
+            selected_y - viewport_height * 0.5
+        }
+        .clamp(0., max_scroll);
+        let horizontal_offset = state
+            .palette_scroll
+            .unwrap_or(state.palette_category().index() as f32 * (column_width + 12.));
+        let mut choices = Vec::new();
+        if !state.palette_searching() {
+            for (column, category) in ModuleCategory::ALL.iter().enumerate() {
+                choices.push(
+                    text(49_000 + column as u64, category.label())
+                        .font_size(15)
+                        .fill(fg())
+                        .view()
+                        .build(app)
+                        .width(column_width)
+                        .height(PALETTE_ROW_HEIGHT)
+                        .offset_x(
+                            (column as f32 - state.palette_category().index() as f32)
+                                * (column_width + 12.)
+                                + (content_width - column_width) * 0.5,
+                        )
+                        .offset_y(-offset),
+                );
+            }
+        }
+        let mut section = "";
+        for (x, y, index, module) in rows {
+            let x = if state.palette_searching() {
+                x
+            } else {
+                x - state.palette_category().index() as f32 * (column_width + 12.)
+                    + (content_width - column_width) * 0.5
+            };
+            if !state.palette_searching() && (index == 0 || module.section() != section) {
+                section = module.section();
+                let heading_y = y - PALETTE_ROW_HEIGHT - 6. - offset;
+                if heading_y + PALETTE_ROW_HEIGHT > 0. && heading_y < viewport_height {
+                    choices.push(
+                        text(
+                            50_000 + module.category().index() as u64 * 100 + index as u64,
+                            section,
+                        )
+                        .font_size(13)
+                        .fill(fg())
+                        .view()
+                        .build(app)
+                        .width(column_width)
+                        .height(PALETTE_ROW_HEIGHT)
+                        .offset_x(x)
+                        .offset_y(heading_y),
+                    );
+                }
+            }
+            if y + PALETTE_ROW_HEIGHT <= offset || y >= offset + viewport_height {
+                continue;
+            }
+            let choice = if state.palette_searching() {
                 filtered_module_choice(
                     index,
-                    module,
+                    &module,
                     state.filtered_palette_index_selected(index),
                     content_width,
                     app,
                 )
-            })
-            .collect::<Vec<_>>();
-        vec![
-            stack(vec![
-                rect(210)
-                    .fill(field())
-                    .stroke(accent(), Stroke::new(1.))
-                    .corner_rounding(6.)
-                    .build(app)
-                    .inert(),
-                text(211, format!("/{filter}"))
-                    .font_size(14)
-                    .fill(fg())
-                    .view()
-                    .build(app)
-                    .pad_x(9.)
-                    .pad_y(7.),
-            ])
-            .width(content_width),
-            column_spaced(6., choices),
-        ]
-    } else {
-        let categories = ModuleCategory::ALL
-            .iter()
-            .map(|category| category_button(*category, *category == state.palette_category(), app))
-            .collect::<Vec<_>>();
-        let mut content = vec![row_spaced(6., categories)];
-        if let Some(family) = state.palette_family_label() {
-            content.push(family_back(family, content_width, app));
+            } else {
+                module_choice(
+                    index,
+                    &module,
+                    module.category() == state.palette_category()
+                        && state.palette_index_selected(index),
+                    column_width,
+                    app,
+                )
+            };
+            choices.push(choice.offset_x(x).offset_y(y - offset));
         }
-        let choices = state
-            .visible_palette_entries()
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| match entry {
-                PaletteEntry::Module(module) => module_choice(
-                    index,
-                    module,
-                    state.palette_index_selected(index),
-                    content_width,
-                    app,
-                ),
-                PaletteEntry::Family(_) => family_choice(
-                    index,
-                    entry.label(),
-                    state.palette_index_selected(index),
-                    state.palette_category(),
-                    content_width,
-                    app,
-                ),
-            })
-            .collect();
-        content.push(column_spaced(6., choices));
-        content
-    };
-
-    stack(vec![
-        rect(200)
-            .fill(panel())
-            .stroke(line(), Stroke::new(1.))
-            .corner_rounding(8.)
-            .build(app)
-            .width(width)
-            .height(height)
-            .inert(),
-        column_spaced(
-            12.,
-            vec![
-                text(201, "Modules")
+        let viewport = stack(vec![
+            rect(202)
+                .fill(Color::TRANSPARENT)
+                .view()
+                .gesture(gesture::scroll(203).capture().run(
+                    move |state: &mut GuiState, _, delta| {
+                        if state.palette_searching() {
+                            state.palette_scroll = Some((offset - delta.y).clamp(0., max_scroll));
+                        } else {
+                            let delta = if delta.x.abs() > delta.y.abs() {
+                                delta.x
+                            } else {
+                                delta.y
+                            };
+                            let position = (horizontal_offset - delta).clamp(
+                                0.,
+                                (ModuleCategory::ALL.len() - 1) as f32 * (column_width + 12.),
+                            );
+                            let category = ModuleCategory::ALL
+                                [(position / (column_width + 12.)).round() as usize];
+                            state.open_category(category);
+                            state.palette_scroll = Some(position);
+                        }
+                    },
+                ))
+                .build(app)
+                .expand(),
+            stack_aligned(Align::TopLeading, choices).expand(),
+        ])
+        .clipped(|area| rounded_rect_path(area, 0.))
+        .height(viewport_height);
+        stack(vec![
+            rect(200)
+                .fill(panel())
+                .stroke(line(), Stroke::new(1.))
+                .corner_rounding(8.)
+                .build(app)
+                .expand()
+                .inert(),
+            column_spaced(
+                12.,
+                vec![
+                    text(
+                        201,
+                        if state.palette_searching() {
+                            format!("Modules /{}", state.palette_filter())
+                        } else {
+                            "Modules".to_string()
+                        },
+                    )
                     .font_size(18)
                     .fill(fg())
                     .view()
-                    .build(app),
-                column_spaced(6., content),
-            ],
-        )
-        .pad(12.),
-    ])
-    .width(width)
-    .height(height)
-}
-
-fn palette_panel_size(state: &GuiState) -> (f32, f32) {
-    const PANEL_PAD: f32 = 24.;
-    const TITLE_H: f32 = 22.;
-    const TITLE_GAP: f32 = 12.;
-    const SEARCH_H: f32 = 28.;
-    const GAP: f32 = 6.;
-
-    let title_w = text_width("Modules", 18.) + PANEL_PAD;
-    if state.palette_searching() {
-        let modules = state.filtered_palette_modules();
-        let module_w = modules
-            .iter()
-            .map(|kind| row_width(kind.label(), 13.))
-            .fold(0., f32::max);
-        let search_w = text_width(&format!("/{}", state.palette_filter()), 14.) + 18.;
-        let width = title_w.max(module_w + PANEL_PAD).max(search_w + PANEL_PAD);
-        let height = PANEL_PAD
-            + TITLE_H
-            + TITLE_GAP
-            + SEARCH_H
-            + GAP
-            + rows_height(modules.len(), PALETTE_ROW_HEIGHT, GAP);
-        (width, height)
-    } else {
-        let entries = state.visible_palette_entries();
-        let module_w = entries
-            .iter()
-            .map(|entry| row_width(entry.label(), 13.))
-            .fold(0., f32::max);
-        let category_w = ModuleCategory::ALL
-            .iter()
-            .map(|category| row_width(category.label(), 13.))
-            .sum::<f32>()
-            + GAP * ModuleCategory::ALL.len().saturating_sub(1) as f32;
-        let width = title_w
-            .max(module_w + PANEL_PAD)
-            .max(category_w + PANEL_PAD);
-        let family_h = if state.palette_family_label().is_some() {
-            PALETTE_ROW_HEIGHT + GAP
-        } else {
-            0.
-        };
-        let height = PANEL_PAD
-            + TITLE_H
-            + TITLE_GAP
-            + PALETTE_ROW_HEIGHT
-            + GAP
-            + family_h
-            + rows_height(entries.len(), PALETTE_ROW_HEIGHT, GAP);
-        (width, height)
-    }
+                    .build(app)
+                    .height(22.),
+                    viewport,
+                ],
+            )
+            .pad(12.),
+        ])
+        .width(width)
+        .height(height)
+        .align(Align::TopCenter)
+        .draw(area, app)
+    })
+    .expand()
 }
 
 fn rows_height(count: usize, row_height: f32, gap: f32) -> f32 {
@@ -376,10 +447,6 @@ fn rows_height(count: usize, row_height: f32, gap: f32) -> f32 {
     } else {
         count as f32 * row_height + count.saturating_sub(1) as f32 * gap
     }
-}
-
-fn row_width(label: &str, font_size: f32) -> f32 {
-    text_width(label, font_size) + 20.
 }
 
 fn text_width(label: &str, font_size: f32) -> f32 {
@@ -457,8 +524,7 @@ fn mode_color(state: &GuiState) -> Color {
         | Mode::LoadConfirm
         | Mode::SaveConfirm
         | Mode::ExportPrompt
-        | Mode::ExportConfirm
-        | Mode::TrackPrompt => Color::from_rgb8(190, 76, 91),
+        | Mode::ExportConfirm => Color::from_rgb8(190, 76, 91),
     }
 }
 
@@ -1152,31 +1218,10 @@ fn prompt_panel<'a>(state: &'a GuiState, app: &mut PaneState) -> View<'a, GuiSta
         Mode::SaveConfirm => ("Save", "Overwrite or save as a new file?"),
         Mode::ExportPrompt => ("Export", "WAV file"),
         Mode::ExportConfirm => ("Overwrite", "Replace existing WAV?"),
-        Mode::TrackPrompt => ("Track", "Note pattern"),
         Mode::TrackSettings { .. } => ("Settings", "Track playback"),
         _ => ("", ""),
     };
-    let input = if matches!(state.mode(), Mode::TrackPrompt) {
-        stack(vec![
-            rect(793)
-                .fill(field())
-                .stroke(line(), Stroke::new(1.))
-                .corner_rounding(6.)
-                .build(app)
-                .inert(),
-            text_field(794, binding!(state.prompt_input))
-                .singleline()
-                .align(Alignment::Start)
-                .font_size(14)
-                .padding(10.)
-                .on_edit(|state, _, edit| {
-                    if let EditInteraction::Update(text) = edit {
-                        state.sync_track_prompt_text(text);
-                    }
-                })
-                .build(app),
-        ])
-    } else if matches!(state.mode(), Mode::LoadConfirm | Mode::SaveConfirm) {
+    let input = if matches!(state.mode(), Mode::LoadConfirm | Mode::SaveConfirm) {
         space()
     } else {
         let value = match state.mode() {
@@ -1434,8 +1479,8 @@ fn envelope_editor<'a>(
                             DragPhase::Updated { current, .. } => (EnvPointerPhase::Drag, current),
                             DragPhase::Completed { current, .. } => (EnvPointerPhase::End, current),
                         };
-                        let time = (point.x / width).clamp(0., 1.);
-                        let y = (point.y / height).clamp(0., 1.);
+                        let time = (point.x as f32 / width).clamp(0., 1.);
+                        let y = (point.y as f32 / height).clamp(0., 1.);
                         let value = (ENVELOPE_VALUE_MAX
                             - y * (ENVELOPE_VALUE_MAX - ENVELOPE_VALUE_MIN))
                             .clamp(ENVELOPE_VALUE_MIN, ENVELOPE_VALUE_MAX);
@@ -1828,7 +1873,16 @@ fn module_tile<'a>(
 ) -> View<'a, GuiState> {
     let alpha = alpha.clamp(0., 1.);
     let kind = module.module.kind();
-    let mut code = module.module.label().chars().take(3).collect::<String>();
+    let label = module.module.label();
+    let mut code = if label.split_whitespace().count() > 1 {
+        label
+            .split_whitespace()
+            .filter_map(|word| word.chars().find(|character| character.is_alphanumeric()))
+            .take(3)
+            .collect::<String>()
+    } else {
+        label.chars().take(3).collect::<String>()
+    };
     code.make_ascii_uppercase();
     let input_count = module.input_count;
     let output_count = module.output_count;
@@ -2322,16 +2376,17 @@ fn grid_pointer_surface(
 
 fn grid_position(point: Point, view: GridPos, size: GridViewSize, area: Area) -> Option<GridPos> {
     let (inset_x, inset_y) = grid_inset(area, size);
-    let point = Point::new(point.x - inset_x, point.y - inset_y);
+    let x_local = point.x as f32 - inset_x;
+    let y_local = point.y as f32 - inset_y;
     let width = grid_span(size.columns());
     let height = grid_span(size.rows());
-    if point.x < 0. || point.y < 0. || point.x >= width || point.y >= height {
+    if x_local < 0. || y_local < 0. || x_local >= width || y_local >= height {
         return None;
     }
-    let x = (point.x / (CELL + GAP)).floor() as u16;
-    let y = (point.y / (CELL + GAP)).floor() as u16;
-    let cell_x = point.x - x as f32 * (CELL + GAP);
-    let cell_y = point.y - y as f32 * (CELL + GAP);
+    let x = (x_local / (CELL + GAP)).floor() as u16;
+    let y = (y_local / (CELL + GAP)).floor() as u16;
+    let cell_x = x_local - x as f32 * (CELL + GAP);
+    let cell_y = y_local - y as f32 * (CELL + GAP);
     (x < size.columns() && y < size.rows() && cell_x < CELL && cell_y < CELL)
         .then_some(GridPos::new(x + view.x, y + view.y))
 }
@@ -2359,43 +2414,6 @@ fn grid_span(cells: u16) -> f32 {
     cells as f32 * CELL + cells.saturating_sub(1) as f32 * GAP
 }
 
-fn category_button<'a>(
-    category: ModuleCategory,
-    selected: bool,
-    app: &mut PaneState,
-) -> View<'a, GuiState> {
-    let id = 1_000 + category as u64;
-    let color = module_color(category);
-    stack(vec![
-        rect(id)
-            .fill(if selected {
-                color
-            } else {
-                color.with_alpha(0.34)
-            })
-            .stroke(color, Stroke::new(if selected { 2. } else { 1. }))
-            .corner_rounding(6.)
-            .view()
-            .gesture(gesture::click(id + 100).button(MouseButton::Left).run(
-                move |state: &mut GuiState, _app, event| {
-                    if matches!(event.state, ClickPhase::Completed) {
-                        state.open_category(category);
-                    }
-                },
-            ))
-            .build(app)
-            .width(row_width(category.label(), 13.))
-            .height(PALETTE_ROW_HEIGHT),
-        text(id + 200, category.label())
-            .font_size(13)
-            .fill(fg())
-            .view()
-            .build(app)
-            .pad_x(10.)
-            .pad_y(5.),
-    ])
-}
-
 fn module_choice<'a>(
     index: usize,
     module: &PaletteModule,
@@ -2403,7 +2421,8 @@ fn module_choice<'a>(
     width: f32,
     app: &mut PaneState,
 ) -> View<'a, GuiState> {
-    let id = 2_000 + index as u64;
+    let category = module.category();
+    let id = 20_000 + category.index() as u64 * 1000 + index as u64 * 3;
     let color = palette_module_color(module);
     stack(vec![
         rect(id)
@@ -2415,9 +2434,10 @@ fn module_choice<'a>(
             .stroke(if selected { color } else { line() }, Stroke::new(1.))
             .corner_rounding(6.)
             .view()
-            .gesture(gesture::click(id + 100).button(MouseButton::Left).run(
+            .gesture(gesture::click(id + 1).button(MouseButton::Left).run(
                 move |state: &mut GuiState, _app, event| {
                     if matches!(event.state, ClickPhase::Completed) {
+                        state.open_category(category);
                         state.choose_palette_index(index);
                     }
                 },
@@ -2425,74 +2445,7 @@ fn module_choice<'a>(
             .build(app)
             .width(width)
             .height(PALETTE_ROW_HEIGHT),
-        palette_module_label(id + 200, module, app),
-    ])
-}
-
-fn family_choice<'a>(
-    index: usize,
-    label: &str,
-    selected: bool,
-    category: ModuleCategory,
-    width: f32,
-    app: &mut PaneState,
-) -> View<'a, GuiState> {
-    let id = 2_700 + index as u64;
-    let color = module_color(category);
-    stack(vec![
-        rect(id)
-            .fill(if selected {
-                color.with_alpha(0.74)
-            } else {
-                color.with_alpha(0.22)
-            })
-            .stroke(if selected { color } else { line() }, Stroke::new(1.))
-            .corner_rounding(6.)
-            .view()
-            .gesture(gesture::click(id + 100).button(MouseButton::Left).run(
-                move |state: &mut GuiState, _app, event| {
-                    if matches!(event.state, ClickPhase::Completed) {
-                        state.open_palette_family(index);
-                    }
-                },
-            ))
-            .build(app)
-            .width(width)
-            .height(PALETTE_ROW_HEIGHT),
-        text(id + 200, format!("{label} ›"))
-            .font_size(13)
-            .fill(fg())
-            .view()
-            .build(app)
-            .pad_x(10.)
-            .pad_y(5.),
-    ])
-}
-
-fn family_back<'a>(label: &str, width: f32, app: &mut PaneState) -> View<'a, GuiState> {
-    stack(vec![
-        rect(215)
-            .fill(field())
-            .stroke(line(), Stroke::new(1.))
-            .corner_rounding(6.)
-            .view()
-            .gesture(gesture::click(216).button(MouseButton::Left).run(
-                |state: &mut GuiState, _app, event| {
-                    if matches!(event.state, ClickPhase::Completed) {
-                        state.close_palette_family();
-                    }
-                },
-            ))
-            .build(app)
-            .width(width)
-            .height(PALETTE_ROW_HEIGHT),
-        text(217, format!("‹ {label}"))
-            .font_size(13)
-            .fill(fg())
-            .view()
-            .build(app)
-            .pad_x(10.)
-            .pad_y(5.),
+        palette_module_label(id + 2, module, app),
     ])
 }
 
@@ -2650,7 +2603,24 @@ fn action_button<'a>(
     active: bool,
     app: &mut PaneState,
 ) -> View<'a, GuiState> {
-    let id = 3_000 + action_id(action);
+    command_button(
+        button_state,
+        3_000 + action_id(action),
+        label,
+        active,
+        move |state| state.apply(action),
+        app,
+    )
+}
+
+fn command_button<'a>(
+    button_state: (&'a ButtonState, haven::Binding<GuiState, ButtonState>),
+    id: u64,
+    label: &'static str,
+    active: bool,
+    action: impl Fn(&mut GuiState) + 'static,
+    app: &mut PaneState,
+) -> View<'a, GuiState> {
     button(id, button_state)
         .surface(move |state, app| {
             let fill = match (active, state.depressed, state.hovered) {
@@ -2684,28 +2654,9 @@ fn action_button<'a>(
                 .pad_x(9.)
                 .pad_y(6.)
         })
-        .on_click(move |state, _| state.apply(action))
+        .on_click(move |state, _| action(state))
         .build(app)
         .height(28.)
-}
-
-fn status_chip<'a>(label: String, color: Color, app: &mut PaneState) -> View<'a, GuiState> {
-    let id = 4_000 + label.len() as u64;
-    stack(vec![
-        rect(id)
-            .fill(color)
-            .stroke(line(), Stroke::new(1.))
-            .corner_rounding(7.)
-            .build(app),
-        text(id + 1, label)
-            .font_size(13)
-            .fill(fg())
-            .view()
-            .build(app)
-            .pad_x(9.)
-            .pad_y(6.),
-    ])
-    .height(28.)
 }
 
 fn shortcuts(state: &GuiState) -> Vec<(u8, &'static str, &'static str)> {
@@ -2731,7 +2682,7 @@ fn shortcut_panel<'a>(state: &GuiState, app: &mut PaneState) -> View<'a, GuiStat
         if previous_group.is_some_and(|previous| previous != group) {
             rows.push(space().height(8.));
         }
-        let id = 70_000 + index as u64 * 10;
+        let id = 90_000 + index as u64 * 10;
         rows.push(row_spaced(
             6.,
             vec![
@@ -2778,6 +2729,9 @@ enum BindingInput {
 #[derive(Clone, Copy)]
 enum BindingEffect {
     Action(GuiAction),
+    Brush(crate::model::painting::Brush),
+    ShrinkBrush,
+    GrowBrush,
     Text,
 }
 
@@ -2801,9 +2755,18 @@ impl KeyBinding {
         key: &'static str,
         label: &'static str,
     ) -> Self {
+        Self::new(input, BindingEffect::Action(action), key, label)
+    }
+
+    const fn new(
+        input: BindingInput,
+        effect: BindingEffect,
+        key: &'static str,
+        label: &'static str,
+    ) -> Self {
         Self {
             input,
-            effect: BindingEffect::Action(action),
+            effect,
             hint: Some(BindingHint { key, label }),
         }
     }
@@ -2819,7 +2782,10 @@ impl KeyBinding {
 
 fn binding_group(binding: &KeyBinding) -> u8 {
     match binding.effect {
-        BindingEffect::Text => 0,
+        BindingEffect::Text
+        | BindingEffect::Brush(_)
+        | BindingEffect::ShrinkBrush
+        | BindingEffect::GrowBrush => 0,
         BindingEffect::Action(
             GuiAction::Left
             | GuiAction::Down
@@ -2867,8 +2833,7 @@ fn binding_group(binding: &KeyBinding) -> u8 {
             GuiAction::TogglePlay
             | GuiAction::ToggleMeters
             | GuiAction::TrackSettings
-            | GuiAction::TrackEdit
-            | GuiAction::Instrument(_),
+            | GuiAction::TrackEdit,
         ) => 2,
         BindingEffect::Action(
             GuiAction::Save
@@ -2889,6 +2854,174 @@ fn binding_group(binding: &KeyBinding) -> u8 {
 }
 
 const TEXT_INPUT_CHARS: &str = r#"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_./+#!"$%&'()*,:;<=>?@[\]^`{}|~"#;
+
+const SEQUENCE_BINDINGS: &[KeyBinding] = &[
+    KeyBinding::new(
+        BindingInput::Character('b'),
+        BindingEffect::Brush(crate::model::painting::Brush::Draw),
+        "b",
+        "draw",
+    ),
+    KeyBinding::new(
+        BindingInput::Character('a'),
+        BindingEffect::Brush(crate::model::painting::Brush::Select),
+        "a",
+        "select",
+    ),
+    KeyBinding::new(
+        BindingInput::Character('v'),
+        BindingEffect::Brush(crate::model::painting::Brush::Shape),
+        "v",
+        "shape",
+    ),
+    KeyBinding::new(
+        BindingInput::Character('q'),
+        BindingEffect::Brush(crate::model::painting::Brush::Quantize),
+        "q",
+        "quantize",
+    ),
+    KeyBinding::new(
+        BindingInput::Character('r'),
+        BindingEffect::Brush(crate::model::painting::Brush::Erase),
+        "r",
+        "erase",
+    ),
+    KeyBinding::new(
+        BindingInput::Character('c'),
+        BindingEffect::Brush(crate::model::painting::Brush::Expression),
+        "c",
+        "expression",
+    ),
+    KeyBinding::new(
+        BindingInput::Character('['),
+        BindingEffect::ShrinkBrush,
+        "[/]",
+        "brush size",
+    ),
+    KeyBinding::new(
+        BindingInput::Character(']'),
+        BindingEffect::GrowBrush,
+        "[/]",
+        "brush size",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('h'),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "move stroke",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('j'),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "move stroke",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('k'),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "move stroke",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('l'),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "move stroke",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowLeft),
+        GuiAction::Left,
+        "hjkl/arrows",
+        "move stroke",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowDown),
+        GuiAction::Down,
+        "hjkl/arrows",
+        "move stroke",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowUp),
+        GuiAction::Up,
+        "hjkl/arrows",
+        "move stroke",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::ArrowRight),
+        GuiAction::Right,
+        "hjkl/arrows",
+        "move stroke",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Delete),
+        GuiAction::Delete,
+        "delete/.",
+        "delete stroke",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Escape),
+        GuiAction::Cancel,
+        "esc",
+        "cancel",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Space),
+        GuiAction::TogglePlay,
+        "space",
+        "play",
+    ),
+    KeyBinding::action(
+        BindingInput::Named(NamedKey::Tab),
+        GuiAction::TrackEdit,
+        "tab/t",
+        "synth",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('.'),
+        GuiAction::Delete,
+        "delete/.",
+        "delete stroke",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('t'),
+        GuiAction::TrackEdit,
+        "tab/t",
+        "synth",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('s'),
+        GuiAction::TrackSettings,
+        "s",
+        "settings",
+    ),
+    KeyBinding::action(BindingInput::Character('O'), GuiAction::Load, "O", "open"),
+    KeyBinding::action(BindingInput::Character('w'), GuiAction::Save, "w/W", "save"),
+    KeyBinding::action(
+        BindingInput::Character('W'),
+        GuiAction::SaveAs,
+        "w/W",
+        "save",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('e'),
+        GuiAction::Export,
+        "e",
+        "export",
+    ),
+    KeyBinding::action(BindingInput::Character('Q'), GuiAction::Quit, "Q", "quit"),
+    KeyBinding::action(
+        BindingInput::Character('u'),
+        GuiAction::Undo,
+        "u/U",
+        "undo/redo",
+    ),
+    KeyBinding::action(
+        BindingInput::Character('U'),
+        GuiAction::Redo,
+        "u/U",
+        "undo/redo",
+    ),
+];
 
 const NORMAL_BINDINGS: &[KeyBinding] = &[
     KeyBinding::action(
@@ -3013,7 +3146,7 @@ const NORMAL_BINDINGS: &[KeyBinding] = &[
     ),
     KeyBinding::action(
         BindingInput::Character('*'),
-        GuiAction::Palette(ModuleCategory::Output),
+        GuiAction::Palette(ModuleCategory::Composition),
         "! ... *",
         "category",
     ),
@@ -3100,36 +3233,6 @@ const NORMAL_BINDINGS: &[KeyBinding] = &[
         GuiAction::TrackSettings,
         "s",
         "settings",
-    ),
-    KeyBinding::action(
-        BindingInput::Character('1'),
-        GuiAction::Instrument(0),
-        "1-5",
-        "instrument",
-    ),
-    KeyBinding::action(
-        BindingInput::Character('2'),
-        GuiAction::Instrument(1),
-        "1-5",
-        "instrument",
-    ),
-    KeyBinding::action(
-        BindingInput::Character('3'),
-        GuiAction::Instrument(2),
-        "1-5",
-        "instrument",
-    ),
-    KeyBinding::action(
-        BindingInput::Character('4'),
-        GuiAction::Instrument(3),
-        "1-5",
-        "instrument",
-    ),
-    KeyBinding::action(
-        BindingInput::Character('5'),
-        GuiAction::Instrument(4),
-        "1-5",
-        "instrument",
     ),
 ];
 
@@ -3226,7 +3329,7 @@ const PALETTE_BINDINGS: &[KeyBinding] = &[
     ),
     KeyBinding::action(
         BindingInput::Character('*'),
-        GuiAction::Palette(ModuleCategory::Output),
+        GuiAction::Palette(ModuleCategory::Composition),
         "! ... *",
         "category",
     ),
@@ -4485,22 +4588,6 @@ const EXPORT_TEXT_BINDINGS: &[KeyBinding] = &[
     ),
 ];
 
-const TRACK_TEXT_BINDINGS: &[KeyBinding] = &[
-    KeyBinding::text("type", "text"),
-    KeyBinding::action(
-        BindingInput::Named(NamedKey::Enter),
-        GuiAction::Confirm,
-        "enter",
-        "confirm",
-    ),
-    KeyBinding::action(
-        BindingInput::Named(NamedKey::Escape),
-        GuiAction::Cancel,
-        "esc",
-        "cancel",
-    ),
-];
-
 const CONFIRM_BINDINGS: &[KeyBinding] = &[
     KeyBinding::action(
         BindingInput::Character('y'),
@@ -4674,6 +4761,7 @@ fn bindings(state: &GuiState) -> &'static [KeyBinding] {
         return PALETTE_SEARCH_BINDINGS;
     }
     match state.mode() {
+        Mode::Normal if state.painting.open => SEQUENCE_BINDINGS,
         Mode::Normal => NORMAL_BINDINGS,
         Mode::Palette => PALETTE_BINDINGS,
         Mode::Move { .. } => MOVE_BINDINGS,
@@ -4689,7 +4777,6 @@ fn bindings(state: &GuiState) -> &'static [KeyBinding] {
         Mode::CopySelection { .. } => COPY_SELECTION_BINDINGS,
         Mode::ValueInput { .. } => TEXT_BINDINGS,
         Mode::ExportPrompt => EXPORT_TEXT_BINDINGS,
-        Mode::TrackPrompt => TRACK_TEXT_BINDINGS,
         Mode::LoadConfirm => LOAD_CONFIRM_BINDINGS,
         Mode::SaveConfirm => SAVE_CONFIRM_BINDINGS,
         Mode::ExportConfirm | Mode::QuitConfirm => CONFIRM_BINDINGS,
@@ -4698,9 +4785,10 @@ fn bindings(state: &GuiState) -> &'static [KeyBinding] {
 }
 
 fn binding_inputs() -> Vec<BindingInput> {
-    let mut inputs = Vec::new();
+    let mut inputs = vec![BindingInput::Named(NamedKey::Tab)];
     for bindings in [
         NORMAL_BINDINGS,
+        SEQUENCE_BINDINGS,
         PALETTE_BINDINGS,
         PALETTE_SEARCH_BINDINGS,
         MOVE_BINDINGS,
@@ -4716,7 +4804,6 @@ fn binding_inputs() -> Vec<BindingInput> {
         COPY_SELECTION_BINDINGS,
         TEXT_BINDINGS,
         EXPORT_TEXT_BINDINGS,
-        TRACK_TEXT_BINDINGS,
         CONFIRM_BINDINGS,
         LOAD_CONFIRM_BINDINGS,
         SAVE_CONFIRM_BINDINGS,
@@ -4746,6 +4833,46 @@ fn binding_key(id: u64, input: BindingInput, grid_size: Option<GridViewSize>) ->
         BindingInput::Text => gesture::key(id).key(Key::character("")),
     };
     key.run(move |state: &mut GuiState, _, event| {
+        use crate::model::painting::Brush;
+        let released_input = match input {
+            BindingInput::Character(character) if event.phase == KeyPhase::Released => {
+                BindingInput::Character(character.to_ascii_lowercase())
+            }
+            _ => input,
+        };
+        let held = SEQUENCE_BINDINGS
+            .iter()
+            .find_map(|binding| match binding.effect {
+                BindingEffect::Brush(tool)
+                    if binding.input == released_input
+                        && !matches!(tool, Brush::Draw | Brush::Select) =>
+                {
+                    Some(tool)
+                }
+                _ => None,
+            });
+        if let Some(tool) = held {
+            if event.phase == KeyPhase::Released {
+                state.painting.held.retain(|held| *held != tool);
+                return;
+            }
+            if state.painting.open && matches!(state.mode(), Mode::Normal) {
+                if !state.painting.held.contains(&tool) {
+                    let now = std::time::Instant::now();
+                    if state.painting.last_tap.is_some_and(|(previous, at)| {
+                        previous == tool && now.duration_since(at).as_millis() <= 350
+                    }) {
+                        state.painting.brush.selected = tool;
+                        state.painting.last_tap = None;
+                    } else {
+                        state.painting.last_tap = Some((tool, now));
+                    }
+                    state.painting.held.push(tool);
+                    state.painting.panel = None;
+                }
+                return;
+            }
+        }
         if event.phase == KeyPhase::Pressed {
             if let Some(size) = grid_size {
                 state.set_grid_view_size(size);
@@ -4756,18 +4883,35 @@ fn binding_key(id: u64, input: BindingInput, grid_size: Option<GridViewSize>) ->
 }
 
 fn apply_binding_input(state: &mut GuiState, input: BindingInput) {
+    if input == BindingInput::Named(NamedKey::Tab) {
+        state.toggle_sequence();
+        return;
+    }
     let current = bindings(state);
-    if let Some(binding) = current.iter().find(|binding| binding.input == input)
-        && let BindingEffect::Action(action) = binding.effect
-    {
-        state.apply(action);
+    if let Some(binding) = current.iter().find(|binding| binding.input == input) {
+        match binding.effect {
+            BindingEffect::Action(action) => state.apply(action),
+            BindingEffect::Brush(tool) => {
+                state.painting.brush.selected = tool;
+                state.painting.panel = None;
+            }
+            BindingEffect::ShrinkBrush | BindingEffect::GrowBrush => {
+                let factor = if matches!(binding.effect, BindingEffect::ShrinkBrush) {
+                    0.8
+                } else {
+                    1.25
+                };
+                state.painting.radius.value =
+                    (state.painting.radius.value * factor).clamp(8.0, 96.0);
+            }
+            BindingEffect::Text => {}
+        }
         return;
     }
     if current
         .iter()
         .any(|binding| matches!(binding.effect, BindingEffect::Text))
         && let BindingInput::Character(character) = input
-        && !matches!(state.mode(), Mode::TrackPrompt)
     {
         state.apply(GuiAction::InputChar(character));
     }
@@ -4813,7 +4957,6 @@ fn action_id(action: GuiAction) -> u64 {
         GuiAction::Select => 32,
         GuiAction::Undo => 33,
         GuiAction::Redo => 34,
-        GuiAction::Instrument(index) => 35 + index as u64,
         GuiAction::ValueDown => 48,
         GuiAction::ValueUp => 49,
         GuiAction::ValueDownFast => 50,
@@ -4835,7 +4978,10 @@ fn action_id(action: GuiAction) -> u64 {
 
 fn mode_text(state: &GuiState) -> String {
     match state.mode() {
-        Mode::Normal => "Normal".to_string(),
+        Mode::Normal => state
+            .module_at(state.cursor())
+            .map(|module| module.label().to_string())
+            .unwrap_or_else(|| "Normal".to_string()),
         Mode::QuitConfirm => "Quit confirm".to_string(),
         Mode::Palette => {
             if state.palette_searching() {
@@ -4882,7 +5028,6 @@ fn mode_text(state: &GuiState) -> String {
         Mode::SaveConfirm => "Save".to_string(),
         Mode::ExportPrompt => "Export".to_string(),
         Mode::ExportConfirm => "Overwrite export".to_string(),
-        Mode::TrackPrompt => "Track".to_string(),
         Mode::TrackSettings { parameter } => format!("Settings {}", parameter + 1),
     }
 }

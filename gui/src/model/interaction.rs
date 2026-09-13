@@ -5,6 +5,9 @@ impl GuiState {
         let playing = self.playing;
         let bpm = self.bpm;
         let scale_index = self.scale_index;
+        if self.painting.open && matches!(self.mode, Mode::Normal) && self.painting_key(action) {
+            return;
+        }
         match self.mode {
             Mode::Normal => self.apply_normal(action),
             Mode::QuitConfirm => self.apply_quit_confirm(action),
@@ -44,7 +47,6 @@ impl GuiState {
             Mode::SaveConfirm => self.apply_save_confirm(action),
             Mode::ExportPrompt => self.apply_export_prompt(action),
             Mode::ExportConfirm => self.apply_export_confirm(action),
-            Mode::TrackPrompt => self.apply_track_prompt(action),
             Mode::TrackSettings { parameter } => self.apply_track_settings(action, parameter),
         }
         if self.playing != playing {
@@ -60,7 +62,7 @@ impl GuiState {
     pub(crate) fn focus_cell(&mut self, position: GridPos) {
         let x = position.x.min(self.grid_size.width().saturating_sub(1));
         let y = position.y.min(self.grid_size.height().saturating_sub(1));
-        self.instrument_mut().surface_mut().cursor = GridPos::new(x, y);
+        self.instrument.surface_mut().cursor = GridPos::new(x, y);
         self.update_grid_view();
     }
 
@@ -70,8 +72,7 @@ impl GuiState {
         self.palette_filter.clear();
         self.palette_filter_index = 0;
         self.palette_category = category;
-        self.palette_family = None;
-        self.palette_family_index = 0;
+        self.palette_scroll = None;
     }
 
     pub(crate) fn choose_palette_index(&mut self, index: usize) {
@@ -79,13 +80,8 @@ impl GuiState {
         self.palette_searching = false;
         self.palette_filter.clear();
         self.palette_filter_index = 0;
-        if self.palette_family.is_some() {
-            self.palette_family_index =
-                index.min(self.visible_palette_entries().len().saturating_sub(1));
-        } else {
-            self.palette_indices[self.palette_category.index()] =
-                index.min(self.visible_palette_entries().len().saturating_sub(1));
-        }
+        self.palette_indices[self.palette_category.index()] =
+            index.min(self.palette_modules().len().saturating_sub(1));
     }
 
     pub(crate) fn choose_filtered_palette_index(&mut self, index: usize) {
@@ -93,19 +89,6 @@ impl GuiState {
         self.palette_searching = true;
         self.palette_filter_index =
             index.min(self.filtered_palette_modules().len().saturating_sub(1));
-    }
-
-    pub(crate) fn open_palette_family(&mut self, index: usize) {
-        self.choose_palette_index(index);
-        if let PaletteEntry::Family(family) = self.selected_palette_entry() {
-            self.palette_family = Some(family);
-            self.palette_family_index = 0;
-        }
-    }
-
-    pub(crate) fn close_palette_family(&mut self) {
-        self.palette_family = None;
-        self.palette_family_index = 0;
     }
 
     pub(crate) fn click_grid_cell(&mut self, position: GridPos) {
@@ -201,8 +184,7 @@ impl GuiState {
         };
         let before = self.snapshot();
         let (point, changed) = {
-            let Some(points) =
-                self.instrument_mut().surface_mut().modules[module_index].env_points_mut()
+            let Some(points) = self.instrument.surface_mut().modules[module_index].env_points_mut()
             else {
                 self.mode = Mode::Normal;
                 return;
@@ -285,7 +267,7 @@ impl GuiState {
                 let next = self.moved_position(found, origin, grab, position);
                 let before = self.snapshot();
                 if let Some(found) = self
-                    .instrument_mut()
+                    .instrument
                     .surface_mut()
                     .modules
                     .iter_mut()
@@ -395,7 +377,7 @@ impl GuiState {
         let before = self.snapshot();
         for (id, position) in targets {
             if let Some(module) = self
-                .instrument_mut()
+                .instrument
                 .surface_mut()
                 .modules
                 .iter_mut()
@@ -420,7 +402,6 @@ impl GuiState {
     fn open_prompt(&mut self, mode: Mode, text: impl Into<String>) {
         self.prompt_text = text.into();
         self.prompt_cursor = self.prompt_text.len();
-        self.prompt_input = TextState::new(&self.prompt_text);
         self.mode = mode;
     }
 
@@ -457,7 +438,6 @@ impl GuiState {
             GuiAction::TextEnd => self.prompt_cursor = self.prompt_text.len(),
             _ => {}
         }
-        self.prompt_input = TextState::new(&self.prompt_text);
     }
 
     fn text_input_kind(&self, module: ModuleId, parameter: usize) -> TextInputKind {
@@ -528,14 +508,13 @@ impl GuiState {
                 self.open_modules_requested = true;
             }
             GuiAction::SaveModule => {
-                self.save_module_requested = self.instrument().editing_composition.is_some();
+                self.save_module_requested = self.instrument.editing_composition.is_some();
             }
             GuiAction::TrackSettings => {
                 self.mode = Mode::TrackSettings { parameter: 0 };
             }
             GuiAction::TrackEdit => {
-                let text = self.track_text().to_string();
-                self.open_prompt(Mode::TrackPrompt, text);
+                self.toggle_sequence();
             }
             GuiAction::EditComposition => self.toggle_composition(),
             GuiAction::ExitComposition => self.exit_composition(),
@@ -552,8 +531,7 @@ impl GuiState {
                 self.palette_searching = false;
                 self.palette_filter.clear();
                 self.palette_filter_index = 0;
-                self.palette_family = None;
-                self.palette_family_index = 0;
+                self.palette_scroll = None;
             }
             GuiAction::Palette(category) => self.open_category(category),
             GuiAction::TogglePlay => self.playing = !self.playing,
@@ -573,22 +551,15 @@ impl GuiState {
                     self.restore(snapshot);
                 }
             }
-            GuiAction::Instrument(index) => {
-                if index < self.instruments.len() {
-                    self.active_instrument = index;
-                    self.mode = Mode::Normal;
-                    self.sync_audio_patch();
-                }
-            }
             GuiAction::Delete => {
                 if let Some(module) = self.module_at(self.cursor()) {
                     let before = self.snapshot();
                     let id = module.id;
-                    self.instrument_mut()
+                    self.instrument
                         .surface_mut()
                         .modules
                         .retain(|module| module.id != id);
-                    sync_delay_sources(self.instrument_mut().surface_mut());
+                    sync_delay_sources(self.instrument.surface_mut());
                     self.commit(before);
                 }
             }
@@ -643,7 +614,7 @@ impl GuiState {
                         let id = module.id;
                         let before = self.snapshot();
                         if let Some(module) = self
-                            .instrument_mut()
+                            .instrument
                             .surface_mut()
                             .modules
                             .iter_mut()
@@ -705,7 +676,7 @@ impl GuiState {
 
     fn enter_composition_surface(&mut self, owner: ModuleId) {
         let cursor = self.cursor();
-        let inst = self.instrument_mut();
+        let inst = &mut self.instrument;
         inst.composition_stack
             .push((inst.editing_composition, cursor));
         inst.editing_composition = Some(owner);
@@ -713,7 +684,7 @@ impl GuiState {
     }
 
     fn exit_composition_surface(&mut self) {
-        let inst = self.instrument_mut();
+        let inst = &mut self.instrument;
         if inst.editing_composition.is_none() {
             return;
         }
@@ -731,6 +702,7 @@ impl GuiState {
     }
 
     fn apply_palette(&mut self, action: GuiAction) {
+        self.palette_scroll = None;
         if self.palette_searching {
             self.apply_palette_search(action);
             return;
@@ -746,18 +718,9 @@ impl GuiState {
                 if let Some(module) = self.selected_palette_choice() {
                     self.insert_palette_module(module);
                     self.mode = Mode::Normal;
-                } else if let PaletteEntry::Family(family) = self.selected_palette_entry() {
-                    self.palette_family = Some(family);
-                    self.palette_family_index = 0;
                 }
             }
-            GuiAction::Cancel | GuiAction::Edit => {
-                if self.palette_family.take().is_some() {
-                    self.palette_family_index = 0;
-                } else {
-                    self.mode = Mode::Normal;
-                }
-            }
+            GuiAction::Cancel | GuiAction::Edit => self.mode = Mode::Normal,
             GuiAction::Search => {
                 self.palette_filter.clear();
                 self.palette_filter_index = 0;
@@ -787,7 +750,6 @@ impl GuiState {
             | GuiAction::Select
             | GuiAction::Undo
             | GuiAction::Redo
-            | GuiAction::Instrument(_)
             | GuiAction::ValueDown
             | GuiAction::ValueUp
             | GuiAction::ValueDownFast
@@ -860,10 +822,7 @@ impl GuiState {
                     held.module.position = self
                         .bounded_module_position(&held.module, cursor.x as i16, cursor.y as i16)
                         .unwrap_or(cursor);
-                    self.instrument_mut()
-                        .surface_mut()
-                        .modules
-                        .push(held.module);
+                    self.instrument.surface_mut().modules.push(held.module);
                     self.commit(before);
                     self.mode = Mode::Normal;
                     return;
@@ -875,7 +834,7 @@ impl GuiState {
                 let next = self.moved_position(found, found.position, origin, cursor);
                 let before = self.snapshot();
                 if let Some(found) = self
-                    .instrument_mut()
+                    .instrument
                     .surface_mut()
                     .modules
                     .iter_mut()
@@ -890,7 +849,7 @@ impl GuiState {
                 if let Some(mut held) = self.held_move.take() {
                     let origin = held.origin;
                     held.module.position = origin;
-                    let inst = self.instrument_mut();
+                    let inst = &mut self.instrument;
                     inst.editing_composition = held.origin_surface;
                     inst.composition_stack = held.origin_stack;
                     inst.surface_mut().cursor = origin;
@@ -898,7 +857,7 @@ impl GuiState {
                     self.mode = Mode::Normal;
                     return;
                 }
-                self.instrument_mut().surface_mut().cursor = origin;
+                self.instrument.surface_mut().cursor = origin;
                 self.mode = Mode::Normal;
             }
             GuiAction::EditComposition => self.move_across_composition(module, origin),
@@ -927,7 +886,6 @@ impl GuiState {
             | GuiAction::Select
             | GuiAction::Undo
             | GuiAction::Redo
-            | GuiAction::Instrument(_)
             | GuiAction::ValueDown
             | GuiAction::ValueUp
             | GuiAction::ValueDownFast
@@ -952,17 +910,17 @@ impl GuiState {
             .module_at(self.cursor())
             .filter(|candidate| candidate.is_composition() && candidate.id != module)
             .map(|candidate| candidate.id);
-        let can_exit = self.instrument().editing_composition.is_some();
+        let can_exit = self.instrument.editing_composition.is_some();
         if target.is_none() && !can_exit {
             return;
         }
 
         if self.held_move.is_none() {
             let before = self.snapshot();
-            let origin_surface = self.instrument().editing_composition;
-            let origin_stack = self.instrument().composition_stack.clone();
+            let origin_surface = self.instrument.editing_composition;
+            let origin_stack = self.instrument.composition_stack.clone();
             let Some(index) = self
-                .instrument()
+                .instrument
                 .surface()
                 .modules
                 .iter()
@@ -971,7 +929,7 @@ impl GuiState {
                 self.mode = Mode::Normal;
                 return;
             };
-            let module_value = self.instrument_mut().surface_mut().modules.remove(index);
+            let module_value = self.instrument.surface_mut().modules.remove(index);
             self.held_move = Some(HeldMove {
                 module: module_value,
                 origin_surface,
@@ -1011,8 +969,8 @@ impl GuiState {
                     .unwrap_or(cursor);
                 let mut next_module_id = self.next_module_id;
                 let copy = module.duplicate(position, &mut next_module_id);
-                self.instrument_mut().surface_mut().modules.push(copy);
-                sync_delay_sources(self.instrument_mut().surface_mut());
+                self.instrument.surface_mut().modules.push(copy);
+                sync_delay_sources(self.instrument.surface_mut());
                 self.next_module_id = next_module_id;
                 self.commit(before);
                 self.mode = Mode::Normal;
@@ -1044,7 +1002,6 @@ impl GuiState {
             | GuiAction::Select
             | GuiAction::Undo
             | GuiAction::Redo
-            | GuiAction::Instrument(_)
             | GuiAction::ValueDown
             | GuiAction::ValueUp
             | GuiAction::ValueDownFast
@@ -1135,7 +1092,7 @@ impl GuiState {
                 let fast = matches!(action, GuiAction::ValueDownFast | GuiAction::ValueUpFast);
                 let step_scale = self.step_scale();
                 let changed = {
-                    let module = &mut self.instrument_mut().surface_mut().modules[module_index];
+                    let module = &mut self.instrument.surface_mut().modules[module_index];
                     let Some(mut row) = module.parameter(parameter) else {
                         return;
                     };
@@ -1165,7 +1122,7 @@ impl GuiState {
                 }
                 let before = self.snapshot();
                 let changed = {
-                    let module = &mut self.instrument_mut().surface_mut().modules[module_index];
+                    let module = &mut self.instrument.surface_mut().modules[module_index];
                     let Some(mut row) = module.parameter(parameter) else {
                         return;
                     };
@@ -1192,7 +1149,7 @@ impl GuiState {
                 }
                 let before = self.snapshot();
                 let changed = {
-                    let module = &mut self.instrument_mut().surface_mut().modules[module_index];
+                    let module = &mut self.instrument.surface_mut().modules[module_index];
                     let Some(mut row) = module.parameter(parameter) else {
                         return;
                     };
@@ -1242,7 +1199,6 @@ impl GuiState {
             | GuiAction::Select
             | GuiAction::Undo
             | GuiAction::Redo
-            | GuiAction::Instrument(_)
             | GuiAction::Quit
             | GuiAction::OpenModules
             | GuiAction::SaveModule
@@ -1379,73 +1335,6 @@ impl GuiState {
         }
     }
 
-    fn apply_track_prompt(&mut self, action: GuiAction) {
-        match action {
-            GuiAction::Cancel => self.mode = Mode::Normal,
-            GuiAction::Confirm => {
-                let before = self.snapshot();
-                let text = self.prompt_text.trim().to_string();
-                self.instrument_mut().track_text = text;
-                self.commit(before);
-                self.sync_audio_track();
-                self.mode = Mode::Normal;
-            }
-            GuiAction::Left
-            | GuiAction::Right
-            | GuiAction::InputChar(_)
-            | GuiAction::Backspace
-            | GuiAction::DeleteChar
-            | GuiAction::TextStart
-            | GuiAction::TextEnd => self.apply_text_action(action, TextInputKind::Free),
-            GuiAction::Up
-            | GuiAction::Down
-            | GuiAction::LeftFast
-            | GuiAction::DownFast
-            | GuiAction::UpFast
-            | GuiAction::RightFast
-            | GuiAction::OpenPalette
-            | GuiAction::TogglePlay
-            | GuiAction::ToggleMeters
-            | GuiAction::Quit
-            | GuiAction::OpenModules
-            | GuiAction::SaveModule
-            | GuiAction::Save
-            | GuiAction::SaveAs
-            | GuiAction::Load
-            | GuiAction::Export
-            | GuiAction::TrackSettings
-            | GuiAction::TrackEdit
-            | GuiAction::Search
-            | GuiAction::EditComposition
-            | GuiAction::ExitComposition
-            | GuiAction::PaletteLeft
-            | GuiAction::PaletteRight
-            | GuiAction::PaletteUp
-            | GuiAction::PaletteDown
-            | GuiAction::Palette(_)
-            | GuiAction::Delete
-            | GuiAction::Edit
-            | GuiAction::Move
-            | GuiAction::Copy
-            | GuiAction::Rotate
-            | GuiAction::Select
-            | GuiAction::Undo
-            | GuiAction::Redo
-            | GuiAction::Instrument(_)
-            | GuiAction::ValueDown
-            | GuiAction::ValueUp
-            | GuiAction::ValueDownFast
-            | GuiAction::ValueUpFast
-            | GuiAction::TogglePort
-            | GuiAction::CycleUnit
-            | GuiAction::CycleStep
-            | GuiAction::TypeValue
-            | GuiAction::AddPoint
-            | GuiAction::DeletePoint
-            | GuiAction::ToggleCurve => {}
-        }
-    }
-
     fn apply_track_settings(&mut self, action: GuiAction, parameter: usize) {
         let parameter = parameter.min(2);
         match action {
@@ -1509,7 +1398,7 @@ impl GuiState {
         else {
             return false;
         };
-        let Some(mut row) = self.instrument().surface().modules[module_index].parameter(parameter)
+        let Some(mut row) = self.instrument.surface().modules[module_index].parameter(parameter)
         else {
             return false;
         };
@@ -1521,7 +1410,7 @@ impl GuiState {
         }
         row.value = value;
         row.connected = false;
-        self.instrument_mut().surface_mut().modules[module_index].set_parameter(parameter, row)
+        self.instrument.surface_mut().modules[module_index].set_parameter(parameter, row)
     }
 
     fn apply_adsr_edit(&mut self, action: GuiAction, module: ModuleId, parameter: usize) {
@@ -1555,7 +1444,7 @@ impl GuiState {
                 let before = self.snapshot();
                 let param_index = parameter + 2;
                 let changed = {
-                    let module = &mut self.instrument_mut().surface_mut().modules[module_index];
+                    let module = &mut self.instrument.surface_mut().modules[module_index];
                     let Some(mut row) = module.parameter(param_index) else {
                         return;
                     };
@@ -1621,7 +1510,6 @@ impl GuiState {
             | GuiAction::Select
             | GuiAction::Undo
             | GuiAction::Redo
-            | GuiAction::Instrument(_)
             | GuiAction::Left
             | GuiAction::Right
             | GuiAction::LeftFast
@@ -1679,9 +1567,8 @@ impl GuiState {
                     let before = self.snapshot();
                     let delta = self.step_scale();
                     let moved_point = {
-                        let Some(points) = self.instrument_mut().surface_mut().modules
-                            [module_index]
-                            .env_points_mut()
+                        let Some(points) =
+                            self.instrument.surface_mut().modules[module_index].env_points_mut()
                         else {
                             self.mode = Mode::Normal;
                             return;
@@ -1753,7 +1640,7 @@ impl GuiState {
                 }
                 let before = self.snapshot();
                 let Some(points) =
-                    self.instrument_mut().surface_mut().modules[module_index].env_points_mut()
+                    self.instrument.surface_mut().modules[module_index].env_points_mut()
                 else {
                     self.mode = Mode::Normal;
                     return;
@@ -1766,7 +1653,7 @@ impl GuiState {
                 let before = self.snapshot();
                 let new_index = {
                     let Some(points) =
-                        self.instrument_mut().surface_mut().modules[module_index].env_points_mut()
+                        self.instrument.surface_mut().modules[module_index].env_points_mut()
                     else {
                         self.mode = Mode::Normal;
                         return;
@@ -1796,7 +1683,7 @@ impl GuiState {
                 if point_count > 2 {
                     let before = self.snapshot();
                     let Some(points) =
-                        self.instrument_mut().surface_mut().modules[module_index].env_points_mut()
+                        self.instrument.surface_mut().modules[module_index].env_points_mut()
                     else {
                         self.mode = Mode::Normal;
                         return;
@@ -1918,7 +1805,7 @@ impl GuiState {
             GuiAction::Delete => {
                 let ids = self.selected_modules();
                 let before = self.snapshot();
-                self.instrument_mut()
+                self.instrument
                     .surface_mut()
                     .modules
                     .retain(|module| !ids.contains(&module.id));
@@ -1950,7 +1837,6 @@ impl GuiState {
             | GuiAction::Rotate
             | GuiAction::Undo
             | GuiAction::Redo
-            | GuiAction::Instrument(_)
             | GuiAction::ValueDown
             | GuiAction::ValueUp
             | GuiAction::ValueDownFast
@@ -2007,10 +1893,7 @@ impl GuiState {
                     for (module, position) in held.modules.iter_mut().zip(targets) {
                         module.position = position;
                     }
-                    self.instrument_mut()
-                        .surface_mut()
-                        .modules
-                        .extend(held.modules);
+                    self.instrument.surface_mut().modules.extend(held.modules);
                     self.commit(before);
                     self.mode = Mode::Normal;
                     return;
@@ -2035,7 +1918,7 @@ impl GuiState {
                 let before = self.snapshot();
                 for (id, position) in targets {
                     if let Some(module) = self
-                        .instrument_mut()
+                        .instrument
                         .surface_mut()
                         .modules
                         .iter_mut()
@@ -2049,7 +1932,7 @@ impl GuiState {
             }
             GuiAction::Cancel => {
                 if let Some(held) = self.held_selection.take() {
-                    let inst = self.instrument_mut();
+                    let inst = &mut self.instrument;
                     inst.editing_composition = held.origin_surface;
                     inst.composition_stack = held.origin_stack;
                     inst.surface_mut().cursor = held.origin;
@@ -2057,7 +1940,7 @@ impl GuiState {
                     self.mode = Mode::Normal;
                     return;
                 }
-                self.instrument_mut().surface_mut().cursor = origin;
+                self.instrument.surface_mut().cursor = origin;
                 self.mode = Mode::Normal;
             }
             GuiAction::EditComposition => {
@@ -2088,7 +1971,6 @@ impl GuiState {
             | GuiAction::Select
             | GuiAction::Undo
             | GuiAction::Redo
-            | GuiAction::Instrument(_)
             | GuiAction::ValueDown
             | GuiAction::ValueUp
             | GuiAction::ValueDownFast
@@ -2145,17 +2027,17 @@ impl GuiState {
             .module_at(self.cursor())
             .filter(|candidate| candidate.is_composition() && !selected.contains(&candidate.id))
             .map(|candidate| candidate.id);
-        let can_exit = self.instrument().editing_composition.is_some();
+        let can_exit = self.instrument.editing_composition.is_some();
         if target.is_none() && !can_exit {
             return;
         }
 
         if self.held_selection.is_none() {
             let before = self.snapshot();
-            let origin_surface = self.instrument().editing_composition;
-            let origin_stack = self.instrument().composition_stack.clone();
+            let origin_surface = self.instrument.editing_composition;
+            let origin_stack = self.instrument.composition_stack.clone();
             let mut modules = Vec::new();
-            let surface = self.instrument_mut().surface_mut();
+            let surface = self.instrument.surface_mut();
             let mut index = 0;
             while index < surface.modules.len() {
                 if selected.contains(&surface.modules[index].id) {
@@ -2243,9 +2125,9 @@ impl GuiState {
                 }
                 let before = self.snapshot();
                 for copy in copies {
-                    self.instrument_mut().surface_mut().modules.push(copy);
+                    self.instrument.surface_mut().modules.push(copy);
                 }
-                sync_delay_sources(self.instrument_mut().surface_mut());
+                sync_delay_sources(self.instrument.surface_mut());
                 self.next_module_id = next_module_id;
                 self.commit(before);
                 self.mode = Mode::Normal;
@@ -2277,7 +2159,6 @@ impl GuiState {
             | GuiAction::Select
             | GuiAction::Undo
             | GuiAction::Redo
-            | GuiAction::Instrument(_)
             | GuiAction::ValueDown
             | GuiAction::ValueUp
             | GuiAction::ValueDownFast

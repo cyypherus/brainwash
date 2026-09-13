@@ -13,8 +13,8 @@ use brainwash::scale::{
     dmaj, dmin, dsharpmaj, dsharpmin, emaj, emin, fmaj, fmin, fsharpmaj, fsharpmin, gmaj, gmin,
     gsharpmaj, gsharpmin,
 };
+use brainwash::sequence::parse_sequence;
 use brainwash::time::{Duration, Hertz, SampleRate, Samples, Seconds};
-use brainwash::track::Track;
 use brainwash_grid::bounded_delta;
 use brainwash_grid::project::{
     self, CompositionDef as ProjectCompositionDef, CompositionId as ProjectCompositionId,
@@ -26,7 +26,7 @@ use brainwash_grid::project::{
 pub use brainwash_grid::{
     ModuleId, Orientation, Position as GridPos, Rect as GridRect, Size as GridSize,
 };
-use haven::{ButtonState, TextState};
+use haven::ButtonState;
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::Path;
@@ -35,6 +35,7 @@ use std::sync::Arc;
 mod audio_patch;
 mod composition;
 mod interaction;
+pub(crate) mod painting;
 mod persistence;
 
 use audio_patch::{audio_module, audio_patch_error_message, composition_inputs, scale_from_index};
@@ -42,7 +43,6 @@ use composition::{composition_body, graph_node_label, sync_delay_sources};
 use persistence::{instrument_surface_from_project, project_from_instrument};
 
 const GRID_VIEW_MARGIN: u16 = 2;
-const INSTRUMENT_COUNT: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct GridViewSize {
@@ -121,7 +121,6 @@ pub enum GuiAction {
     Select,
     Undo,
     Redo,
-    Instrument(usize),
     ValueDown,
     ValueUp,
     ValueDownFast,
@@ -208,7 +207,6 @@ pub enum Mode {
     SaveConfirm,
     ExportPrompt,
     ExportConfirm,
-    TrackPrompt,
     TrackSettings {
         parameter: usize,
     },
@@ -256,6 +254,7 @@ pub enum ModuleKind {
     Freq,
     Gate,
     Degree,
+    Expression,
     Phase,
     Noise,
     Rise,
@@ -305,7 +304,6 @@ pub enum ModuleCategory {
     Logic,
     Routing,
     Composition,
-    Output,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -318,63 +316,19 @@ pub struct PaletteModule {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PaletteFamily {
-    Oscillators,
-    Saturation,
-    Dynamics,
-    Transform,
-    Arithmetic,
-    Routing,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum PaletteEntry {
-    Module(PaletteModule),
-    Family(PaletteFamily),
-}
-
-impl PaletteFamily {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Oscillators => "Oscillators",
-            Self::Saturation => "Saturation",
-            Self::Dynamics => "Dynamics",
-            Self::Transform => "Transforms",
-            Self::Arithmetic => "Arithmetic",
-            Self::Routing => "Routing parts",
-        }
-    }
-}
-
-impl PaletteEntry {
-    pub(crate) fn label(&self) -> &str {
-        match self {
-            Self::Module(module) => module.label(),
-            Self::Family(family) => family.label(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PalettePreset {
     Transpose,
     Adsr,
     Reverb,
-    Distortion,
+    Saturation,
     Compressor,
     Flanger,
-    Tube,
-    Tape,
-    Fuzz,
-    Fold,
-    Clip,
-    Sine,
-    Square,
-    Triangle,
-    Saw,
-    ReverseSaw,
+    Oscillator,
     DegreeGate,
-    Attenuator,
+    Gain,
+    ScaleOffset,
+    EnvelopeFollower,
+    CompressorGain,
 }
 
 impl PaletteModule {
@@ -390,32 +344,16 @@ impl PaletteModule {
         self.category
     }
 
-    fn family(&self) -> Option<PaletteFamily> {
+    pub(crate) fn section(&self) -> &'static str {
         match (self.kind, self.preset) {
+            (_, Some(PalettePreset::Oscillator)) => "Oscillators",
+            (_, Some(PalettePreset::Saturation)) => "Saturation",
             (
                 _,
                 Some(
-                    PalettePreset::Sine
-                    | PalettePreset::Square
-                    | PalettePreset::Triangle
-                    | PalettePreset::Saw
-                    | PalettePreset::ReverseSaw,
+                    PalettePreset::Compressor | PalettePreset::Gain | PalettePreset::CompressorGain,
                 ),
-            ) => Some(PaletteFamily::Oscillators),
-            (
-                _,
-                Some(
-                    PalettePreset::Distortion
-                    | PalettePreset::Tube
-                    | PalettePreset::Tape
-                    | PalettePreset::Fuzz
-                    | PalettePreset::Fold
-                    | PalettePreset::Clip,
-                ),
-            ) => Some(PaletteFamily::Saturation),
-            (_, Some(PalettePreset::Compressor | PalettePreset::Attenuator)) => {
-                Some(PaletteFamily::Dynamics)
-            }
+            ) => "Dynamics",
             (
                 ModuleKind::Absolute
                 | ModuleKind::Sine
@@ -424,16 +362,18 @@ impl PaletteModule {
                 | ModuleKind::Exp
                 | ModuleKind::Sign,
                 None,
-            ) => Some(PaletteFamily::Transform),
+            ) => "Transforms",
             (
-                ModuleKind::Subtract
+                ModuleKind::Add
+                | ModuleKind::Multiply
+                | ModuleKind::Subtract
                 | ModuleKind::Divide
                 | ModuleKind::Power
                 | ModuleKind::Remainder
                 | ModuleKind::Minimum
                 | ModuleKind::Maximum,
                 None,
-            ) => Some(PaletteFamily::Arithmetic),
+            ) => "Arithmetic",
             (
                 ModuleKind::TurnRightDown
                 | ModuleKind::TurnDownRight
@@ -442,8 +382,21 @@ impl PaletteModule {
                 | ModuleKind::RightJoin
                 | ModuleKind::DownJoin,
                 None,
-            ) => Some(PaletteFamily::Routing),
-            _ => None,
+            ) => "Connections",
+            (_, Some(PalettePreset::Transpose | PalettePreset::DegreeGate)) => "Pitch and Gate",
+            (_, Some(PalettePreset::Adsr | PalettePreset::EnvelopeFollower)) => "Envelopes",
+            (_, Some(PalettePreset::ScaleOffset)) => "Mapping",
+            (_, Some(PalettePreset::Reverb | PalettePreset::Flanger)) => "Space and Modulation",
+            (ModuleKind::Composition, None) if self.user.is_some() => "Saved",
+            _ => match self.category {
+                ModuleCategory::Source => "Signal Sources",
+                ModuleCategory::Shape => "Contours",
+                ModuleCategory::Filter => "Tone",
+                ModuleCategory::Effect => "Delay Networks",
+                ModuleCategory::Logic => "Logic and Values",
+                ModuleCategory::Routing => "Connections",
+                ModuleCategory::Composition => "Ports and Containers",
+            },
         }
     }
 }
@@ -463,6 +416,7 @@ enum ModuleBody {
     Freq,
     Gate,
     Degree,
+    Expression,
     Phase {
         frequency: FloatParam,
     },
@@ -540,9 +494,9 @@ enum ModuleBody {
     },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct FloatParam {
-    value: i32,
+    value: AudioSample,
     min: i32,
     max: i32,
     step: i32,
@@ -661,13 +615,13 @@ const SCALE_NAMES: &[&str] = &[
     "B min",
 ];
 
-const NUM_VOICES: usize = 6;
+use brainwash::sequence::VOICES as NUM_VOICES;
 
 fn float_parameter(name: impl Into<String>, param: FloatParam) -> ModuleParameter {
     ModuleParameter {
         name: name.into(),
         value: ParameterValue::Float {
-            value: param.value,
+            value: (param.value.value() * 100.0).round() as i32,
             min: param.min,
             max: param.max,
             step: param.step,
@@ -792,7 +746,7 @@ fn delay_source_parameter(name: &'static str, param: &DelaySourceParam) -> Modul
 
 fn float_param(min: i32, max: i32, step: i32, value: i32) -> FloatParam {
     FloatParam {
-        value,
+        value: AudioSample::new(value as f32 / 100.0).unwrap(),
         min,
         max,
         step,
@@ -816,33 +770,30 @@ fn signal_param() -> FloatParam {
 
 #[derive(Debug)]
 pub struct GuiState {
+    pub(crate) painting: painting::Painting,
     grid_size: GridSize,
     grid_view: GridPos,
     grid_view_size: GridViewSize,
     mode: Mode,
-    instruments: Vec<Instrument>,
-    active_instrument: usize,
+    instrument: Instrument,
     playing: bool,
     show_meters: bool,
     bpm: u16,
     scale_index: usize,
     probe_voice: usize,
-    track_edit_requested: bool,
     dirty: bool,
     should_quit: bool,
     step_size: usize,
     probe_len: u32,
     palette_category: ModuleCategory,
     palette_indices: [usize; ModuleCategory::ALL.len()],
-    palette_family: Option<PaletteFamily>,
-    palette_family_index: usize,
+    pub(crate) palette_scroll: Option<f32>,
     palette_searching: bool,
     palette_filter: String,
     palette_filter_index: usize,
     next_module_id: u32,
     prompt_text: String,
     prompt_cursor: usize,
-    pub(crate) prompt_input: TextState,
     saved_path: Option<String>,
     exported_path: Option<String>,
     load_requested: bool,
@@ -856,13 +807,14 @@ pub struct GuiState {
     undo: Vec<Snapshot>,
     redo: Vec<Snapshot>,
     pub(crate) play_button: ButtonState,
+    pub(crate) synth_button: ButtonState,
+    pub(crate) sequence_button: ButtonState,
     pub(crate) meters_button: ButtonState,
     pub(crate) load_button: ButtonState,
     pub(crate) save_button: ButtonState,
     pub(crate) export_button: ButtonState,
     pub(crate) modules_button: ButtonState,
     pub(crate) save_module_button: ButtonState,
-    pub(crate) track_button: ButtonState,
     pub(crate) cancel_button: ButtonState,
     pub(crate) confirm_button: ButtonState,
     pub(crate) discard_button: ButtonState,
@@ -878,7 +830,7 @@ pub struct GuiState {
 #[derive(Clone, Debug, PartialEq)]
 struct Instrument {
     root: PatchSurface,
-    track_text: String,
+    sequence: brainwash::sequence::Sequence,
     editing_composition: Option<ModuleId>,
     composition_stack: Vec<(Option<ModuleId>, GridPos)>,
 }
@@ -891,8 +843,7 @@ struct PatchSurface {
 
 #[derive(Clone, Debug, PartialEq)]
 struct Snapshot {
-    instruments: Vec<Instrument>,
-    active_instrument: usize,
+    instrument: Instrument,
     next_module_id: u32,
 }
 
@@ -975,6 +926,7 @@ impl ModuleKind {
             ModuleKind::Freq
             | ModuleKind::Gate
             | ModuleKind::Degree
+            | ModuleKind::Expression
             | ModuleKind::Phase
             | ModuleKind::Noise
             | ModuleKind::Random
@@ -1016,7 +968,7 @@ impl ModuleKind {
             ModuleKind::CompositionInput
             | ModuleKind::CompositionOutput
             | ModuleKind::Composition => ModuleCategory::Composition,
-            ModuleKind::Output => ModuleCategory::Output,
+            ModuleKind::Output => ModuleCategory::Composition,
         }
     }
 
@@ -1033,6 +985,7 @@ impl ModuleKind {
             ModuleKind::Freq => "Freq",
             ModuleKind::Gate => "Gate",
             ModuleKind::Degree => "Degree",
+            ModuleKind::Expression => "Expression",
             ModuleKind::Phase => "Phase",
             ModuleKind::Noise => "Noise",
             ModuleKind::Rise => "Rise",
@@ -1113,6 +1066,7 @@ impl ModuleKind {
             ModuleKind::Freq => ModuleBody::Freq,
             ModuleKind::Gate => ModuleBody::Gate,
             ModuleKind::Degree => ModuleBody::Degree,
+            ModuleKind::Expression => ModuleBody::Expression,
             ModuleKind::Phase => ModuleBody::Phase {
                 frequency: float_param(1, 200_000, 100, 44_000),
             },
@@ -1304,6 +1258,7 @@ impl ModuleKind {
             ModuleKind::Freq
             | ModuleKind::Gate
             | ModuleKind::Degree
+            | ModuleKind::Expression
             | ModuleKind::Phase
             | ModuleKind::Noise
             | ModuleKind::Rise
@@ -1339,6 +1294,39 @@ enum SpecialEditor {
     Envelope,
     Probe,
     Sample,
+}
+
+const OSCILLATOR_WAVES: [(brainwash::patch::Waveform, &str); 5] = [
+    (brainwash::patch::Waveform::Sine, "Sine"),
+    (brainwash::patch::Waveform::Square, "Square"),
+    (brainwash::patch::Waveform::Triangle, "Triangle"),
+    (brainwash::patch::Waveform::Saw, "Saw"),
+    (brainwash::patch::Waveform::ReverseSaw, "Reverse Saw"),
+];
+
+const SATURATION_CURVES: [(brainwash::patch::SaturationCurve, &str); 5] = [
+    (brainwash::patch::SaturationCurve::Tube, "Tube"),
+    (brainwash::patch::SaturationCurve::Tape, "Tape"),
+    (brainwash::patch::SaturationCurve::Fuzz, "Fuzz"),
+    (brainwash::patch::SaturationCurve::Fold, "Fold"),
+    (brainwash::patch::SaturationCurve::Clip, "Clip"),
+];
+
+fn enum_parameter<T: PartialEq>(name: &str, value: &T, choices: &[(T, &str)]) -> ModuleParameter {
+    ModuleParameter {
+        name: name.to_string(),
+        value: ParameterValue::Enum {
+            index: choices
+                .iter()
+                .position(|(candidate, _)| candidate == value)
+                .unwrap(),
+            options: choices
+                .iter()
+                .map(|(_, label)| (*label).to_string())
+                .collect(),
+        },
+        connected: false,
+    }
 }
 
 impl ModuleBody {
@@ -1393,6 +1381,7 @@ impl ModuleBody {
             ModuleBody::Freq => ModuleKind::Freq,
             ModuleBody::Gate => ModuleKind::Gate,
             ModuleBody::Degree => ModuleKind::Degree,
+            ModuleBody::Expression => ModuleKind::Expression,
             ModuleBody::Phase { .. } => ModuleKind::Phase,
             ModuleBody::Rise { .. } => ModuleKind::Rise,
             ModuleBody::Fall { .. } => ModuleKind::Fall,
@@ -1420,6 +1409,36 @@ impl ModuleBody {
 
     fn parameters(&self) -> Vec<ModuleParameter> {
         match self {
+            ModuleBody::Primitive(AudioModule::Oscillator {
+                waveform,
+                frequency,
+            }) => vec![
+                enum_parameter("Waveform", waveform, &OSCILLATOR_WAVES),
+                float_parameter(
+                    "Frequency",
+                    float_param(1, 200_000, 100, (frequency.value() * 100.0).round() as i32),
+                ),
+            ],
+            ModuleBody::Primitive(AudioModule::Saturation {
+                curve,
+                input,
+                drive,
+                asymmetry,
+            }) => vec![
+                enum_parameter("Type", curve, &SATURATION_CURVES),
+                float_parameter(
+                    "Input",
+                    float_param(-2000, 2000, 1, (input.value() * 100.0).round() as i32),
+                ),
+                float_parameter(
+                    "Drive",
+                    float_param(-2000, 2000, 1, (drive.value() * 100.0).round() as i32),
+                ),
+                float_parameter(
+                    "Asymmetry",
+                    float_param(-2000, 2000, 1, (asymmetry.value() * 100.0).round() as i32),
+                ),
+            ],
             ModuleBody::Primitive(AudioModule::Constant(value)) => vec![float_parameter(
                 "Value",
                 float_param(-2000, 2000, 1, (value.value() * 100.0).round() as i32),
@@ -1495,7 +1514,9 @@ impl ModuleBody {
                 ),
             ],
             ModuleBody::Primitive(_) => Vec::new(),
-            ModuleBody::Freq | ModuleBody::Gate | ModuleBody::Degree => Vec::new(),
+            ModuleBody::Freq | ModuleBody::Gate | ModuleBody::Degree | ModuleBody::Expression => {
+                Vec::new()
+            }
             ModuleBody::Phase { frequency } => vec![float_parameter("Hz", *frequency)],
             ModuleBody::Rise { gate, time } | ModuleBody::Fall { gate, time } => {
                 vec![
@@ -1629,7 +1650,9 @@ impl ModuleBody {
     fn audio_inputs(&self) -> &'static [AudioInputKind] {
         match self {
             ModuleBody::Primitive(_) => &[],
-            ModuleBody::Freq | ModuleBody::Gate | ModuleBody::Degree => &[],
+            ModuleBody::Freq | ModuleBody::Gate | ModuleBody::Degree | ModuleBody::Expression => {
+                &[]
+            }
             ModuleBody::Phase { .. } => &[AudioInputKind::Freq],
             ModuleBody::Rise { .. } | ModuleBody::Fall { .. } => {
                 &[AudioInputKind::Gate, AudioInputKind::Time]
@@ -1667,6 +1690,86 @@ impl ModuleBody {
         }
     }
 
+    fn float_param(&self, index: usize) -> Option<&FloatParam> {
+        match (self, index) {
+            (Self::Phase { frequency: value }, 0)
+            | (Self::Rise { gate: value, .. } | Self::Fall { gate: value, .. }, 0)
+            | (Self::Ramp { value, .. }, 0)
+            | (Self::Envelope { phase: value, .. }, 0)
+            | (Self::Comb { input: value, .. } | Self::Allpass { input: value, .. }, 0)
+            | (
+                Self::Comb {
+                    feedback: value, ..
+                }
+                | Self::Allpass {
+                    feedback: value, ..
+                },
+                2,
+            )
+            | (Self::Comb { damp: value, .. }, 3)
+            | (
+                Self::Delay {
+                    feedback: value, ..
+                },
+                0,
+            )
+            | (Self::Delay { input: value, .. }, 2)
+            | (Self::DelayTap { gain: value, .. }, 1)
+            | (Self::Random { gate: value }, 0)
+            | (
+                Self::Sample {
+                    position: value, ..
+                },
+                1,
+            )
+            | (Self::Probe { input: value } | Self::Output { input: value, .. }, 0)
+            | (Self::Output { gain: value, .. }, 1)
+            | (Self::CompositionOutput { input: value, .. }, 1)
+            | (Self::CompositionInput { value, .. }, 1) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn float_param_mut(&mut self, index: usize) -> Option<&mut FloatParam> {
+        match (self, index) {
+            (Self::Phase { frequency: value }, 0)
+            | (Self::Rise { gate: value, .. } | Self::Fall { gate: value, .. }, 0)
+            | (Self::Ramp { value, .. }, 0)
+            | (Self::Envelope { phase: value, .. }, 0)
+            | (Self::Comb { input: value, .. } | Self::Allpass { input: value, .. }, 0)
+            | (
+                Self::Comb {
+                    feedback: value, ..
+                }
+                | Self::Allpass {
+                    feedback: value, ..
+                },
+                2,
+            )
+            | (Self::Comb { damp: value, .. }, 3)
+            | (
+                Self::Delay {
+                    feedback: value, ..
+                },
+                0,
+            )
+            | (Self::Delay { input: value, .. }, 2)
+            | (Self::DelayTap { gain: value, .. }, 1)
+            | (Self::Random { gate: value }, 0)
+            | (
+                Self::Sample {
+                    position: value, ..
+                },
+                1,
+            )
+            | (Self::Probe { input: value } | Self::Output { input: value, .. }, 0)
+            | (Self::Output { gain: value, .. }, 1)
+            | (Self::CompositionOutput { input: value, .. }, 1)
+            | (Self::CompositionInput { value, .. }, 1) => Some(value),
+            _ => None,
+        }
+    }
+
     fn env_points(&self) -> &[EnvPoint] {
         match self {
             ModuleBody::Envelope { points, .. } => points,
@@ -1683,6 +1786,52 @@ impl ModuleBody {
 
     fn set_parameter(&mut self, index: usize, parameter: ModuleParameter) -> bool {
         match self {
+            ModuleBody::Primitive(AudioModule::Oscillator {
+                waveform,
+                frequency,
+            }) => match (index, parameter.value) {
+                (0, ParameterValue::Enum { index, .. }) => {
+                    let Some((next, _)) = OSCILLATOR_WAVES.get(index) else {
+                        return false;
+                    };
+                    let changed = *waveform != *next;
+                    *waveform = *next;
+                    changed
+                }
+                (1, ParameterValue::Float { value, .. }) => {
+                    let Some(next) = Hertz::new(value as f32 / 100.0) else {
+                        return false;
+                    };
+                    let changed = *frequency != next;
+                    *frequency = next;
+                    changed
+                }
+                _ => false,
+            },
+            ModuleBody::Primitive(AudioModule::Saturation {
+                curve,
+                input,
+                drive,
+                asymmetry,
+            }) => {
+                if index == 0 {
+                    let ParameterValue::Enum { index, .. } = parameter.value else {
+                        return false;
+                    };
+                    let Some((next, _)) = SATURATION_CURVES.get(index) else {
+                        return false;
+                    };
+                    let changed = *curve != *next;
+                    *curve = *next;
+                    return changed;
+                }
+                match index {
+                    1 => set_audio_sample(input, index, 1, &parameter),
+                    2 => set_audio_sample(drive, index, 2, &parameter),
+                    3 => set_audio_sample(asymmetry, index, 3, &parameter),
+                    _ => false,
+                }
+            }
             ModuleBody::Primitive(AudioModule::Constant(value)) => {
                 let ParameterValue::Float { value: next, .. } = parameter.value else {
                     return false;
@@ -1859,6 +2008,7 @@ impl ModuleBody {
             ModuleBody::Freq
             | ModuleBody::Gate
             | ModuleBody::Degree
+            | ModuleBody::Expression
             | ModuleBody::TurnRightDown
             | ModuleBody::TurnDownRight
             | ModuleBody::LeftSplit
@@ -1930,7 +2080,13 @@ fn set_float_param(
         return false;
     }
     *target = FloatParam {
-        value: (*value).clamp(target.min, target.max),
+        value: if parameter.connected != target.connected
+            && *value == (target.value.value() * 100.0).round() as i32
+        {
+            target.value
+        } else {
+            AudioSample::new((*value).clamp(target.min, target.max) as f32 / 100.0).unwrap()
+        },
         min: target.min,
         max: target.max,
         step: target.step,
@@ -2000,15 +2156,14 @@ fn set_delay_source_param(
 }
 
 impl ModuleCategory {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 7] = [
         Self::Source,
-        Self::Output,
+        Self::Composition,
         Self::Shape,
         Self::Filter,
         Self::Effect,
         Self::Logic,
         Self::Routing,
-        Self::Composition,
     ];
 
     pub fn label(self) -> &'static str {
@@ -2019,8 +2174,7 @@ impl ModuleCategory {
             ModuleCategory::Effect => "Effect",
             ModuleCategory::Logic => "Function",
             ModuleCategory::Routing => "Routing",
-            ModuleCategory::Composition => "Composition",
-            ModuleCategory::Output => "Output",
+            ModuleCategory::Composition => "Utility",
         }
     }
 
@@ -2033,7 +2187,6 @@ impl ModuleCategory {
             Self::Logic => (190, 76, 91),
             Self::Routing => (110, 128, 84),
             Self::Composition => (96, 112, 140),
-            Self::Output => (214, 171, 68),
         }
     }
 
@@ -2099,12 +2252,16 @@ impl Module {
         match &self.body {
             ModuleBody::Primitive(module) => graph_node_label(module),
             ModuleBody::Composition { name, .. } => name,
+            ModuleBody::CompositionInput { label, .. }
+            | ModuleBody::CompositionOutput { label, .. } => label,
             _ => self.kind().label(),
         }
     }
 
     pub(crate) fn display_category(&self) -> ModuleCategory {
         match self.body {
+            ModuleBody::Primitive(AudioModule::Oscillator { .. }) => ModuleCategory::Source,
+            ModuleBody::Primitive(AudioModule::Saturation { .. }) => ModuleCategory::Effect,
             ModuleBody::Composition { category, .. } => category,
             _ => self.kind().category(),
         }
@@ -2432,7 +2589,7 @@ impl Instrument {
     fn new() -> Self {
         Self {
             root: PatchSurface::new(),
-            track_text: "(0/2/4/7)".to_string(),
+            sequence: parse_sequence("(0/2/4/7)", &cmin()).unwrap(),
             editing_composition: None,
             composition_stack: Vec::new(),
         }
@@ -2606,8 +2763,8 @@ fn max_module_id(surface: &PatchSurface) -> Option<u32> {
 }
 
 #[cfg(test)]
-fn surface_extent(surface: &PatchSurface) -> (u16, u16) {
-    surface.modules.iter().fold((1, 1), |extent, module| {
+fn surface_extent(modules: &[Module]) -> (u16, u16) {
+    modules.iter().fold((1, 1), |extent, module| {
         let size = module_footprint(module, module.composition_surface().map(composition_ports));
         let own = (
             module.position.x.saturating_add(size.0),
@@ -2652,33 +2809,30 @@ impl Default for GuiState {
 impl GuiState {
     pub fn new(width: u16, height: u16) -> Self {
         Self {
+            painting: painting::Painting::default(),
             grid_size: GridSize::new(width, height),
             grid_view: GridPos::new(0, 0),
             grid_view_size: GridViewSize::new(width, height),
             mode: Mode::Normal,
-            instruments: (0..INSTRUMENT_COUNT).map(|_| Instrument::new()).collect(),
-            active_instrument: 0,
+            instrument: Instrument::new(),
             playing: false,
             show_meters: false,
             bpm: 120,
             scale_index: 2,
             probe_voice: 0,
-            track_edit_requested: false,
             dirty: false,
             should_quit: false,
             step_size: 1,
             probe_len: 4410,
             palette_category: ModuleCategory::Source,
             palette_indices: [0; ModuleCategory::ALL.len()],
-            palette_family: None,
-            palette_family_index: 0,
+            palette_scroll: None,
             palette_searching: false,
             palette_filter: String::new(),
             palette_filter_index: 0,
             next_module_id: 0,
             prompt_text: String::new(),
             prompt_cursor: 0,
-            prompt_input: TextState::new(""),
             saved_path: None,
             exported_path: None,
             load_requested: false,
@@ -2692,13 +2846,14 @@ impl GuiState {
             undo: Vec::new(),
             redo: Vec::new(),
             play_button: ButtonState::default(),
+            synth_button: ButtonState::default(),
+            sequence_button: ButtonState::default(),
             meters_button: ButtonState::default(),
             load_button: ButtonState::default(),
             save_button: ButtonState::default(),
             export_button: ButtonState::default(),
             modules_button: ButtonState::default(),
             save_module_button: ButtonState::default(),
-            track_button: ButtonState::default(),
             cancel_button: ButtonState::default(),
             confirm_button: ButtonState::default(),
             discard_button: ButtonState::default(),
@@ -2727,7 +2882,7 @@ impl GuiState {
     }
 
     pub fn cursor(&self) -> GridPos {
-        self.instrument().surface().cursor
+        self.instrument.surface().cursor
     }
 
     pub(crate) fn grid_size(&self) -> (u16, u16) {
@@ -2755,7 +2910,7 @@ impl GuiState {
     }
 
     pub fn modules(&self) -> &[Module] {
-        &self.instrument().surface().modules
+        &self.instrument.surface().modules
     }
 
     pub fn playing(&self) -> bool {
@@ -2804,10 +2959,6 @@ impl GuiState {
         self.probe_voice
     }
 
-    pub fn track_edit_requested(&self) -> bool {
-        self.track_edit_requested
-    }
-
     pub fn dirty(&self) -> bool {
         self.dirty
     }
@@ -2838,23 +2989,11 @@ impl GuiState {
             .unwrap_or_default()
     }
 
-    pub fn track_text(&self) -> &str {
-        &self.instrument().track_text
-    }
-
-    pub fn active_instrument(&self) -> usize {
-        self.active_instrument
-    }
-
-    pub fn instrument_count(&self) -> usize {
-        self.instruments.len()
-    }
-
     pub fn composition_depth(&self) -> usize {
-        self.instrument()
+        self.instrument
             .composition_stack
             .len()
-            .max(usize::from(self.instrument().editing_composition.is_some()))
+            .max(usize::from(self.instrument.editing_composition.is_some()))
     }
 
     pub fn prompt_text(&self) -> &str {
@@ -2863,11 +3002,6 @@ impl GuiState {
 
     pub fn prompt_cursor(&self) -> usize {
         self.prompt_cursor
-    }
-
-    pub(crate) fn sync_track_prompt_text(&mut self, text: String) {
-        self.prompt_text = text;
-        self.prompt_cursor = self.prompt_text.len();
     }
 
     pub fn saved_path(&self) -> Option<&str> {
@@ -2906,10 +3040,10 @@ impl GuiState {
         if !std::mem::take(&mut self.save_module_requested) {
             return None;
         }
-        let Some(owner) = self.instrument().editing_composition else {
+        let Some(owner) = self.instrument.editing_composition else {
             return Some(Err("not editing a composition".to_string()));
         };
-        let Some(module) = find_module(&self.instrument().root, owner) else {
+        let Some(module) = find_module(&self.instrument.root, owner) else {
             return Some(Err("composition is missing".to_string()));
         };
         let graph =
@@ -2980,47 +3114,7 @@ impl GuiState {
         self.palette_modules_for(self.palette_category)
     }
 
-    fn palette_entries(&self) -> Vec<PaletteEntry> {
-        let mut families = Vec::new();
-        self.palette_modules()
-            .into_iter()
-            .filter_map(|module| {
-                let Some(family) = module.family() else {
-                    return Some(PaletteEntry::Module(module));
-                };
-                if families.contains(&family) {
-                    None
-                } else {
-                    families.push(family);
-                    Some(PaletteEntry::Family(family))
-                }
-            })
-            .collect()
-    }
-
-    fn palette_family_modules(&self, family: PaletteFamily) -> Vec<PaletteModule> {
-        self.palette_modules()
-            .into_iter()
-            .filter(|module| module.family() == Some(family))
-            .collect()
-    }
-
-    pub(crate) fn visible_palette_entries(&self) -> Vec<PaletteEntry> {
-        if let Some(family) = self.palette_family {
-            self.palette_family_modules(family)
-                .into_iter()
-                .map(PaletteEntry::Module)
-                .collect()
-        } else {
-            self.palette_entries()
-        }
-    }
-
-    pub(crate) fn palette_family_label(&self) -> Option<&'static str> {
-        self.palette_family.map(PaletteFamily::label)
-    }
-
-    fn palette_modules_for(&self, category: ModuleCategory) -> Vec<PaletteModule> {
+    pub(crate) fn palette_modules_for(&self, category: ModuleCategory) -> Vec<PaletteModule> {
         let mut modules = all_modules()
             .iter()
             .copied()
@@ -3043,18 +3137,21 @@ impl GuiState {
             modules.extend(
                 [
                     ("Reverb", PalettePreset::Reverb),
-                    ("Distortion", PalettePreset::Distortion),
+                    ("Saturation", PalettePreset::Saturation),
                     ("Compressor", PalettePreset::Compressor),
                     ("Flanger", PalettePreset::Flanger),
-                    ("Tube", PalettePreset::Tube),
-                    ("Tape", PalettePreset::Tape),
-                    ("Fuzz", PalettePreset::Fuzz),
-                    ("Fold", PalettePreset::Fold),
-                    ("Clip", PalettePreset::Clip),
-                    ("Attenuator", PalettePreset::Attenuator),
+                    ("Gain", PalettePreset::Gain),
+                    ("Gain Computer", PalettePreset::CompressorGain),
                 ]
                 .map(|(name, preset)| PaletteModule {
-                    kind: ModuleKind::Composition,
+                    kind: if matches!(
+                        preset,
+                        PalettePreset::Oscillator | PalettePreset::Saturation
+                    ) {
+                        ModuleKind::Primitive
+                    } else {
+                        ModuleKind::Composition
+                    },
                     name: name.to_string(),
                     user: None,
                     preset: Some(preset),
@@ -3074,19 +3171,36 @@ impl GuiState {
                 },
             );
         }
+        if category == ModuleCategory::Shape || category == ModuleCategory::Logic {
+            let (name, preset) = if category == ModuleCategory::Shape {
+                ("Envelope Follower", PalettePreset::EnvelopeFollower)
+            } else {
+                ("Scale / Offset", PalettePreset::ScaleOffset)
+            };
+            modules.push(PaletteModule {
+                kind: ModuleKind::Composition,
+                name: name.to_string(),
+                user: None,
+                preset: Some(preset),
+                category,
+            });
+        }
         if category == ModuleCategory::Source {
             modules.extend(
                 [
                     ("Transpose", PalettePreset::Transpose),
                     ("Degree Gate", PalettePreset::DegreeGate),
-                    ("Sine Oscillator", PalettePreset::Sine),
-                    ("Square Oscillator", PalettePreset::Square),
-                    ("Triangle Oscillator", PalettePreset::Triangle),
-                    ("Saw Oscillator", PalettePreset::Saw),
-                    ("Reverse Saw Oscillator", PalettePreset::ReverseSaw),
+                    ("Oscillator", PalettePreset::Oscillator),
                 ]
                 .map(|(name, preset)| PaletteModule {
-                    kind: ModuleKind::Composition,
+                    kind: if matches!(
+                        preset,
+                        PalettePreset::Oscillator | PalettePreset::Saturation
+                    ) {
+                        ModuleKind::Primitive
+                    } else {
+                        ModuleKind::Composition
+                    },
                     name: name.to_string(),
                     user: None,
                     preset: Some(preset),
@@ -3105,6 +3219,12 @@ impl GuiState {
                 },
             ));
         }
+        modules.sort_by_key(|module| {
+            (
+                module.preset.is_some() || module.user.is_some(),
+                module.section(),
+            )
+        });
         modules
     }
 
@@ -3119,9 +3239,19 @@ impl GuiState {
             .filter(|module| {
                 module.label().to_lowercase().contains(&filter)
                     || module.category().label().to_lowercase().contains(&filter)
-                    || module
-                        .family()
-                        .is_some_and(|family| family.label().to_lowercase().contains(&filter))
+                    || module.section().to_lowercase().contains(&filter)
+                    || match module.preset {
+                        Some(PalettePreset::Oscillator) => OSCILLATOR_WAVES
+                            .iter()
+                            .any(|(_, name)| name.to_lowercase().contains(&filter)),
+                        Some(PalettePreset::Saturation) => {
+                            "distortion".contains(&filter)
+                                || SATURATION_CURVES
+                                    .iter()
+                                    .any(|(_, name)| name.to_lowercase().contains(&filter))
+                        }
+                        _ => false,
+                    }
             })
             .collect()
     }
@@ -3132,28 +3262,10 @@ impl GuiState {
             .cloned()
     }
 
-    fn selected_palette_entry(&self) -> PaletteEntry {
-        let entries = self.palette_entries();
-        entries[self
-            .selected_palette_index()
-            .min(entries.len().saturating_sub(1))]
-        .clone()
-    }
-
     fn selected_palette_choice(&self) -> Option<PaletteModule> {
-        if let Some(family) = self.palette_family {
-            let modules = self.palette_family_modules(family);
-            return modules
-                .get(
-                    self.palette_family_index
-                        .min(modules.len().saturating_sub(1)),
-                )
-                .cloned();
-        }
-        match self.selected_palette_entry() {
-            PaletteEntry::Module(module) => Some(module),
-            PaletteEntry::Family(_) => None,
-        }
+        self.palette_modules()
+            .get(self.selected_palette_index())
+            .cloned()
     }
 
     fn selected_palette_index(&self) -> usize {
@@ -3166,32 +3278,15 @@ impl GuiState {
     }
 
     pub fn selected_palette_module(&self) -> ModuleKind {
-        self.selected_palette_choice()
-            .or_else(|| match self.selected_palette_entry() {
-                PaletteEntry::Family(family) => {
-                    self.palette_family_modules(family).first().cloned()
-                }
-                PaletteEntry::Module(module) => Some(module),
-            })
-            .unwrap()
-            .kind
+        self.selected_palette_choice().unwrap().kind
     }
 
     pub fn selected_palette_label(&self) -> String {
-        if let Some(module) = self.selected_palette_choice() {
-            module.name
-        } else {
-            self.selected_palette_entry().label().to_string()
-        }
+        self.selected_palette_choice().unwrap().name
     }
 
     pub(crate) fn palette_index_selected(&self, index: usize) -> bool {
-        self.mode == Mode::Palette
-            && if self.palette_family.is_some() {
-                self.palette_family_index == index
-            } else {
-                self.selected_palette_index() == index
-            }
+        self.mode == Mode::Palette && self.selected_palette_index() == index
     }
 
     pub(crate) fn filtered_palette_index_selected(&self, index: usize) -> bool {
@@ -3550,7 +3645,6 @@ impl GuiState {
             | Mode::SaveConfirm
             | Mode::ExportPrompt
             | Mode::ExportConfirm
-            | Mode::TrackPrompt
             | Mode::TrackSettings { .. } => None,
         }
     }
@@ -3711,18 +3805,9 @@ impl GuiState {
             .any(|module| self.module_overlaps(module, position, width, height))
     }
 
-    fn instrument(&self) -> &Instrument {
-        &self.instruments[self.active_instrument]
-    }
-
-    fn instrument_mut(&mut self) -> &mut Instrument {
-        &mut self.instruments[self.active_instrument]
-    }
-
     fn snapshot(&self) -> Snapshot {
         Snapshot {
-            instruments: self.instruments.clone(),
-            active_instrument: self.active_instrument,
+            instrument: self.instrument.clone(),
             next_module_id: self.next_module_id,
         }
     }
@@ -3738,16 +3823,16 @@ impl GuiState {
     }
 
     fn update_disabled_states(&mut self) {
-        for instrument in &mut self.instruments {
-            update_disabled_states_for_surface(&mut instrument.root);
-        }
+        update_disabled_states_for_surface(&mut self.instrument.root);
     }
 
     fn restore(&mut self, snapshot: Snapshot) {
-        self.instruments = snapshot.instruments;
-        self.active_instrument = snapshot.active_instrument;
+        self.instrument = snapshot.instrument;
+        self.painting.loop_menu.selected = self.instrument.sequence.bars();
         self.next_module_id = snapshot.next_module_id;
         self.mode = Mode::Normal;
+        self.painting.selected = None;
+        self.sync_audio_track();
         self.pointer_drag = None;
         self.held_move = None;
         self.held_selection = None;
@@ -3806,20 +3891,9 @@ impl GuiState {
         if self.audio.is_none() {
             return;
         }
-        match Track::parse(self.track_text(), &scale_from_index(self.scale_index)) {
-            Ok(track) => {
-                let Some(audio) = self.audio.as_mut() else {
-                    return;
-                };
-                self.audio_status = if audio.submit_track(track, self.bpm).is_ok() {
-                    "Audio ready".to_string()
-                } else {
-                    "Audio busy: track rejected".to_string()
-                };
-            }
-            Err(_) => {
-                self.audio_status = "Silent: invalid track".to_string();
-            }
+        let sequence = self.instrument.sequence.clone();
+        if let Some(audio) = self.audio.as_mut() {
+            audio.submit_sequence(sequence, self.bpm, scale_from_index(self.scale_index));
         }
     }
 
@@ -3831,7 +3905,7 @@ impl GuiState {
         }
     }
 
-    fn collect_audio_retired(&mut self) {
+    pub fn collect_audio_retired(&mut self) {
         if let Some(audio) = &mut self.audio {
             audio.collect_retired();
         }
@@ -3875,7 +3949,7 @@ impl GuiState {
         let before = self.snapshot();
         let changed = {
             let Some(module) = self
-                .instrument_mut()
+                .instrument
                 .surface_mut()
                 .modules
                 .iter_mut()
@@ -3907,24 +3981,12 @@ impl GuiState {
     fn mark_missing_samples(&mut self, project_path: &Path) -> Vec<String> {
         let mut missing = Vec::new();
         let base = project_path.parent().unwrap_or_else(|| Path::new("."));
-        for instrument in &mut self.instruments {
-            mark_missing_samples_in_surface(&mut instrument.root, base, &mut missing);
-        }
+        mark_missing_samples_in_surface(&mut self.instrument.root, base, &mut missing);
         missing
     }
 
     fn project(&self) -> io::Result<Project> {
-        for (index, instrument) in self.instruments.iter().enumerate() {
-            if index != self.active_instrument
-                && (!instrument.root.modules.is_empty() || instrument.track_text != "(0/2/4/7)")
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "project files support one instrument",
-                ));
-            }
-        }
-        project_from_instrument(self.instrument(), self.bpm, self.scale_index)
+        project_from_instrument(&self.instrument, self.bpm, self.scale_index)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     }
 
@@ -3936,23 +3998,21 @@ impl GuiState {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let instrument = Instrument {
             root,
-            track_text: project.track.unwrap_or_else(|| "(0/2/4/7)".to_string()),
+            sequence: project.sequence,
             editing_composition: None,
             composition_stack: Vec::new(),
         };
-        let mut instruments = vec![instrument];
-        instruments.resize_with(INSTRUMENT_COUNT, Instrument::new);
-        self.instruments = instruments;
-        self.active_instrument = 0;
-        self.bpm = bpm;
-        self.scale_index = project.scale_idx.min(SCALE_NAMES.len().saturating_sub(1));
-        self.next_module_id = self
-            .instruments
-            .iter()
-            .filter_map(|instrument| max_module_id(&instrument.root))
-            .max()
+        let open = self.painting.open;
+        self.painting = painting::Painting::default();
+        self.painting.open = open;
+        self.painting.span = instrument.sequence.bars() as f32;
+        self.painting.loop_menu.selected = instrument.sequence.bars();
+        self.next_module_id = max_module_id(&instrument.root)
             .map(|id| id + 1)
             .unwrap_or(0);
+        self.instrument = instrument;
+        self.bpm = bpm;
+        self.scale_index = project.scale_idx.min(SCALE_NAMES.len().saturating_sub(1));
         self.mode = Mode::Normal;
         self.palette_searching = false;
         self.palette_filter.clear();
@@ -4032,7 +4092,7 @@ impl GuiState {
         } else {
             (grid_x.clamp(min_x, max_x), grid_y.clamp(min_y, max_y))
         };
-        self.instrument_mut().surface_mut().cursor = GridPos::new(x as u16, y as u16);
+        self.instrument.surface_mut().cursor = GridPos::new(x as u16, y as u16);
     }
 
     fn update_grid_view(&mut self) {
@@ -4137,20 +4197,14 @@ impl GuiState {
         let max = ModuleCategory::ALL.len() as i16 - 1;
         let next = (current as i16 + delta).clamp(0, max) as usize;
         self.palette_category = ModuleCategory::ALL[next];
-        self.palette_family = None;
-        self.palette_family_index = 0;
+        self.palette_scroll = None;
     }
 
     fn move_palette_selection(&mut self, delta: i16) {
-        let max = self.visible_palette_entries().len().saturating_sub(1) as i16;
-        if self.palette_family.is_some() {
-            self.palette_family_index =
-                (self.palette_family_index as i16 + delta).clamp(0, max) as usize;
-        } else {
-            let category = self.palette_category.index();
-            self.palette_indices[category] =
-                (self.palette_indices[category] as i16 + delta).clamp(0, max) as usize;
-        }
+        let max = self.palette_modules().len().saturating_sub(1) as i16;
+        let category = self.palette_category.index();
+        self.palette_indices[category] =
+            (self.palette_indices[category] as i16 + delta).clamp(0, max) as usize;
     }
 
     fn insert_palette_module(&mut self, choice: PaletteModule) {
@@ -4167,9 +4221,12 @@ impl GuiState {
                     Unit::new(0.5).unwrap(),
                     Unit::new(0.5).unwrap(),
                 ),
-                PalettePreset::Distortion => {
-                    brainwash::preset::distortion(Sample::new(2.0).unwrap(), Sample::ZERO)
-                }
+                PalettePreset::Saturation => AudioModule::Saturation {
+                    curve: brainwash::patch::SaturationCurve::Tube,
+                    input: Sample::ZERO,
+                    drive: Sample::new(2.0).unwrap(),
+                    asymmetry: Sample::ZERO,
+                },
                 PalettePreset::Compressor => brainwash::preset::compressor(
                     Unit::new(0.5).unwrap(),
                     CompressorRatio::new(4.0).unwrap(),
@@ -4182,30 +4239,30 @@ impl GuiState {
                     Unit::new(0.5).unwrap(),
                     Unit::new(0.35).unwrap(),
                 ),
-                PalettePreset::Tube => brainwash::preset::tube(),
-                PalettePreset::Tape => brainwash::preset::tape(),
-                PalettePreset::Fuzz => brainwash::preset::fuzz(),
-                PalettePreset::Fold => brainwash::preset::fold(),
-                PalettePreset::Clip => brainwash::preset::clip(),
-                PalettePreset::Sine => brainwash::preset::sine(Hertz::new(440.0).unwrap()),
-                PalettePreset::Square => brainwash::preset::square(Hertz::new(440.0).unwrap()),
-                PalettePreset::Triangle => brainwash::preset::triangle(Hertz::new(440.0).unwrap()),
-                PalettePreset::Saw => brainwash::preset::saw(Hertz::new(440.0).unwrap()),
-                PalettePreset::ReverseSaw => {
-                    brainwash::preset::reverse_saw(Hertz::new(440.0).unwrap())
-                }
+                PalettePreset::Oscillator => AudioModule::Oscillator {
+                    waveform: brainwash::patch::Waveform::Sine,
+                    frequency: Hertz::new(440.0).unwrap(),
+                },
                 PalettePreset::DegreeGate => brainwash::preset::degree_gate(0),
-                PalettePreset::Attenuator => brainwash::preset::attenuator(Unit::ONE),
-            })
-            .and_then(|module| match module {
-                AudioModule::Composition(graph) => Some(*graph),
-                _ => None,
+                PalettePreset::Gain => brainwash::preset::gain(Gain::new(1.0).unwrap()),
+                PalettePreset::ScaleOffset => {
+                    brainwash::preset::scale_offset(Sample::new(1.0).unwrap(), Sample::ZERO)
+                }
+                PalettePreset::EnvelopeFollower => brainwash::preset::envelope_follower(
+                    Seconds::new(0.01).unwrap(),
+                    Seconds::new(0.3).unwrap(),
+                ),
+                PalettePreset::CompressorGain => brainwash::preset::compressor_gain(
+                    Unit::new(0.5).unwrap(),
+                    CompressorRatio::new(4.0).unwrap(),
+                ),
             })
             .or_else(|| {
                 choice
                     .user
                     .and_then(|index| self.user_compositions.get(index))
                     .cloned()
+                    .map(|graph| AudioModule::Composition(Box::new(graph)))
             });
         self.insert_at_cursor(choice.kind, graph, choice.category);
     }
@@ -4213,7 +4270,7 @@ impl GuiState {
     fn insert_at_cursor(
         &mut self,
         kind: ModuleKind,
-        graph: Option<brainwash::patch::Composition>,
+        graph: Option<AudioModule>,
         category: ModuleCategory,
     ) {
         let cursor = self.cursor();
@@ -4221,13 +4278,16 @@ impl GuiState {
         let id = ModuleId::new(self.next_module_id);
         self.next_module_id += 1;
         let mut body = kind.default_body();
-        if let Some(graph) = graph {
-            let Some(projected) = composition_body(Box::new(graph), &mut self.next_module_id)
-            else {
-                self.next_module_id = before.next_module_id;
-                return;
+        if let Some(source) = graph {
+            body = if let AudioModule::Composition(graph) = source {
+                let Some(projected) = composition_body(graph, &mut self.next_module_id) else {
+                    self.next_module_id = before.next_module_id;
+                    return;
+                };
+                projected
+            } else {
+                ModuleBody::Primitive(source)
             };
-            body = projected;
         } else {
             let candidate = Module {
                 id,
@@ -4270,8 +4330,8 @@ impl GuiState {
             self.next_module_id = before.next_module_id;
             return;
         }
-        self.instrument_mut().surface_mut().modules.push(module);
-        sync_delay_sources(self.instrument_mut().surface_mut());
+        self.instrument.surface_mut().modules.push(module);
+        sync_delay_sources(self.instrument.surface_mut());
         self.commit(before);
     }
 }
@@ -4279,6 +4339,56 @@ impl GuiState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toggling_a_port_preserves_subcent_precision() {
+        let mut value = signal_param();
+        value.value = AudioSample::new(0.02495).unwrap();
+        let mut parameter = float_parameter("Input", value);
+        parameter.connected = false;
+        assert!(set_float_param(&mut value, 0, 0, &parameter));
+        assert_eq!(value.value, AudioSample::new(0.02495).unwrap());
+        assert!(!value.connected);
+        parameter.connected = true;
+        assert!(set_float_param(&mut value, 0, 0, &parameter));
+        assert_eq!(value.value, AudioSample::new(0.02495).unwrap());
+        assert!(value.connected);
+        assert!(set_float_param(&mut value, 0, 0, &parameter));
+        assert_eq!(value.value, AudioSample::new(0.02).unwrap());
+    }
+
+    #[test]
+    fn palette_groups_primitives_before_composites() {
+        let state = GuiState::new(8, 8);
+        for category in ModuleCategory::ALL {
+            let modules = state.palette_modules_for(category);
+            let first_composite = modules.iter().position(|module| module.preset.is_some());
+            if let Some(index) = first_composite {
+                assert!(
+                    modules[index..]
+                        .iter()
+                        .all(|module| module.preset.is_some())
+                );
+                assert!(
+                    modules[index..]
+                        .iter()
+                        .all(|module| !module.section().contains("Composites")
+                            && !module.section().contains("Primitives"))
+                );
+            }
+        }
+        let modules = state.palette_modules_for(ModuleCategory::Composition);
+        assert!(
+            modules
+                .iter()
+                .any(|module| module.kind == ModuleKind::Output)
+        );
+        assert!(
+            modules
+                .iter()
+                .any(|module| module.kind == ModuleKind::Composition)
+        );
+    }
 
     fn insert_preset(state: &mut GuiState, label: &str) {
         let choice = ModuleCategory::ALL
@@ -4312,22 +4422,11 @@ mod tests {
         for (label, name) in [
             ("Transpose", "Transpose"),
             ("Degree Gate", "Degree Gate"),
-            ("Sine Oscillator", "Sine"),
-            ("Square Oscillator", "Square"),
-            ("Triangle Oscillator", "Triangle"),
-            ("Saw Oscillator", "Saw"),
-            ("Reverse Saw Oscillator", "Reverse Saw"),
             ("ADSR", "ADSR"),
             ("Reverb", "Reverb"),
-            ("Distortion", "Distortion"),
             ("Compressor", "Compressor"),
             ("Flanger", "Flanger"),
-            ("Tube", "Tube"),
-            ("Tape", "Tape"),
-            ("Fuzz", "Fuzz"),
-            ("Fold", "Fold"),
-            ("Clip", "Clip"),
-            ("Attenuator", "Attenuator"),
+            ("Gain", "Gain"),
         ] {
             let mut state = GuiState::default();
             insert_preset(&mut state, label);
@@ -4389,16 +4488,16 @@ mod tests {
             state.apply(GuiAction::InputChar(character));
         }
         let filtered = state.filtered_palette_modules();
-        assert!(filtered.len() > 1);
-        state.choose_filtered_palette_index(1);
+        assert_eq!(filtered.len(), 1);
+        state.choose_filtered_palette_index(0);
         let selected = (0..filtered.len())
             .filter(|index| state.filtered_palette_index_selected(*index))
             .collect::<Vec<_>>();
-        assert_eq!(selected, vec![1]);
+        assert_eq!(selected, vec![0]);
     }
 
     #[test]
-    fn palette_search_matches_disclosed_family() {
+    fn palette_search_matches_section_headings() {
         let mut state = GuiState::default();
         state.apply(GuiAction::OpenPalette);
         state.apply(GuiAction::Search);
@@ -4412,48 +4511,31 @@ mod tests {
                 .iter()
                 .map(PaletteModule::label)
                 .collect::<Vec<_>>(),
-            vec!["Distortion", "Tube", "Tape", "Fuzz", "Fold", "Clip"]
+            vec!["Saturation"]
         );
     }
 
     #[test]
-    fn palette_family_discloses_variants_before_placement() {
-        let mut state = GuiState::new(32, 24);
-        state.apply(GuiAction::OpenPalette);
-        let entries = state.visible_palette_entries();
-        let oscillator = entries
-            .iter()
-            .position(|entry| entry.label() == "Oscillators")
-            .unwrap();
-        assert!(entries.len() < state.palette_modules().len());
-
-        state.choose_palette_index(oscillator);
-        state.apply(GuiAction::Confirm);
-        assert_eq!(state.mode(), Mode::Palette);
-        assert_eq!(state.palette_family_label(), Some("Oscillators"));
-        assert_eq!(state.selected_palette_label(), "Sine Oscillator");
-        assert!(state.modules().is_empty());
-
-        state.apply(GuiAction::Confirm);
-        assert_eq!(state.mode(), Mode::Normal);
-        assert_eq!(state.module_at(GridPos::new(0, 0)).unwrap().label(), "Sine");
+    fn every_palette_module_places_directly_without_a_submenu() {
+        for category in ModuleCategory::ALL {
+            let mut catalogue = GuiState::new(32, 24);
+            catalogue.open_category(category);
+            for (index, choice) in catalogue.palette_modules().iter().enumerate() {
+                let mut state = GuiState::new(32, 24);
+                state.open_category(category);
+                state.choose_palette_index(index);
+                assert_eq!(state.selected_palette_label(), choice.label());
+                state.apply(GuiAction::Confirm);
+                assert_eq!(state.mode(), Mode::Normal, "{}", choice.label());
+                assert_eq!(state.modules().len(), 1, "{}", choice.label());
+            }
+        }
     }
 
     #[test]
-    fn palette_cancel_returns_from_family_before_closing() {
+    fn palette_cancel_closes_the_root_browser() {
         let mut state = GuiState::default();
         state.open_category(ModuleCategory::Routing);
-        let family = state
-            .visible_palette_entries()
-            .iter()
-            .position(|entry| entry.label() == "Routing parts")
-            .unwrap();
-        state.choose_palette_index(family);
-        state.apply(GuiAction::Confirm);
-
-        state.apply(GuiAction::Cancel);
-        assert_eq!(state.mode(), Mode::Palette);
-        assert_eq!(state.palette_family_label(), None);
         state.apply(GuiAction::Cancel);
         assert_eq!(state.mode(), Mode::Normal);
     }
@@ -4500,14 +4582,14 @@ mod tests {
             ModuleKind::CompositionInput | ModuleKind::CompositionOutput
         )));
 
-        state.instrument_mut().root.modules.push(Module {
+        state.instrument.root.modules.push(Module {
             id: ModuleId::new(1),
             position: GridPos::new(0, 0),
             orientation: Orientation::Right,
             body: ModuleKind::Composition.default_body(),
             disabled: false,
         });
-        state.instrument_mut().editing_composition = Some(ModuleId::new(1));
+        state.instrument.editing_composition = Some(ModuleId::new(1));
         let kinds = state
             .palette_modules()
             .into_iter()
@@ -4521,7 +4603,7 @@ mod tests {
     fn outputs_use_the_last_occupied_cell_in_both_orientations() {
         let mut state = GuiState::default();
         insert_preset(&mut state, "ADSR");
-        state.instrument_mut().root.modules.push(Module {
+        state.instrument.root.modules.push(Module {
             id: ModuleId::new(2),
             position: GridPos::new(2, 3),
             orientation: Orientation::Right,
@@ -4538,10 +4620,10 @@ mod tests {
         );
         assert_eq!(state.connections().len(), 1);
 
-        state.instrument_mut().root.modules.clear();
+        state.instrument.root.modules.clear();
         insert_preset(&mut state, "ADSR");
-        state.instrument_mut().root.modules[0].orientation = Orientation::Down;
-        state.instrument_mut().root.modules.push(Module {
+        state.instrument.root.modules[0].orientation = Orientation::Down;
+        state.instrument.root.modules.push(Module {
             id: ModuleId::new(2),
             position: GridPos::new(3, 2),
             orientation: Orientation::Down,
@@ -4564,8 +4646,8 @@ mod tests {
         let mut state = GuiState::default();
         for kind in all_modules().iter().copied() {
             for orientation in [Orientation::Right, Orientation::Down] {
-                state.instrument_mut().root.modules.clear();
-                state.instrument_mut().root.modules.push(Module {
+                state.instrument.root.modules.clear();
+                state.instrument.root.modules.push(Module {
                     id: ModuleId::new(0),
                     position: GridPos::new(0, 0),
                     orientation,
@@ -4611,7 +4693,7 @@ mod tests {
     #[test]
     fn delay_uses_the_standard_module_geometry() {
         let mut state = GuiState::new(8, 8);
-        state.instrument_mut().root.modules.push(Module {
+        state.instrument.root.modules.push(Module {
             id: ModuleId::new(0),
             position: GridPos::new(2, 2),
             orientation: Orientation::Right,
@@ -4628,7 +4710,7 @@ mod tests {
         assert_eq!(state.left_input_offset(delay, 2), Some(2));
         assert_eq!(state.right_output_offset(delay, 0), Some(2));
 
-        state.instrument_mut().root.modules[0].orientation = Orientation::Down;
+        state.instrument.root.modules[0].orientation = Orientation::Down;
         let delay = &state.modules()[0];
         assert_eq!(
             (state.module_width(delay), state.module_height(delay)),
@@ -4643,7 +4725,7 @@ mod tests {
     #[test]
     fn vertical_signal_search_never_travels_up() {
         let mut state = GuiState::new(8, 8);
-        state.instrument_mut().root.modules.extend([
+        state.instrument.root.modules.extend([
             Module {
                 id: ModuleId::new(0),
                 position: GridPos::new(0, 2),
@@ -4705,7 +4787,7 @@ mod tests {
         writer.finalize().unwrap();
 
         let mut state = GuiState::new(8, 8);
-        state.instrument_mut().root.modules.push(Module {
+        state.instrument.root.modules.push(Module {
             id: ModuleId::new(1),
             position: GridPos::new(0, 0),
             orientation: Orientation::Right,
@@ -4713,7 +4795,7 @@ mod tests {
             disabled: false,
         });
         assert!(state.relink_sample(ModuleId::new(1), &path));
-        let ModuleBody::Sample { samples, .. } = &state.instrument().root.modules[0].body else {
+        let ModuleBody::Sample { samples, .. } = &state.instrument.root.modules[0].body else {
             panic!()
         };
         assert_eq!(samples.len(), 1);
@@ -4765,7 +4847,7 @@ mod tests {
     #[test]
     fn disconnected_degree_probe_cannot_change_output_voice_mode() {
         let mut state = GuiState::new(8, 8);
-        state.instrument_mut().root.modules = vec![
+        state.instrument.root.modules = vec![
             Module {
                 id: ModuleId::new(1),
                 position: GridPos::new(2, 1),
@@ -4884,7 +4966,7 @@ mod tests {
         assert!(module.set_parameter(0, frequency));
         match module.body {
             ModuleBody::Phase { frequency } => {
-                assert_eq!(frequency.value, 88_000);
+                assert_eq!(frequency.value, AudioSample::new(880.0).unwrap());
                 assert!(!frequency.connected);
             }
             _ => panic!("wrong body"),
@@ -4909,7 +4991,7 @@ mod tests {
     #[test]
     fn pointer_module_drag_uses_original_module_position() {
         let mut state = GuiState::default();
-        state.instrument_mut().surface_mut().cursor = GridPos::new(1, 1);
+        state.instrument.surface_mut().cursor = GridPos::new(1, 1);
         insert_preset(&mut state, "ADSR");
 
         state.drag_grid_cell(GridPointerPhase::Start, GridPos::new(1, 2));
@@ -5043,13 +5125,13 @@ mod tests {
     fn composition_projection_rejects_a_surface_larger_than_the_grid() {
         let mut patch = Patch::new();
         let mut output = None;
-        for _ in 0..800 {
+        for _ in 0..20 {
             output = Some(patch.insert(AudioModule::Constant(AudioSample::ZERO)));
         }
         let output = patch.output_port(output.unwrap(), 0).unwrap();
         patch.output(output).unwrap();
         let composition = brainwash::patch::Composition::new(
-            "Too Large",
+            "Wide Composition",
             patch,
             Vec::<(String, AudioInputKind, AudioModuleId)>::new(),
             [("Output".to_string(), output)],
@@ -5076,13 +5158,13 @@ mod tests {
         assert_eq!(state.composition_depth(), 1);
         assert_eq!(state.undo.len(), undo);
         assert_eq!(
-            state.instrument().root.modules[0].kind(),
+            state.instrument.root.modules[0].kind(),
             ModuleKind::Composition
         );
-        assert_eq!(state.instrument().root.modules[0].label(), "Compressor");
+        assert_eq!(state.instrument.root.modules[0].label(), "Compressor");
         let before = state.modules().len();
         assert!(!state.connections().is_empty());
-        state.instrument_mut().surface_mut().cursor = state.modules()[0].position;
+        state.instrument.surface_mut().cursor = state.modules()[0].position;
         state.apply(GuiAction::Delete);
         assert_eq!(state.modules().len(), before - 1);
     }
@@ -5094,31 +5176,82 @@ mod tests {
         let surface = state.modules()[0].composition_surface().unwrap();
         assert_eq!(state.grid_size(), (32, 24));
         assert!(surface.modules.len() < 30);
-        assert!(surface_extent(surface).0 < 20);
+        assert!(surface_extent(&surface.modules).0 < 20);
     }
 
     #[test]
-    fn every_reverb_surface_fits_the_default_grid() {
-        fn check(surface: &PatchSurface) {
-            let extent = surface_extent(surface);
-            assert!(
-                extent.0 <= 32 && extent.1 <= 24,
-                "surface is {}x{} with {} modules",
-                extent.0,
-                extent.1,
-                surface.modules.len()
-            );
-            assert!(surface.modules.iter().all(|module| !module.disabled));
-            for module in &surface.modules {
-                if let Some(nested) = module.composition_surface() {
-                    check(nested);
-                }
+    fn every_builtin_composition_fits_fixed_canvas_after_project_round_trip() {
+        fn check(state: &mut GuiState) {
+            let extent = surface_extent(state.modules());
+            let (width, height) = state.grid_size();
+            assert!(extent.0 <= width && extent.1 <= height);
+            assert!(state.modules().iter().all(|module| !module.disabled));
+            let positions = state
+                .modules()
+                .iter()
+                .map(|module| module.position)
+                .collect::<Vec<_>>();
+            for position in positions {
+                state.focus_cell(position);
+                assert_eq!(state.cursor(), position);
+                let view = state.grid_view_offset_for_size(GridViewSize::new(8, 6));
+                assert!(position.x >= view.x && position.x < view.x + 8);
+                assert!(position.y >= view.y && position.y < view.y + 6);
+            }
+            let corner = GridPos::new(width - 1, height - 1);
+            state.focus_cell(corner);
+            state.apply(GuiAction::Left);
+            assert_eq!(state.cursor(), GridPos::new(corner.x - 1, corner.y));
+            let children = state
+                .modules()
+                .iter()
+                .filter(|module| module.is_composition())
+                .map(|module| module.position)
+                .collect::<Vec<_>>();
+            for position in children {
+                state.focus_cell(position);
+                let depth = state.composition_depth();
+                state.apply(GuiAction::EditComposition);
+                assert_eq!(state.composition_depth(), depth + 1);
+                check(state);
+                state.apply(GuiAction::ExitComposition);
+                assert_eq!(state.composition_depth(), depth);
             }
         }
-
-        let mut state = GuiState::default();
-        insert_preset(&mut state, "Reverb");
-        check(state.modules()[0].composition_surface().unwrap());
+        let catalogue = GuiState::default();
+        let choices = ModuleCategory::ALL
+            .into_iter()
+            .flat_map(|category| catalogue.palette_modules_for(category))
+            .filter(|choice| choice.preset.is_some() && choice.kind == ModuleKind::Composition)
+            .collect::<Vec<_>>();
+        let mut rejected = Vec::new();
+        for choice in choices {
+            let mut state = GuiState::default();
+            state.insert_palette_module(choice.clone());
+            if state.modules().len() != 1 {
+                rejected.push(choice.name);
+                continue;
+            }
+            let path = std::env::temp_dir().join(format!(
+                "brainwash-builtin-{}.ron",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            assert!(state.save_project(&path));
+            let mut state = GuiState::default();
+            state.load_project(&path).unwrap();
+            std::fs::remove_file(path).unwrap();
+            state.set_grid_view_size(GridViewSize::new(8, 6));
+            assert_eq!(state.grid_size(), (32, 24));
+            state.focus_cell(state.modules()[0].position);
+            state.apply(GuiAction::EditComposition);
+            check(&mut state);
+            state.apply(GuiAction::ExitComposition);
+            assert_eq!(state.grid_size(), (32, 24));
+        }
+        assert!(rejected.is_empty(), "could not place: {rejected:?}");
     }
 
     #[test]
@@ -5134,7 +5267,7 @@ mod tests {
         };
         let mut state = GuiState::default();
         state.next_module_id = 3;
-        state.instrument_mut().root = PatchSurface {
+        state.instrument.root = PatchSurface {
             cursor: GridPos::new(0, 0),
             modules: vec![
                 Module {
@@ -5225,7 +5358,7 @@ mod tests {
         check(
             &state,
             &graph,
-            state.instrument().root.modules[1]
+            state.instrument.root.modules[1]
                 .composition_surface()
                 .unwrap(),
         );
@@ -5248,116 +5381,6 @@ mod tests {
             let expected = canonical.next_with_controls(controls);
             assert_eq!(actual, expected, "frame {frame}");
         }
-    }
-
-    #[test]
-    fn every_nested_reverb_composition_can_be_opened() {
-        let mut state = GuiState::default();
-        insert_preset(&mut state, "Reverb");
-        state.apply(GuiAction::EditComposition);
-
-        let diffuser = state
-            .modules()
-            .iter()
-            .find(|module| module.label() == "Input Diffuser")
-            .unwrap()
-            .position;
-        state.instrument_mut().surface_mut().cursor = diffuser;
-        state.apply(GuiAction::EditComposition);
-        let stage = state
-            .modules()
-            .iter()
-            .find(|module| module.label() == "Diffuser Stage")
-            .unwrap()
-            .position;
-        state.instrument_mut().surface_mut().cursor = stage;
-        state.apply(GuiAction::EditComposition);
-        assert_eq!(state.composition_depth(), 3);
-        state.apply(GuiAction::ExitComposition);
-        state.apply(GuiAction::ExitComposition);
-
-        let tank = state
-            .modules()
-            .iter()
-            .find(|module| module.label() == "FDN Tank")
-            .unwrap()
-            .position;
-        state.instrument_mut().surface_mut().cursor = tank;
-        state.apply(GuiAction::EditComposition);
-        let voice_group = state
-            .modules()
-            .iter()
-            .find(|module| module.label() == "FDN Voice Group")
-            .unwrap()
-            .position;
-        state.instrument_mut().surface_mut().cursor = voice_group;
-        state.apply(GuiAction::EditComposition);
-        for label in ["Delay Group", "Feedback Group"] {
-            let position = state
-                .modules()
-                .iter()
-                .find(|module| module.label() == label)
-                .unwrap()
-                .position;
-            state.instrument_mut().surface_mut().cursor = position;
-            state.apply(GuiAction::EditComposition);
-            assert_eq!(state.composition_depth(), 4);
-            let child = if label == "Delay Group" {
-                "Delay Modulation"
-            } else {
-                "Feedback Path"
-            };
-            let position = state
-                .modules()
-                .iter()
-                .find(|module| module.label() == child)
-                .unwrap()
-                .position;
-            state.instrument_mut().surface_mut().cursor = position;
-            state.apply(GuiAction::EditComposition);
-            assert_eq!(state.composition_depth(), 5);
-            if label == "Feedback Group" {
-                let position = state
-                    .modules()
-                    .iter()
-                    .find(|module| module.label() == "Room Decay")
-                    .unwrap()
-                    .position;
-                state.instrument_mut().surface_mut().cursor = position;
-                state.apply(GuiAction::EditComposition);
-                assert_eq!(state.composition_depth(), 6);
-                state.apply(GuiAction::ExitComposition);
-            }
-            state.apply(GuiAction::ExitComposition);
-            state.apply(GuiAction::ExitComposition);
-        }
-        state.apply(GuiAction::ExitComposition);
-
-        let decoder = state
-            .modules()
-            .iter()
-            .find(|module| module.label() == "Output Decoder")
-            .unwrap()
-            .position;
-        state.instrument_mut().surface_mut().cursor = decoder;
-        state.apply(GuiAction::EditComposition);
-        let row = state
-            .modules()
-            .iter()
-            .find(|module| module.label() == "FDN Output Row")
-            .unwrap()
-            .position;
-        state.instrument_mut().surface_mut().cursor = row;
-        state.apply(GuiAction::EditComposition);
-        let pair = state
-            .modules()
-            .iter()
-            .find(|module| module.label() == "FDN Weighted Pair")
-            .unwrap()
-            .position;
-        state.instrument_mut().surface_mut().cursor = pair;
-        state.apply(GuiAction::EditComposition);
-        assert_eq!(state.composition_depth(), 5);
     }
 
     #[test]
@@ -5404,7 +5427,7 @@ mod tests {
         let mut state = GuiState::new(8, 8);
         state.next_module_id = 3;
         let composition = composition_body(graph, &mut state.next_module_id).unwrap();
-        state.instrument_mut().root.modules = vec![
+        state.instrument.root.modules = vec![
             Module {
                 id: ModuleId::new(0),
                 position: GridPos::new(0, 0),
@@ -5457,6 +5480,7 @@ impl ModuleKind {
             ModuleKind::Freq
             | ModuleKind::Gate
             | ModuleKind::Degree
+            | ModuleKind::Expression
             | ModuleKind::Noise
             | ModuleKind::Random
             | ModuleKind::Sample
@@ -5513,6 +5537,7 @@ impl ModuleKind {
             ModuleKind::Freq
             | ModuleKind::Gate
             | ModuleKind::Degree
+            | ModuleKind::Expression
             | ModuleKind::Phase
             | ModuleKind::Rise
             | ModuleKind::Fall
@@ -5629,6 +5654,7 @@ pub fn all_modules() -> &'static [ModuleKind] {
         ModuleKind::Freq,
         ModuleKind::Gate,
         ModuleKind::Degree,
+        ModuleKind::Expression,
         ModuleKind::Envelope,
         ModuleKind::Rise,
         ModuleKind::Fall,

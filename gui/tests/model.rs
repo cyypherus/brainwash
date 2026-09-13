@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 #[test]
 fn module_inventory_has_expected_surface_count() {
-    assert_eq!(all_modules().len(), 48);
+    assert_eq!(all_modules().len(), 49);
     assert_eq!(all_modules()[0], ModuleKind::Phase);
     assert_eq!(all_modules()[1], ModuleKind::Output);
     assert_eq!(
@@ -21,7 +21,7 @@ fn module_inventory_has_expected_surface_count() {
             .iter()
             .filter(|kind| kind.category() == ModuleCategory::Source)
             .count(),
-        7
+        8
     );
     assert_eq!(
         all_modules()
@@ -99,7 +99,7 @@ fn palette_category_changes_open_the_remembered_selection() {
     state.apply(GuiAction::OpenPalette);
     state.apply(GuiAction::PaletteRight);
 
-    assert_eq!(state.palette_category(), ModuleCategory::Output);
+    assert_eq!(state.palette_category(), ModuleCategory::Composition);
     assert_eq!(state.selected_palette_module(), ModuleKind::Output);
 }
 
@@ -581,8 +581,7 @@ fn track_edit_opens_track_prompt() {
 
     state.apply(GuiAction::TrackEdit);
 
-    assert!(!state.track_edit_requested());
-    assert_eq!(state.mode(), Mode::TrackPrompt);
+    assert_eq!(state.mode(), Mode::Normal);
 }
 
 #[test]
@@ -1026,21 +1025,44 @@ fn haven_palette_category_keys_work() {
 }
 
 #[test]
-fn haven_palette_lays_out_categories_horizontally_and_modules_vertically() {
-    let mut state = GuiState::new(8, 8);
+fn haven_palette_shows_sections_and_modules_together_at_the_root() {
+    let mut state = GuiState::new(32, 24);
     state.apply(GuiAction::OpenPalette);
     let mut pane = PaneBuilder::new("main", main_view).build();
-    pane.redraw(&mut state, 760, 560, 1.0);
-
-    let source = pane.location(1_000).unwrap();
-    let shape = pane.location(1_001).unwrap();
-    assert!(shape.x > source.x);
-    assert_point_near_y(shape, source.y);
-
-    let freq = pane.location(2_000).unwrap();
-    let gate = pane.location(2_001).unwrap();
-    assert_point_near_x(gate, freq.x);
-    assert!(gate.y > freq.y);
+    pane.redraw(&mut state, 1600, 1200, 1.0);
+    let phase = pane.location(20_000).unwrap();
+    let frequency = pane.location(20_003).unwrap();
+    let filter = pane.location(23_000).unwrap();
+    assert_point_near_x(frequency, phase.x);
+    assert!(frequency.y > phase.y);
+    assert!(filter.x > phase.x);
+    assert_point_near_x(phase, 800.);
+    for category in ModuleCategory::ALL {
+        state.apply(GuiAction::Palette(category));
+        for index in 0..state.palette_modules().len() {
+            pane.redraw(&mut state, 640, 480, 1.0);
+            let location = pane
+                .location(
+                    20_000
+                        + ModuleCategory::ALL
+                            .iter()
+                            .position(|candidate| *candidate == category)
+                            .unwrap() as u64
+                            * 1000
+                        + index as u64 * 3,
+                )
+                .unwrap();
+            assert!(
+                (40.0..480.0).contains(&location.y),
+                "{category:?} {index}: {location:?}"
+            );
+            assert!(
+                (location.x - 320.).abs() < 0.5,
+                "{category:?} {index}: {location:?}"
+            );
+            state.apply(GuiAction::PaletteDown);
+        }
+    }
 }
 
 #[test]
@@ -1048,22 +1070,16 @@ fn haven_save_module_button_only_renders_inside_a_composition() {
     let mut state = GuiState::new(8, 8);
     let mut pane = PaneBuilder::new("main", main_view).build();
     pane.redraw(&mut state, 760, 560, 1.0);
-    let save = pane.location(3_060).unwrap();
-    let export = pane.location(3_062).unwrap();
-    pane.click(&mut state, Point::new((save.x + export.x) * 0.5, save.y));
-    assert!(state.take_save_module_request().is_none());
-
+    assert!(pane.location(3_075).is_none());
     place_module_kind(&mut state, ModuleKind::Composition);
     state.apply(GuiAction::EditComposition);
     pane.redraw(&mut state, 760, 560, 1.0);
-    let save = pane.location(3_060).unwrap();
-    let export = pane.location(3_062).unwrap();
-    pane.click(&mut state, Point::new((save.x + export.x) * 0.5, save.y));
+    pane.click(&mut state, pane.location(3_075).unwrap());
     assert!(state.take_save_module_request().is_some());
 }
 
 #[test]
-fn haven_palette_background_stays_top_aligned_when_switching_tabs() {
+fn haven_palette_background_stays_top_aligned_when_changing_selection() {
     let panel_area = |pane: &Pane<GuiState>, frame: &Frame| {
         let center = pane.location(200).unwrap();
         frame
@@ -1071,8 +1087,8 @@ fn haven_palette_background_stays_top_aligned_when_switching_tabs() {
             .iter()
             .find_map(|item| match item {
                 RenderItem::Path { area, .. }
-                    if (area.x + area.width * 0.5 - center.x).abs() < 0.5
-                        && (area.y + area.height * 0.5 - center.y).abs() < 0.5 =>
+                    if (area.x + area.width * 0.5 - center.x as f32).abs() < 0.5
+                        && (area.y + area.height * 0.5 - center.y as f32).abs() < 0.5 =>
                 {
                     Some(*area)
                 }
@@ -1105,8 +1121,6 @@ fn haven_palette_background_stays_top_aligned_when_switching_tabs() {
 fn haven_routing_palette_draws_a_leading_icon_for_every_module() {
     let mut state = GuiState::new(8, 8);
     state.apply(GuiAction::Palette(ModuleCategory::Routing));
-    state.apply(GuiAction::PaletteDown);
-    state.apply(GuiAction::Confirm);
     let mut pane = PaneBuilder::new("main", main_view).build();
     let (frame, _) = pane.redraw(&mut state, 760, 560, 1.0);
     let icons = frame
@@ -1121,8 +1135,6 @@ fn haven_routing_palette_draws_a_leading_icon_for_every_module() {
         .count();
     assert_eq!(icons, 6);
 
-    state.apply(GuiAction::Cancel);
-    assert_eq!(state.mode(), Mode::Palette);
     state.apply(GuiAction::Cancel);
     assert_eq!(state.mode(), Mode::Normal);
 }
@@ -1200,7 +1212,7 @@ fn haven_track_edit_key_is_contextual() {
     pane.redraw(&mut state, 640, 480, 1.0);
 
     pane.key_pressed(&mut state, Key::character("t"));
-    assert_eq!(state.mode(), Mode::TrackPrompt);
+    assert_eq!(state.mode(), Mode::Normal);
 
     let mut state = GuiState::new(8, 8);
     place_module(&mut state, 0, 4);
@@ -1216,33 +1228,21 @@ fn haven_track_edit_key_is_contextual() {
             parameter: 0
         }
     );
-    assert!(!state.track_edit_requested());
 }
 
 #[test]
-fn haven_track_prompt_accepts_track_notation_keys() {
+fn haven_track_canvas_replaces_text_field() {
     let mut state = GuiState::new(8, 8);
     let mut pane = PaneBuilder::new("main", main_view).build();
-    pane.redraw(&mut state, 640, 480, 1.0);
-
+    pane.redraw(&mut state, 1060, 760, 1.0);
     pane.key_pressed(&mut state, Key::character("t"));
-    assert_eq!(state.mode(), Mode::TrackPrompt);
-    pane.redraw(&mut state, 640, 480, 1.0);
-    let field = pane.location(794).expect("track text field present");
-    pane.click(&mut state, field);
-    pane.redraw(&mut state, 640, 480, 1.0);
-
-    pane.key_pressed(&mut state, NamedKey::Home);
-    for _ in 0..9 {
-        pane.key_pressed(&mut state, NamedKey::Delete);
-    }
-    for character in "{0+/_&7*}".chars() {
-        pane.key_pressed(&mut state, Key::character(character.to_string()));
-    }
-    pane.key_pressed(&mut state, NamedKey::Enter);
-
-    assert_eq!(state.mode(), Mode::Normal);
-    assert_eq!(state.track_text(), "{0+/_&7*}");
+    pane.redraw(&mut state, 1060, 760, 1.0);
+    assert!(pane.location(71_901).unwrap().x < pane.location(69_900).unwrap().x);
+    assert!(pane.location(90_001).is_some());
+    assert!(pane.location(794).is_none());
+    pane.key_pressed(&mut state, NamedKey::Escape);
+    pane.redraw(&mut state, 1060, 760, 1.0);
+    assert!(pane.location(71_901).is_none());
 }
 
 #[test]
@@ -1597,9 +1597,9 @@ fn adsr_opens_as_a_composition() {
 }
 
 #[test]
-fn attenuator_is_available_as_an_editable_composition() {
+fn gain_is_available_as_an_editable_composition() {
     let mut state = GuiState::default();
-    place_palette_module(&mut state, ModuleCategory::Effect, "Attenuator");
+    place_palette_module(&mut state, ModuleCategory::Effect, "Gain");
     state.apply(GuiAction::EditComposition);
     assert_eq!(state.composition_depth(), 1);
     assert!(!state.modules().is_empty());
@@ -1891,6 +1891,7 @@ fn routing_join_compiles_with_both_inputs_connected() {
         frequency: Hertz::new(330.0),
         gate: 1.0,
         degree: 0,
+        expression: 0.0,
     });
 
     assert!(frame.left().value() > 0.0);
@@ -2123,6 +2124,7 @@ fn gui_composition_routes_parent_input_to_child_composition_input() {
         frequency: Hertz::new(330.0),
         gate: 1.0,
         degree: 0,
+        expression: 0.0,
     };
 
     let mut min = f32::INFINITY;
@@ -2170,6 +2172,7 @@ fn gui_reverb_emits_a_wet_tail_after_an_impulse() {
         frequency: Hertz::new(440.0),
         gate: 1.0,
         degree: 0,
+        expression: 0.0,
     });
     let tail = (0..12_000)
         .map(|_| {
@@ -2178,6 +2181,7 @@ fn gui_reverb_emits_a_wet_tail_after_an_impulse() {
                     frequency: Hertz::new(440.0),
                     gate: 0.0,
                     degree: 0,
+                    expression: 0.0,
                 })
                 .left()
                 .value()
@@ -2207,6 +2211,7 @@ fn probe_branch_does_not_need_to_feed_audio_output() {
         frequency: Hertz::new(330.0),
         gate: 1.0,
         degree: 0,
+        expression: 0.0,
     });
     let values = compiled.probe_values().collect::<Vec<_>>();
 
@@ -2238,6 +2243,7 @@ fn composition_probe_branch_receives_parent_input_without_feeding_output() {
         frequency: Hertz::new(330.0),
         gate: 1.0,
         degree: 0,
+        expression: 0.0,
     });
     let values = compiled.probe_values().collect::<Vec<_>>();
 
@@ -2299,6 +2305,7 @@ fn gui_built_freq_osc_output_patch_uses_track_controls() {
         frequency: Hertz::new(330.0),
         gate: 1.0,
         degree: 2,
+        expression: 0.0,
     };
 
     let mut audible = false;
@@ -2310,14 +2317,100 @@ fn gui_built_freq_osc_output_patch_uses_track_controls() {
 }
 
 #[test]
-fn oscillator_composition_exposes_only_frequency() {
+fn oscillator_exposes_waveform_and_frequency() {
     let mut state = GuiState::new(8, 8);
-    place_palette_module(&mut state, ModuleCategory::Source, "Sine Oscillator");
+    place_palette_module(&mut state, ModuleCategory::Source, "Oscillator");
 
     let parameters = state.modules()[0].parameters();
     assert_eq!(parameters.len(), 2);
-    assert_eq!(parameters[0].name(), "Name");
+    assert_eq!(parameters[0].name(), "Waveform");
     assert_eq!(parameters[1].name(), "Frequency");
+}
+
+#[test]
+fn variant_parameters_use_normal_editing_undo_and_persistence() {
+    for (category, label, variants) in [
+        (
+            ModuleCategory::Source,
+            "Oscillator",
+            ["Sine", "Square", "Triangle", "Saw", "Reverse Saw"],
+        ),
+        (
+            ModuleCategory::Effect,
+            "Saturation",
+            ["Tube", "Tape", "Fuzz", "Fold", "Clip"],
+        ),
+    ] {
+        let mut state = GuiState::new(16, 16);
+        place_palette_module(&mut state, category, label);
+        let id = state.modules()[0].id();
+        state.apply(GuiAction::Edit);
+        assert_eq!(
+            state.mode(),
+            Mode::Edit {
+                module: id,
+                parameter: 0
+            }
+        );
+        for (index, variant) in variants.iter().enumerate() {
+            if index > 0 {
+                state.apply(GuiAction::ValueUp);
+            }
+            assert_eq!(state.modules()[0].parameters()[0].value_label(), *variant);
+        }
+        state.apply(GuiAction::Cancel);
+        state.apply(GuiAction::Undo);
+        assert_eq!(
+            state.modules()[0].parameters()[0].value_label(),
+            variants[3]
+        );
+        state.apply(GuiAction::Redo);
+        assert_eq!(
+            state.modules()[0].parameters()[0].value_label(),
+            variants[4]
+        );
+        let path = project_path(label);
+        assert!(state.save_project(&path));
+        let mut loaded = GuiState::new(16, 16);
+        loaded.load_project(&path).unwrap();
+        assert_eq!(loaded.modules()[0].label(), label);
+        assert_eq!(
+            loaded.modules()[0].parameters(),
+            state.modules()[0].parameters()
+        );
+        loaded.apply(GuiAction::Edit);
+        loaded.apply(GuiAction::ValueDown);
+        assert_eq!(
+            loaded.modules()[0].parameters()[0].value_label(),
+            variants[3]
+        );
+        fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
+fn nested_variant_parameters_survive_project_round_trip() {
+    let mut state = GuiState::new(16, 16);
+    place_module_kind(&mut state, ModuleKind::Composition);
+    state.apply(GuiAction::EditComposition);
+    place_palette_module(&mut state, ModuleCategory::Source, "Oscillator");
+    state.apply(GuiAction::Edit);
+    state.apply(GuiAction::ValueUp);
+    state.apply(GuiAction::Cancel);
+    state.apply(GuiAction::ExitComposition);
+    let path = project_path("nested-variant");
+    assert!(state.save_project(&path));
+    let mut loaded = GuiState::new(16, 16);
+    loaded.load_project(&path).unwrap();
+    loaded.apply(GuiAction::EditComposition);
+    assert_eq!(loaded.modules()[0].parameters()[0].value_label(), "Square");
+    loaded.apply(GuiAction::Edit);
+    loaded.apply(GuiAction::ValueUp);
+    assert_eq!(
+        loaded.modules()[0].parameters()[0].value_label(),
+        "Triangle"
+    );
+    fs::remove_file(path).unwrap();
 }
 
 #[test]
@@ -2327,11 +2420,13 @@ fn output_gain_connection_is_not_treated_as_output_signal() {
         frequency: Hertz::new(330.0),
         gate: 1.0,
         degree: 0,
+        expression: 0.0,
     };
     let controls_low = PatchControls {
         frequency: Hertz::new(330.0),
         gate: 0.0,
         degree: 0,
+        expression: 0.0,
     };
 
     let mut state = GuiState::new(8, 8);
@@ -2413,6 +2508,7 @@ fn composition_parent_inputs_route_by_port_order() {
             frequency: Hertz::new(0.25),
             gate: 1.0,
             degree: 0,
+            expression: 0.0,
         })
         .left()
         .value();
@@ -2446,6 +2542,7 @@ fn composition_parent_outputs_route_by_port_order() {
             frequency: Hertz::new(0.25),
             gate: 1.0,
             degree: 0,
+            expression: 0.0,
         })
         .left()
         .value();
@@ -2454,24 +2551,15 @@ fn composition_parent_outputs_route_by_port_order() {
 }
 
 #[test]
-fn track_edit_opens_note_prompt_and_commits_text() {
+fn track_edit_toggles_canvas() {
     let mut state = GuiState::new(8, 8);
-
+    let mut pane = PaneBuilder::new("main", main_view).build();
     state.apply(GuiAction::TrackEdit);
-    assert_eq!(state.mode(), Mode::TrackPrompt);
-    assert_eq!(state.prompt_text(), "(0/2/4/7)");
-
-    state.apply(GuiAction::TextStart);
-    for _ in 0..9 {
-        state.apply(GuiAction::DeleteChar);
-    }
-    for character in "(0/_/7)".chars() {
-        state.apply(GuiAction::InputChar(character));
-    }
-    state.apply(GuiAction::Confirm);
-
-    assert_eq!(state.mode(), Mode::Normal);
-    assert_eq!(state.track_text(), "(0/_/7)");
+    pane.redraw(&mut state, 1060, 760, 1.0);
+    assert!(pane.location(71_901).is_some());
+    state.apply(GuiAction::TrackEdit);
+    pane.redraw(&mut state, 1060, 760, 1.0);
+    assert!(pane.location(71_901).is_none());
 }
 
 #[test]
@@ -2971,37 +3059,6 @@ fn undo_redo_restore_patch_mutations() {
 }
 
 #[test]
-fn instruments_are_separate_patch_surfaces() {
-    let mut state = GuiState::new(8, 8);
-    assert_eq!(state.instrument_count(), 5);
-
-    place_module(&mut state, 0, 0);
-
-    state.apply(GuiAction::Instrument(1));
-    assert_eq!(state.active_instrument(), 1);
-    assert!(state.modules().is_empty());
-
-    place_module(&mut state, 0, 1);
-    state.apply(GuiAction::Instrument(0));
-    assert_eq!(state.active_instrument(), 0);
-    assert_eq!(state.modules().len(), 1);
-    assert_eq!(
-        state.module_at(GridPos::new(0, 0)).unwrap().kind(),
-        ModuleKind::Freq
-    );
-
-    state.apply(GuiAction::Instrument(1));
-    assert_eq!(
-        state.module_at(GridPos::new(0, 0)).unwrap().kind(),
-        ModuleKind::Gate
-    );
-
-    state.apply(GuiAction::Instrument(4));
-    assert_eq!(state.active_instrument(), 4);
-    assert!(state.modules().is_empty());
-}
-
-#[test]
 fn global_toggles_match_normal_mode_actions() {
     let mut state = GuiState::new(8, 8);
 
@@ -3046,8 +3103,9 @@ fn loading_restores_sample_path_and_relink_clears_missing_state() {
     let path = project_path("sample-load");
     let sample_name = "missing-sample.wav";
     let project = brainwash_grid::project::Project {
+        version: 1,
+        sequence: brainwash::sequence::Sequence::new(Vec::new(), 1).unwrap(),
         bpm: 120.0,
-        bars: 1.0,
         scale_idx: 0,
         modules: vec![brainwash_grid::project::ModuleDef {
             id: brainwash_grid::ModuleId::new(1),
@@ -3065,7 +3123,6 @@ fn loading_restores_sample_path_and_relink_clears_missing_state() {
                 connected: 255,
             },
         }],
-        track: None,
         compositions: Vec::new(),
     };
     brainwash_grid::project::save(&path, &project).unwrap();
@@ -3121,7 +3178,7 @@ fn load_project_replaces_state_from_project_file() {
         &path,
         r#"(
   bpm: 132.0,
-  bars: 1.0,
+  version: 1,
   scale_idx: 2,
   modules: [
     (
@@ -3146,7 +3203,7 @@ fn load_project_replaces_state_from_project_file() {
       ),
     ),
   ],
-  track: Some("(0/4)"),
+  sequence: (strokes: [[(0.0,60.0,1.0),(0.5,60.0,1.0)],[(0.5,64.0,1.0),(1.0,64.0,1.0)]], bars: 1),
   compositions: [],
 )"#,
     )
@@ -3160,7 +3217,9 @@ fn load_project_replaces_state_from_project_file() {
     assert_eq!(state.saved_path(), Some(path.to_string_lossy().as_ref()));
     assert_eq!(state.bpm(), 132);
     assert_eq!(state.scale_index(), 2);
-    assert_eq!(state.track_text(), "(0/4)");
+    assert!(state.save_project(&path));
+    let restored = brainwash_grid::project::load(&path).unwrap();
+    assert_eq!(restored.sequence.strokes().len(), 2);
     assert!(!state.dirty());
     assert_eq!(state.modules().len(), 2);
 
@@ -3192,7 +3251,7 @@ fn load_project_rejects_module_kind_and_params_disagreement() {
         &path,
         r#"(
   bpm: 120.0,
-  bars: 1.0,
+  version: 1,
   scale_idx: 0,
   modules: [
     (
@@ -3210,7 +3269,7 @@ fn load_project_rejects_module_kind_and_params_disagreement() {
       ),
     ),
   ],
-  track: None,
+  sequence: (strokes: [], bars: 1),
   compositions: [],
 )"#,
     )
@@ -3231,8 +3290,9 @@ fn load_project_rejects_module_kind_and_params_disagreement() {
 fn load_project_rejects_modules_outside_the_fixed_grid() {
     let path = project_path("out-of-bounds");
     let project = brainwash_grid::project::Project {
+        version: 1,
+        sequence: brainwash::sequence::Sequence::new(Vec::new(), 1).unwrap(),
         bpm: 120.0,
-        bars: 1.0,
         scale_idx: 0,
         modules: vec![brainwash_grid::project::ModuleDef {
             id: brainwash_grid::ModuleId::new(1),
@@ -3244,7 +3304,6 @@ fn load_project_rejects_modules_outside_the_fixed_grid() {
             orientation: brainwash_grid::Orientation::Right,
             params: brainwash_grid::project::ModuleParams::None,
         }],
-        track: None,
         compositions: Vec::new(),
     };
     brainwash_grid::project::save(&path, &project).unwrap();
@@ -3264,7 +3323,7 @@ fn load_project_rejects_invalid_active_time_value() {
         &path,
         r#"(
   bpm: 120.0,
-  bars: 1.0,
+  version: 1,
   scale_idx: 0,
   modules: [
     (
@@ -3278,7 +3337,7 @@ fn load_project_rejects_invalid_active_time_value() {
       ),
     ),
   ],
-  track: None,
+  sequence: (strokes: [], bars: 1),
   compositions: [],
 )"#,
     )
@@ -3300,7 +3359,7 @@ fn load_project_rejects_invalid_inactive_time_value() {
         &path,
         r#"(
   bpm: 120.0,
-  bars: 1.0,
+  version: 1,
   scale_idx: 0,
   modules: [
     (
@@ -3314,7 +3373,7 @@ fn load_project_rejects_invalid_inactive_time_value() {
       ),
     ),
   ],
-  track: None,
+  sequence: (strokes: [], bars: 1),
   compositions: [],
 )"#,
     )
@@ -3433,13 +3492,13 @@ fn place_palette_module(state: &mut GuiState, category: ModuleCategory, label: &
 }
 
 fn grid_cell_center(pane: &haven::Pane<GuiState>, x: u16, y: u16) -> Point {
-    const CELL: f32 = 30.;
+    const CELL: f64 = 30.;
     let origin = grid_cell_origin(pane, GridPos::new(x, y));
     Point::new(origin.x + CELL * 0.5, origin.y + CELL * 0.5)
 }
 
 fn grid_cell_origin(pane: &haven::Pane<GuiState>, position: GridPos) -> Point {
-    const CELL: f32 = 30.;
+    const CELL: f64 = 30.;
     let center = pane.location(view_cell_id(position)).unwrap();
     Point::new(center.x - CELL * 0.5, center.y - CELL * 0.5)
 }
@@ -3451,8 +3510,8 @@ fn grid_area(pane: &haven::Pane<GuiState>, frame: &Frame) -> haven::Area {
         .iter()
         .filter_map(|item| match item {
             RenderItem::Path { area, .. }
-                if (area.x + area.width * 0.5 - center.x).abs() < 0.5
-                    && (area.y + area.height * 0.5 - center.y).abs() < 0.5
+                if (area.x + area.width * 0.5 - center.x as f32).abs() < 0.5
+                    && (area.y + area.height * 0.5 - center.y as f32).abs() < 0.5
                     && area.width > 30.
                     && area.height > 30. =>
             {
@@ -3494,16 +3553,9 @@ fn assert_point_near(actual: Point, expected: Point) {
     assert!(dx < 0.5 && dy < 0.5, "{actual:?} != {expected:?}");
 }
 
-fn assert_point_near_x(actual: Point, expected: f32) {
+fn assert_point_near_x(actual: Point, expected: f64) {
     assert!(
         (actual.x - expected).abs() < 0.5,
-        "{actual:?} != {expected}"
-    );
-}
-
-fn assert_point_near_y(actual: Point, expected: f32) {
-    assert!(
-        (actual.y - expected).abs() < 0.5,
         "{actual:?} != {expected}"
     );
 }

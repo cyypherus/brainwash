@@ -31,12 +31,13 @@ fn main() {
             PaneBuilder::new("main", main_view)
                 .title("Brainwash")
                 .on_frame(frame)
-                .inner_size(760, 560),
+                .inner_size(1060, 760),
         )
         .run();
 }
 
 fn frame(state: &mut GuiState, app: &mut PaneState) {
+    state.collect_audio_retired();
     if state.playing() || matches!(state.mode(), Mode::ProbeEdit { .. }) {
         app.redraw();
     }

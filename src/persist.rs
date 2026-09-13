@@ -1,4 +1,7 @@
-use crate::patch::{self, BinaryOp, Composition, EnvPoint, InputKind, Module, Patch, UnaryOp};
+use crate::patch::{
+    self, BinaryOp, Composition, EnvPoint, InputKind, Module, Patch, SaturationCurve, UnaryOp,
+    Waveform,
+};
 use crate::sample::{Sample, Unit};
 use crate::time::{Duration, Hertz, Samples, Seconds};
 use serde::{Deserialize, Serialize};
@@ -119,6 +122,7 @@ enum FileModule {
     Freq,
     Gate,
     Degree,
+    Expression,
     Constant(f32),
     Unary {
         op: FileUnaryOp,
@@ -130,6 +134,16 @@ enum FileModule {
     },
     Phase {
         frequency: f32,
+    },
+    Oscillator {
+        waveform: Waveform,
+        frequency: f32,
+    },
+    Saturation {
+        curve: SaturationCurve,
+        input: f32,
+        drive: f32,
+        asymmetry: f32,
     },
     Noise,
     Rise {
@@ -403,6 +417,7 @@ impl FileModule {
             Module::Freq => FileModule::Freq,
             Module::Gate => FileModule::Gate,
             Module::Degree => FileModule::Degree,
+            Module::Expression => FileModule::Expression,
             Module::Constant(value) => FileModule::Constant(value.value()),
             Module::Unary { op, input } => FileModule::Unary {
                 op: match op {
@@ -421,6 +436,24 @@ impl FileModule {
             },
             Module::Phase { frequency } => FileModule::Phase {
                 frequency: frequency.value(),
+            },
+            Module::Oscillator {
+                waveform,
+                frequency,
+            } => FileModule::Oscillator {
+                waveform,
+                frequency: frequency.value(),
+            },
+            Module::Saturation {
+                curve,
+                input,
+                drive,
+                asymmetry,
+            } => FileModule::Saturation {
+                curve,
+                input: input.value(),
+                drive: drive.value(),
+                asymmetry: asymmetry.value(),
             },
             Module::Noise => FileModule::Noise,
             Module::Rise { gate, time } => FileModule::Rise {
@@ -536,6 +569,7 @@ impl FileModule {
             FileModule::Freq => Module::Freq,
             FileModule::Gate => Module::Gate,
             FileModule::Degree => Module::Degree,
+            FileModule::Expression => Module::Expression,
             FileModule::Constant(value) => {
                 Module::Constant(Sample::new(value).ok_or(LoadError::Value)?)
             }
@@ -556,6 +590,24 @@ impl FileModule {
             },
             FileModule::Phase { frequency } => Module::Phase {
                 frequency: Hertz::new(frequency).ok_or(LoadError::Value)?,
+            },
+            FileModule::Oscillator {
+                waveform,
+                frequency,
+            } => Module::Oscillator {
+                waveform,
+                frequency: Hertz::new(frequency).ok_or(LoadError::Value)?,
+            },
+            FileModule::Saturation {
+                curve,
+                input,
+                drive,
+                asymmetry,
+            } => Module::Saturation {
+                curve,
+                input: Sample::new(input).ok_or(LoadError::Value)?,
+                drive: Sample::new(drive).ok_or(LoadError::Value)?,
+                asymmetry: Sample::new(asymmetry).ok_or(LoadError::Value)?,
             },
             FileModule::Noise => Module::Noise,
             FileModule::Rise { gate, time } => Module::Rise {
@@ -821,6 +873,48 @@ mod tests {
             ["First", "Second"]
         );
         assert_ne!(decoded.outputs()[0].port(), decoded.outputs()[1].port());
+    }
+
+    #[test]
+    fn variant_parameters_round_trip_and_reject_unknown_variants() {
+        for waveform in [
+            Waveform::Sine,
+            Waveform::Square,
+            Waveform::Triangle,
+            Waveform::Saw,
+            Waveform::ReverseSaw,
+        ] {
+            let module = Module::Oscillator {
+                waveform,
+                frequency: Hertz::new(440.0).unwrap(),
+            };
+            assert_eq!(
+                module_from_str(&module_to_string(&module).unwrap()).unwrap(),
+                module
+            );
+        }
+        for curve in [
+            SaturationCurve::Tube,
+            SaturationCurve::Tape,
+            SaturationCurve::Fuzz,
+            SaturationCurve::Fold,
+            SaturationCurve::Clip,
+        ] {
+            let module = Module::Saturation {
+                curve,
+                input: Sample::new(-0.3).unwrap(),
+                drive: Sample::new(2.0).unwrap(),
+                asymmetry: Sample::new(0.1).unwrap(),
+            };
+            assert_eq!(
+                module_from_str(&module_to_string(&module).unwrap()).unwrap(),
+                module
+            );
+        }
+        assert!(module_from_str("Oscillator(waveform:Unknown,frequency:440.0)").is_err());
+        assert!(
+            module_from_str("Saturation(curve:Unknown,input:0.0,drive:2.0,asymmetry:0.0)").is_err()
+        );
     }
 
     #[test]

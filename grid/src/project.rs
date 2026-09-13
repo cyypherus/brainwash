@@ -5,17 +5,16 @@ use std::io;
 use std::path::Path;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Project {
+    pub version: u32,
     #[serde(default = "default_bpm")]
     pub bpm: f32,
-    #[serde(default = "default_bars")]
-    pub bars: f32,
     #[serde(default)]
     pub scale_idx: usize,
     #[serde(default)]
     pub modules: Vec<ModuleDef>,
-    #[serde(default)]
-    pub track: Option<String>,
+    pub sequence: brainwash::sequence::Sequence,
     #[serde(default)]
     pub compositions: Vec<CompositionDef>,
 }
@@ -76,6 +75,7 @@ pub enum StandardModule {
     Freq,
     Gate,
     Degree,
+    Expression,
     Phase,
     Noise,
     Rise,
@@ -215,12 +215,40 @@ pub enum ModuleParams {
     },
 }
 
-fn default_bpm() -> f32 {
-    120.0
+pub fn scale_from_index(index: usize) -> brainwash::scale::Scale {
+    use brainwash::scale::*;
+    match index {
+        0 => chromatic(),
+        1 => cmaj(),
+        2 => cmin(),
+        3 => csharpmaj(),
+        4 => csharpmin(),
+        5 => dmaj(),
+        6 => dmin(),
+        7 => dsharpmaj(),
+        8 => dsharpmin(),
+        9 => emaj(),
+        10 => emin(),
+        11 => fmaj(),
+        12 => fmin(),
+        13 => fsharpmaj(),
+        14 => fsharpmin(),
+        15 => gmaj(),
+        16 => gmin(),
+        17 => gsharpmaj(),
+        18 => gsharpmin(),
+        19 => amaj(),
+        20 => amin(),
+        21 => asharpmaj(),
+        22 => asharpmin(),
+        23 => bmaj(),
+        24 => bmin(),
+        _ => cmin(),
+    }
 }
 
-fn default_bars() -> f32 {
-    1.0
+fn default_bpm() -> f32 {
+    120.0
 }
 
 fn is_right(orientation: &Orientation) -> bool {
@@ -256,7 +284,7 @@ fn project_params_match(kind: ModuleKind, params: &ModuleParams) -> bool {
                 ModuleParams::None
             )
             | (
-                ModuleKind::Standard(StandardModule::Degree),
+                ModuleKind::Standard(StandardModule::Degree | StandardModule::Expression),
                 ModuleParams::None
             )
             | (
@@ -430,7 +458,9 @@ fn validate_module(module: &ModuleDef) -> Result<(), String> {
 
 fn validate_project(project: &Project) -> Result<(), String> {
     validate_finite(project.bpm)?;
-    validate_finite(project.bars)?;
+    if project.version != 1 {
+        return Err(format!("unsupported project version {}", project.version));
+    }
     for module in &project.modules {
         validate_module(module)?;
     }
@@ -467,9 +497,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn project_version_is_required_and_supported() {
+        assert!(from_str("(sequence:(strokes:[],bars:1))").is_err());
+        assert!(
+            from_str("(version:0,sequence:(strokes:[],bars:1))")
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported project version")
+        );
+        assert!(from_str("(version:2,sequence:(strokes:[],bars:1))").is_err());
+        assert!(from_str("(version:1,track:Some(\"0\"),sequence:(strokes:[],bars:1))").is_err());
+        let project = from_str("(version:1,sequence:(strokes:[],bars:1))").unwrap();
+        let encoded = ron::to_string(&project).unwrap();
+        assert!(encoded.contains("version:1"));
+        assert_eq!(from_str(&encoded).unwrap().version, 1);
+    }
+
+    #[test]
     fn project_rejects_module_kind_and_params_disagreement() {
         let error = from_str(
             r#"(
+                version: 1,
+                sequence: (strokes: [], bars: 1),
                 modules: [(
                     id: 1,
                     kind: Standard(Output),
@@ -488,12 +537,15 @@ mod tests {
     fn project_rejects_invalid_inactive_time_value() {
         let error = from_str(
             r#"(
+                version: 1,
+                sequence: (strokes: [], bars: 1),
                 modules: [(
                     id: 1,
                     kind: Standard(Rise),
                     x: 0,
                     y: 0,
                     params: Rise(
+                        gate: 0.0,
                         time: (
                             unit: Seconds,
                             seconds: 0.1,

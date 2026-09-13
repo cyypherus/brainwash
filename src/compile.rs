@@ -2,7 +2,7 @@ use crate::delay::Delay;
 use crate::osc::{Noise, Phase};
 use crate::patch::{
     BinaryOp, EnvPoint, InputKind, InputPort, Module, ModuleId, OutputPort, Patch, UnaryOp,
-    envelope_value,
+    Waveform, envelope_value,
 };
 use crate::sample::{Frame, Sample, Unit};
 use crate::time::{Duration, Hertz, SampleRate};
@@ -47,6 +47,7 @@ pub struct PatchControls {
     pub frequency: Option<Hertz>,
     pub gate: f32,
     pub degree: i32,
+    pub expression: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -65,6 +66,7 @@ enum Node {
     Freq,
     Gate,
     Degree,
+    Expression,
     Constant(Sample),
     Unary {
         op: UnaryOp,
@@ -250,6 +252,32 @@ fn expand(
     let mut modules = HashMap::new();
 
     for (id, module) in source.module_entries() {
+        let lowered;
+        let module = match module {
+            Module::Oscillator {
+                waveform,
+                frequency,
+            } => {
+                lowered = match waveform {
+                    Waveform::Sine => crate::preset::sine(*frequency),
+                    Waveform::Square => crate::preset::square(*frequency),
+                    Waveform::Triangle => crate::preset::triangle(*frequency),
+                    Waveform::Saw => crate::preset::saw(*frequency),
+                    Waveform::ReverseSaw => crate::preset::reverse_saw(*frequency),
+                };
+                &lowered
+            }
+            Module::Saturation {
+                curve,
+                input,
+                drive,
+                asymmetry,
+            } => {
+                lowered = crate::preset::saturation(*curve, *input, *drive, *asymmetry);
+                &lowered
+            }
+            _ => module,
+        };
         match module {
             Module::Composition(composition) => {
                 let nested = expand(composition.patch(), target, false, meters)?;
@@ -343,6 +371,7 @@ impl Default for PatchControls {
             frequency: None,
             gate: 0.0,
             degree: 0,
+            expression: 0.0,
         }
     }
 }
@@ -360,10 +389,12 @@ impl CompiledPatch {
     }
 
     pub fn new(patch: &Patch, rate: SampleRate) -> Result<Self, CompileError> {
-        if patch
-            .module_entries()
-            .any(|(_, module)| matches!(module, Module::Composition(_)))
-        {
+        if patch.module_entries().any(|(_, module)| {
+            matches!(
+                module,
+                Module::Composition(_) | Module::Oscillator { .. } | Module::Saturation { .. }
+            )
+        }) {
             let (patch, meter_map) = flatten(patch)?;
             let mut compiled = Self::compile(&patch, rate, None)?;
             for (flattened, module, input) in meter_map {
@@ -471,7 +502,15 @@ impl CompiledPatch {
         let mut nodes = Vec::with_capacity(order.len());
         for module_index in order.iter().copied() {
             let module = &patch.modules()[module_index].1;
-            if let Module::DelayTap(tap) = module {
+            if let Module::Binary {
+                op: BinaryOp::Add,
+                a,
+                b,
+            } = module
+                && inputs[nodes.len()].iter().all(Option::is_none)
+            {
+                nodes.push(Node::Constant(a.add(*b)));
+            } else if let Module::DelayTap(tap) = module {
                 let delay = rank_by_module
                     .iter()
                     .find_map(|(id, rank)| (*id == tap.delay()).then_some(*rank))
@@ -810,6 +849,7 @@ impl Node {
             )
             .unwrap_or(Sample::ZERO),
             Node::Gate => Sample::new(controls.gate).unwrap_or(Sample::ZERO),
+            Node::Expression => Sample::new(controls.expression).unwrap_or_default(),
             Node::Degree => Sample::new(controls.degree as f32).unwrap_or(Sample::ZERO),
             Node::Constant(value) => *value,
             Node::Unary { op, input: default } => {
@@ -1145,6 +1185,11 @@ fn fade(old: Frame, next: Frame, position: usize) -> Frame {
     )
 }
 
+pub(crate) fn check_composition_cycles(patch: &Patch) -> Result<(), CompileError> {
+    let (flattened, _) = flatten(patch)?;
+    compile_order(&flattened).map(|_| ())
+}
+
 fn compile_order(patch: &Patch) -> Result<Vec<usize>, CompileError> {
     let mut indegree = vec![0usize; patch.modules().len()];
     let mut outgoing = vec![Vec::new(); patch.modules().len()];
@@ -1158,6 +1203,9 @@ fn compile_order(patch: &Patch) -> Result<Vec<usize>, CompileError> {
         let Module::DelayTap(tap) = module else {
             continue;
         };
+        let delay_index = module_index(patch, tap.delay())?;
+        outgoing[tap_index].push(delay_index);
+        indegree[delay_index] += 1;
         let Some(connection) = patch.connections().iter().find(|connection| {
             connection.input.module == tap.delay() && connection.input.input == InputKind::Time
         }) else {
@@ -1217,6 +1265,7 @@ fn create_node(
         Module::Freq => Node::Freq,
         Module::Gate => Node::Gate,
         Module::Degree => Node::Degree,
+        Module::Expression => Node::Expression,
         Module::Constant(value) => Node::Constant(*value),
         Module::Unary { op, input } => Node::Unary {
             op: *op,
@@ -1318,7 +1367,9 @@ fn create_node(
             samples: Arc::clone(samples),
         },
         Module::Probe { input } => Node::Probe { input: *input },
-        Module::Composition(_) => return Err(CompileError::InvalidInput),
+        Module::Composition(_) | Module::Oscillator { .. } | Module::Saturation { .. } => {
+            return Err(CompileError::InvalidInput);
+        }
     })
 }
 
@@ -1401,6 +1452,367 @@ mod tests {
         });
         patch.output(patch.output_port(osc, 0).unwrap()).unwrap();
         patch
+    }
+
+    #[test]
+    fn unconnected_add_defaults_fold_without_changing_audio_or_meters() {
+        for connected in [false, true] {
+            let mut patch = Patch::new();
+            let a = Sample::new(0.02495).unwrap();
+            let b = Sample::new(0.00005).unwrap();
+            let add = patch.insert(Module::Binary {
+                op: BinaryOp::Add,
+                a,
+                b,
+            });
+            if connected {
+                let gate = patch.insert(Module::Gate);
+                patch
+                    .connect_input(
+                        patch.output_port(gate, 0).unwrap(),
+                        patch.input_port(add, InputKind::A).unwrap(),
+                    )
+                    .unwrap();
+            }
+            let probe = patch.insert(Module::Probe {
+                input: Sample::ZERO,
+            });
+            patch
+                .connect(patch.output_port(add, 0).unwrap(), probe)
+                .unwrap();
+            patch.output(patch.output_port(probe, 0).unwrap()).unwrap();
+            let mut compiled =
+                CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+            let rank = compiled
+                .meters
+                .iter()
+                .find(|(id, _, _)| *id == add)
+                .unwrap()
+                .1;
+            assert_eq!(
+                matches!(compiled.nodes[rank], Node::Constant(_)),
+                !connected
+            );
+            let mut reference = compiled.clone();
+            reference.nodes[rank] = Node::Binary {
+                op: BinaryOp::Add,
+                a: a.value(),
+                b: b.value(),
+            };
+            for gate in [0.0, 1.0, 0.5, 0.0] {
+                let controls = PatchControls {
+                    gate,
+                    ..PatchControls::default()
+                };
+                assert_eq!(
+                    compiled.next_with_controls(controls),
+                    reference.next_with_controls(controls)
+                );
+                assert_eq!(
+                    compiled.probe_values().collect::<Vec<_>>(),
+                    reference.probe_values().collect::<Vec<_>>()
+                );
+                let mut actual_meters = Vec::new();
+                let mut expected_meters = Vec::new();
+                compiled
+                    .visit_input_values(|id, input, value| actual_meters.push((id, input, value)));
+                reference.visit_input_values(|id, input, value| {
+                    expected_meters.push((id, input, value))
+                });
+                assert_eq!(actual_meters, expected_meters);
+            }
+        }
+    }
+
+    #[test]
+    fn oscillator_variants_match_compositions_with_default_and_connected_frequency() {
+        for (waveform, preset) in [
+            (Waveform::Sine, crate::preset::sine as fn(Hertz) -> Module),
+            (Waveform::Square, crate::preset::square),
+            (Waveform::Triangle, crate::preset::triangle),
+            (Waveform::Saw, crate::preset::saw),
+            (Waveform::ReverseSaw, crate::preset::reverse_saw),
+        ] {
+            for connected in [false, true] {
+                let frequency = Hertz::new(440.0).unwrap();
+                let mut patches = [
+                    Module::Oscillator {
+                        waveform,
+                        frequency,
+                    },
+                    preset(frequency),
+                ]
+                .map(|module| {
+                    let mut patch = Patch::new();
+                    let oscillator = patch.insert(module);
+                    if connected {
+                        let control = patch.insert(Module::Constant(Sample::new(123.0).unwrap()));
+                        patch
+                            .connect_input(
+                                patch.output_port(control, 0).unwrap(),
+                                patch.input_port(oscillator, InputKind::Freq).unwrap(),
+                            )
+                            .unwrap();
+                    }
+                    patch
+                        .output(patch.output_port(oscillator, 0).unwrap())
+                        .unwrap();
+                    CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap()
+                });
+                for _ in 0..1024 {
+                    assert_eq!(patches[0].next(), patches[1].next(), "{waveform:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn saturation_variants_apply_default_and_connected_controls() {
+        use crate::patch::SaturationCurve;
+        for (curve, preset) in [
+            (SaturationCurve::Tube, crate::preset::tube as fn() -> Module),
+            (SaturationCurve::Tape, crate::preset::tape),
+            (SaturationCurve::Fuzz, crate::preset::fuzz),
+            (SaturationCurve::Fold, crate::preset::fold),
+            (SaturationCurve::Clip, crate::preset::clip),
+        ] {
+            for connected in [false, true] {
+                for signal in [-2.0, -0.2, 0.0, 0.3, 2.0] {
+                    let drive = if connected { 1.5 } else { 2.0 };
+                    let asymmetry = if connected { -0.1 } else { 0.2 };
+                    let mut patch = Patch::new();
+                    let saturation = patch.insert(Module::Saturation {
+                        curve,
+                        input: Sample::new(if connected { 0.0 } else { signal }).unwrap(),
+                        drive: Sample::new(2.0).unwrap(),
+                        asymmetry: Sample::new(0.2).unwrap(),
+                    });
+                    if connected {
+                        for (kind, value) in [
+                            (InputKind::In, signal),
+                            (InputKind::Drive, drive),
+                            (InputKind::Asym, asymmetry),
+                        ] {
+                            let control =
+                                patch.insert(Module::Constant(Sample::new(value).unwrap()));
+                            patch
+                                .connect_input(
+                                    patch.output_port(control, 0).unwrap(),
+                                    patch.input_port(saturation, kind).unwrap(),
+                                )
+                                .unwrap();
+                        }
+                    }
+                    patch
+                        .output(patch.output_port(saturation, 0).unwrap())
+                        .unwrap();
+                    let mut actual =
+                        CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+                    let mut reference = Patch::new();
+                    let signal = reference.insert(Module::Constant(
+                        Sample::new((signal + asymmetry) * drive).unwrap(),
+                    ));
+                    let shape = reference.insert(preset());
+                    reference
+                        .connect_input(
+                            reference.output_port(signal, 0).unwrap(),
+                            reference.input_port(shape, InputKind::In).unwrap(),
+                        )
+                        .unwrap();
+                    reference
+                        .output(reference.output_port(shape, 0).unwrap())
+                        .unwrap();
+                    let mut expected =
+                        CompiledPatch::new(&reference, SampleRate::new(44_100).unwrap()).unwrap();
+                    assert_eq!(actual.next(), expected.next(), "{curve:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn delay_taps_read_before_writes_regardless_of_source_order_and_nesting() {
+        for source_first in [false, true] {
+            for nested in [false, true] {
+                let mut patch = Patch::new();
+                let source = source_first
+                    .then(|| patch.insert(Module::Constant(Sample::new(0.25).unwrap())));
+                let delay = patch.insert(Module::Delay {
+                    input: Sample::ZERO,
+                    time: Duration::Samples(crate::time::Samples::new(1)),
+                    feedback: Unit::ZERO,
+                });
+                let tap = patch
+                    .insert_delay_tap(delay, Unit::new(1.0).unwrap())
+                    .unwrap();
+                let source = source
+                    .unwrap_or_else(|| patch.insert(Module::Constant(Sample::new(0.25).unwrap())));
+                patch
+                    .connect_input(
+                        patch.output_port(source, 0).unwrap(),
+                        patch.input_port(delay, InputKind::In).unwrap(),
+                    )
+                    .unwrap();
+                patch
+                    .connect_input(
+                        patch.output_port(source, 0).unwrap(),
+                        patch.input_port(delay, InputKind::Time).unwrap(),
+                    )
+                    .unwrap();
+                let output = patch.output_port(tap, 0).unwrap();
+                patch.output(output).unwrap();
+                if nested {
+                    let composition = crate::patch::Composition::new(
+                        "Delay Channel",
+                        patch,
+                        [],
+                        [("Output".into(), output)],
+                    )
+                    .unwrap();
+                    patch = Patch::new();
+                    let module = patch.insert(Module::Composition(Box::new(composition)));
+                    patch.output(patch.output_port(module, 0).unwrap()).unwrap();
+                }
+                let mut compiled =
+                    CompiledPatch::new(&patch, SampleRate::new(10).unwrap()).unwrap();
+                for expected in [0.0, 0.25, 0.25] {
+                    assert_eq!(
+                        compiled.next().left().value(),
+                        expected,
+                        "source_first={source_first}, nested={nested}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nested_delay_feedback_preserves_causality_and_rejects_time_feedback() {
+        use crate::patch::{Composition, CompositionError};
+        let mut channel = Patch::new();
+        let signal = channel.insert(Module::Input {
+            kind: InputKind::In,
+            default: Sample::ZERO,
+        });
+        let time = channel.insert(Module::Input {
+            kind: InputKind::Time,
+            default: Sample::new(0.1).unwrap(),
+        });
+        let delay = channel.insert(Module::Delay {
+            input: Sample::ZERO,
+            time: Duration::Samples(crate::time::Samples::new(1)),
+            feedback: Unit::ZERO,
+        });
+        let tap = channel
+            .insert_delay_tap(delay, Unit::new(1.0).unwrap())
+            .unwrap();
+        for (source, kind) in [(signal, InputKind::In), (time, InputKind::Time)] {
+            channel
+                .connect_input(
+                    channel.output_port(source, 0).unwrap(),
+                    channel.input_port(delay, kind).unwrap(),
+                )
+                .unwrap();
+        }
+        let output = channel.output_port(tap, 0).unwrap();
+        channel.output(output).unwrap();
+        let mut channel = Composition::new(
+            "Channel",
+            channel,
+            [
+                ("Input".into(), InputKind::In, signal),
+                ("Time".into(), InputKind::Time, time),
+            ],
+            [("Output".into(), output)],
+        )
+        .unwrap();
+        for _ in 0..2 {
+            let mut wrapper = Patch::new();
+            let inner = wrapper.insert(Module::Composition(Box::new(channel)));
+            let inputs = [
+                ("Input", InputKind::In, 0.0),
+                ("Time", InputKind::Time, 0.1),
+            ]
+            .map(|(label, kind, value)| {
+                let input = wrapper.insert(Module::Input {
+                    kind,
+                    default: Sample::new(value).unwrap(),
+                });
+                wrapper
+                    .connect_input(
+                        wrapper.output_port(input, 0).unwrap(),
+                        wrapper.input_port(inner, kind).unwrap(),
+                    )
+                    .unwrap();
+                (label.into(), kind, input)
+            });
+            let output = wrapper.output_port(inner, 0).unwrap();
+            wrapper.output(output).unwrap();
+            channel = Composition::new(
+                "Nested Channel",
+                wrapper,
+                inputs,
+                [("Output".into(), output)],
+            )
+            .unwrap();
+        }
+        for kind in [InputKind::In, InputKind::Time] {
+            let mut feedback = Patch::new();
+            let channel = feedback.insert(Module::Composition(Box::new(channel.clone())));
+            let sum = feedback.insert(Module::Binary {
+                op: BinaryOp::Add,
+                a: Sample::new(0.25).unwrap(),
+                b: Sample::ZERO,
+            });
+            let output = feedback.output_port(channel, 0).unwrap();
+            feedback
+                .connect_input(output, feedback.input_port(sum, InputKind::B).unwrap())
+                .unwrap();
+            feedback
+                .connect_input(
+                    feedback.output_port(sum, 0).unwrap(),
+                    feedback.input_port(channel, kind).unwrap(),
+                )
+                .unwrap();
+            feedback.output(output).unwrap();
+            let composition = Composition::new(
+                "Feedback",
+                feedback.clone(),
+                [],
+                [("Output".into(), output)],
+            );
+            if kind == InputKind::Time {
+                assert_eq!(composition, Err(CompositionError::Cycle));
+                assert_eq!(
+                    CompiledPatch::new(&feedback, SampleRate::new(10).unwrap()),
+                    Err(CompileError::Cycle)
+                );
+            } else {
+                let mut patch = Patch::new();
+                let module = patch.insert(Module::Composition(Box::new(composition.unwrap())));
+                patch.output(patch.output_port(module, 0).unwrap()).unwrap();
+                let mut compiled =
+                    CompiledPatch::new(&patch, SampleRate::new(10).unwrap()).unwrap();
+                for expected in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                    assert_eq!(compiled.next().left().value(), expected);
+                }
+            }
+        }
+        let mut cycle = Patch::new();
+        let module = cycle.insert(crate::preset::gain(crate::patch::Gain::new(0.5).unwrap()));
+        let output = cycle.output_port(module, 0).unwrap();
+        cycle
+            .connect_input(output, cycle.input_port(module, InputKind::In).unwrap())
+            .unwrap();
+        cycle.output(output).unwrap();
+        assert_eq!(
+            Composition::new("Cycle", cycle.clone(), [], [("Output".into(), output)]),
+            Err(CompositionError::Cycle)
+        );
+        assert_eq!(
+            CompiledPatch::new(&cycle, SampleRate::new(10).unwrap()),
+            Err(CompileError::Cycle)
+        );
     }
 
     #[test]

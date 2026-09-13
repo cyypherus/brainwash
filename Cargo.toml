@@ -50,9 +50,9 @@ criterion = { version = "0.5", features = ["html_reports"] }
 name = "generate_wavetables"
 path = "src/bin/generate_wavetables.rs"
 
-# [[bench]]
-# name = "sequence_bench"
-# harness = false
+[[bench]]
+name = "sequence_bench"
+harness = false
 
 # [[bench]]
 # name = "oscillator_bench"

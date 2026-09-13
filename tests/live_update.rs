@@ -3,8 +3,9 @@ use brainwash::compile::{CompiledPatch, PatchControls, PatchEngine, UpdateReject
 use brainwash::live::RealtimePatchEngine;
 use brainwash::patch::{InputKind, Module, Patch};
 use brainwash::scale::cmin;
+use brainwash::sequence::{Player, parse_sequence};
 use brainwash::time::{Hertz, SampleRate};
-use brainwash::track::Track;
+use std::num::NonZeroU16;
 
 #[test]
 fn patch_engine_plays_and_updates_patch() {
@@ -174,6 +175,7 @@ fn patch_controls_drive_oscillator_frequency() {
         frequency: Hertz::new(880.0),
         gate: 1.0,
         degree: 0,
+        expression: 0.0,
     };
 
     assert_no_alloc(|| {
@@ -184,16 +186,18 @@ fn patch_controls_drive_oscillator_frequency() {
 }
 
 #[test]
-fn track_play_into_does_not_allocate() {
-    let mut track = Track::parse("(0/2/4/7)", &cmin()).unwrap();
-    let mut events = [None; 64];
-    track.play_into(0.24, &mut events);
-
+fn sequencing_does_not_allocate() {
+    let mut player = Player::new(
+        parse_sequence("(0/2/4/7)", &cmin()).unwrap(),
+        NonZeroU16::new(120).unwrap(),
+        SampleRate::new(1000).unwrap(),
+        cmin(),
+    );
     assert_no_alloc(|| {
-        let count = track.play_into(0.26, &mut events);
-        assert!(count > 0);
-        let count = track.play_into(0.27, &mut events);
-        assert!(count > 0);
+        for _ in 0..4000 {
+            let controls = player.advance();
+            assert!(controls.iter().any(|control| control.frequency.is_some()));
+        }
     });
 }
 

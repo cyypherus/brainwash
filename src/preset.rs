@@ -125,18 +125,41 @@ pub fn degree_gate(target: i32) -> Module {
     composition("Degree Gate", patch, [])
 }
 
-pub fn attenuator(gain: Unit) -> Module {
+pub fn gain(gain: Gain) -> Module {
     let mut patch = Patch::new();
     let signal = input(&mut patch, InputKind::In, 0.0);
+    let gain_input = input(&mut patch, InputKind::Gain, gain.value());
     let output = binary(&mut patch, BinaryOp::Multiply, 0.0, gain.value());
     connect(&mut patch, signal, output, InputKind::A);
+    connect(&mut patch, gain_input, output, InputKind::B);
     set_output(&mut patch, output);
-    composition("Attenuator", patch, [("Input", InputKind::In, signal)])
+    composition(
+        "Gain",
+        patch,
+        [
+            ("Input", InputKind::In, signal),
+            ("Gain", InputKind::Gain, gain_input),
+        ],
+    )
 }
 
 pub fn distortion(drive: Sample, asymmetry: Sample) -> Module {
+    saturation(
+        crate::patch::SaturationCurve::Tube,
+        Sample::ZERO,
+        drive,
+        asymmetry,
+    )
+}
+
+pub(crate) fn saturation(
+    curve: crate::patch::SaturationCurve,
+    signal: Sample,
+    drive: Sample,
+    asymmetry: Sample,
+) -> Module {
     let mut patch = Patch::new();
-    let signal = input(&mut patch, InputKind::In, 0.0);
+    let signal = input(&mut patch, InputKind::In, signal.value());
     let drive_input = input(&mut patch, InputKind::Drive, drive.value());
     let asymmetry_input = input(&mut patch, InputKind::Asym, asymmetry.value());
     let offset = binary(&mut patch, BinaryOp::Add, 0.0, asymmetry.value());
@@ -145,7 +168,13 @@ pub fn distortion(drive: Sample, asymmetry: Sample) -> Module {
     let driven = binary(&mut patch, BinaryOp::Multiply, 0.0, drive.value());
     connect(&mut patch, offset, driven, InputKind::A);
     connect(&mut patch, drive_input, driven, InputKind::B);
-    let shaped = patch.insert(tube());
+    let shaped = patch.insert(match curve {
+        crate::patch::SaturationCurve::Tube => tube(),
+        crate::patch::SaturationCurve::Tape => tape(),
+        crate::patch::SaturationCurve::Fuzz => fuzz(),
+        crate::patch::SaturationCurve::Fold => fold(),
+        crate::patch::SaturationCurve::Clip => clip(),
+    });
     connect(&mut patch, driven, shaped, InputKind::In);
     set_output(&mut patch, shaped);
     composition(
@@ -249,44 +278,61 @@ pub fn fold() -> Module {
     composition("Fold", patch, [("Input", InputKind::In, signal)])
 }
 
-pub fn compressor(
-    threshold: Unit,
-    ratio: CompressorRatio,
-    attack: Seconds,
-    release: Seconds,
-    makeup: Gain,
-) -> Module {
+pub fn scale_offset(gain: Sample, offset: Sample) -> Module {
     let mut patch = Patch::new();
-    let input = patch.insert(Module::Input {
-        kind: InputKind::In,
-        default: Sample::ZERO,
-    });
-    let threshold_input = patch.insert(Module::Input {
-        kind: InputKind::Thresh,
-        default: Sample::new(threshold.value()).unwrap(),
-    });
-    let ratio_input = patch.insert(Module::Input {
-        kind: InputKind::Ratio,
-        default: Sample::new(ratio.value()).unwrap(),
-    });
-    let attack_input = patch.insert(Module::Input {
-        kind: InputKind::Attack,
-        default: Sample::new(attack.value()).unwrap(),
-    });
-    let release_input = patch.insert(Module::Input {
-        kind: InputKind::Release,
-        default: Sample::new(release.value()).unwrap(),
-    });
-    let makeup_input = patch.insert(Module::Input {
-        kind: InputKind::Gain,
-        default: Sample::new(makeup.value()).unwrap(),
-    });
+    let signal = input(&mut patch, InputKind::In, 0.0);
+    let gain_input = input(&mut patch, InputKind::Gain, gain.value());
+    let offset_input = input(&mut patch, InputKind::Value, offset.value());
+    let scaled = binary(&mut patch, BinaryOp::Multiply, 0.0, gain.value());
+    connect(&mut patch, signal, scaled, InputKind::A);
+    connect(&mut patch, gain_input, scaled, InputKind::B);
+    let output = binary(&mut patch, BinaryOp::Add, 0.0, offset.value());
+    connect(&mut patch, offset_input, output, InputKind::B);
+    connect(&mut patch, scaled, output, InputKind::A);
+    set_output(&mut patch, output);
+    composition(
+        "Scale / Offset",
+        patch,
+        [
+            ("Input", InputKind::In, signal),
+            ("Gain", InputKind::Gain, gain_input),
+            ("Offset", InputKind::Value, offset_input),
+        ],
+    )
+}
+
+pub fn envelope_follower(attack: Seconds, release: Seconds) -> Module {
+    let mut patch = Patch::new();
+    let signal = input(&mut patch, InputKind::In, 0.0);
+    let attack_input = input(&mut patch, InputKind::Attack, attack.value());
+    let release_input = input(&mut patch, InputKind::Release, release.value());
     let absolute = unary(&mut patch, UnaryOp::Absolute, 0.0);
     let envelope = patch.insert(Module::Slew {
         input: Sample::ZERO,
         rise: attack,
         fall: release,
     });
+    connect(&mut patch, signal, absolute, InputKind::In);
+    connect(&mut patch, absolute, envelope, InputKind::In);
+    connect(&mut patch, attack_input, envelope, InputKind::Rise);
+    connect(&mut patch, release_input, envelope, InputKind::Fall);
+    set_output(&mut patch, envelope);
+    composition(
+        "Envelope Follower",
+        patch,
+        [
+            ("Input", InputKind::In, signal),
+            ("Attack", InputKind::Attack, attack_input),
+            ("Release", InputKind::Release, release_input),
+        ],
+    )
+}
+
+pub fn compressor_gain(threshold: Unit, ratio: CompressorRatio) -> Module {
+    let mut patch = Patch::new();
+    let level = input(&mut patch, InputKind::In, 0.0);
+    let threshold_input = input(&mut patch, InputKind::Thresh, threshold.value());
+    let ratio_input = input(&mut patch, InputKind::Ratio, ratio.value());
     let over = binary(&mut patch, BinaryOp::Divide, 0.0, threshold.value());
     let inverse_ratio = binary(&mut patch, BinaryOp::Divide, 1.0, ratio.value());
     let exponent = binary(&mut patch, BinaryOp::Subtract, 0.0, 1.0);
@@ -297,54 +343,69 @@ pub fn compressor(
         a: Sample::new(1.0).unwrap(),
         b: Sample::ZERO,
     });
-    let apply_reduction = patch.insert(Module::Binary {
-        op: BinaryOp::Multiply,
-        a: Sample::ZERO,
-        b: Sample::ZERO,
-    });
-    let apply_makeup = patch.insert(Module::Binary {
-        op: BinaryOp::Multiply,
-        a: Sample::ZERO,
-        b: Sample::new(makeup.value()).unwrap(),
-    });
-
-    connect(&mut patch, input, absolute, InputKind::In);
-    connect(&mut patch, absolute, envelope, InputKind::In);
-    connect(&mut patch, attack_input, envelope, InputKind::Rise);
-    connect(&mut patch, release_input, envelope, InputKind::Fall);
-    connect(&mut patch, envelope, over, InputKind::A);
+    connect(&mut patch, level, over, InputKind::A);
     connect(&mut patch, threshold_input, over, InputKind::B);
     connect(&mut patch, ratio_input, inverse_ratio, InputKind::B);
     connect(&mut patch, inverse_ratio, exponent, InputKind::A);
     connect(&mut patch, over, compressed, InputKind::A);
     connect(&mut patch, exponent, compressed, InputKind::B);
-    connect(&mut patch, envelope, above_threshold, InputKind::A);
+    connect(&mut patch, level, above_threshold, InputKind::A);
     connect(&mut patch, threshold_input, above_threshold, InputKind::B);
     connect(&mut patch, above_threshold, reduction, InputKind::Select);
     connect(&mut patch, compressed, reduction, InputKind::B);
-    connect(&mut patch, input, apply_reduction, InputKind::A);
-    connect(&mut patch, reduction, apply_reduction, InputKind::B);
-    connect(&mut patch, apply_reduction, apply_makeup, InputKind::A);
-    connect(&mut patch, makeup_input, apply_makeup, InputKind::B);
-    set_output(&mut patch, apply_makeup);
-    let composition_output = patch.output_id().unwrap();
+    set_output(&mut patch, reduction);
+    composition(
+        "Gain Computer",
+        patch,
+        [
+            ("Level", InputKind::In, level),
+            ("Threshold", InputKind::Thresh, threshold_input),
+            ("Ratio", InputKind::Ratio, ratio_input),
+        ],
+    )
+}
 
-    Module::Composition(Box::new(
-        Composition::new(
-            "Compressor",
-            patch,
-            [
-                ("Input".to_string(), InputKind::In, input),
-                ("Threshold".to_string(), InputKind::Thresh, threshold_input),
-                ("Ratio".to_string(), InputKind::Ratio, ratio_input),
-                ("Attack".to_string(), InputKind::Attack, attack_input),
-                ("Release".to_string(), InputKind::Release, release_input),
-                ("Makeup".to_string(), InputKind::Gain, makeup_input),
-            ],
-            [("Output".to_string(), composition_output)],
-        )
-        .unwrap(),
-    ))
+pub fn compressor(
+    threshold: Unit,
+    ratio: CompressorRatio,
+    attack: Seconds,
+    release: Seconds,
+    makeup: Gain,
+) -> Module {
+    let mut patch = Patch::new();
+    let signal = input(&mut patch, InputKind::In, 0.0);
+    let threshold_input = input(&mut patch, InputKind::Thresh, threshold.value());
+    let ratio_input = input(&mut patch, InputKind::Ratio, ratio.value());
+    let attack_input = input(&mut patch, InputKind::Attack, attack.value());
+    let release_input = input(&mut patch, InputKind::Release, release.value());
+    let makeup_input = input(&mut patch, InputKind::Gain, makeup.value());
+    let envelope = patch.insert(envelope_follower(attack, release));
+    connect(&mut patch, signal, envelope, InputKind::In);
+    connect(&mut patch, attack_input, envelope, InputKind::Attack);
+    connect(&mut patch, release_input, envelope, InputKind::Release);
+    let reduction = patch.insert(compressor_gain(threshold, ratio));
+    connect(&mut patch, envelope, reduction, InputKind::In);
+    connect(&mut patch, threshold_input, reduction, InputKind::Thresh);
+    connect(&mut patch, ratio_input, reduction, InputKind::Ratio);
+    let apply_reduction = patch.insert(gain(Gain::new(1.0).unwrap()));
+    connect(&mut patch, signal, apply_reduction, InputKind::In);
+    connect(&mut patch, reduction, apply_reduction, InputKind::Gain);
+    let apply_makeup = patch.insert(gain(makeup));
+    connect(&mut patch, apply_reduction, apply_makeup, InputKind::In);
+    connect(&mut patch, makeup_input, apply_makeup, InputKind::Gain);
+    set_output(&mut patch, apply_makeup);
+    composition(
+        "Compressor",
+        patch,
+        [
+            ("Input", InputKind::In, signal),
+            ("Threshold", InputKind::Thresh, threshold_input),
+            ("Ratio", InputKind::Ratio, ratio_input),
+            ("Attack", InputKind::Attack, attack_input),
+            ("Release", InputKind::Release, release_input),
+            ("Makeup", InputKind::Gain, makeup_input),
+        ],
+    )
 }
 
 pub fn adsr(attack: Unit, sustain: Unit) -> Module {
@@ -366,11 +427,12 @@ pub fn adsr(attack: Unit, sustain: Unit) -> Module {
     connect(&mut patch, decay_length, decay_phase, InputKind::B);
     let sustain_delta = binary(&mut patch, BinaryOp::Subtract, sustain.value(), 1.0);
     connect(&mut patch, sustain_input, sustain_delta, InputKind::A);
-    let decay_delta = binary(&mut patch, BinaryOp::Multiply, 0.0, sustain.value() - 1.0);
-    connect(&mut patch, decay_phase, decay_delta, InputKind::A);
-    connect(&mut patch, sustain_delta, decay_delta, InputKind::B);
-    let decay_value = binary(&mut patch, BinaryOp::Add, 1.0, 0.0);
-    connect(&mut patch, decay_delta, decay_value, InputKind::B);
+    let decay_value = patch.insert(scale_offset(
+        Sample::new(sustain.value() - 1.0).unwrap(),
+        Sample::new(1.0).unwrap(),
+    ));
+    connect(&mut patch, decay_phase, decay_value, InputKind::In);
+    connect(&mut patch, sustain_delta, decay_value, InputKind::Gain);
     let decaying = binary(&mut patch, BinaryOp::GreaterThan, 0.0, attack.value());
     connect(&mut patch, rise, decaying, InputKind::A);
     connect(&mut patch, attack_input, decaying, InputKind::B);
@@ -406,19 +468,24 @@ pub fn flanger(rate: Hertz, depth: Unit, feedback: Unit) -> Module {
     let rate_input = input(&mut patch, InputKind::Rate, rate.value());
     let depth_input = input(&mut patch, InputKind::Depth, depth.value());
     let feedback_input = input(&mut patch, InputKind::Feedback, feedback.value());
-    let lfo = patch.insert(sine(rate));
+    let lfo = patch.insert(Module::Oscillator {
+        waveform: crate::patch::Waveform::Sine,
+        frequency: rate,
+    });
     connect(&mut patch, rate_input, lfo, InputKind::Freq);
-    let lfo_offset = binary(&mut patch, BinaryOp::Add, 0.0, 1.0);
-    connect(&mut patch, lfo, lfo_offset, InputKind::A);
-    let lfo_unipolar = binary(&mut patch, BinaryOp::Multiply, 0.0, 0.5);
-    connect(&mut patch, lfo_offset, lfo_unipolar, InputKind::A);
+    let unipolar = patch.insert(scale_offset(
+        Sample::new(0.5).unwrap(),
+        Sample::new(0.5).unwrap(),
+    ));
+    connect(&mut patch, lfo, unipolar, InputKind::In);
     let depth_amount = binary(&mut patch, BinaryOp::Multiply, 0.0, depth.value());
-    connect(&mut patch, lfo_unipolar, depth_amount, InputKind::A);
+    connect(&mut patch, unipolar, depth_amount, InputKind::A);
     connect(&mut patch, depth_input, depth_amount, InputKind::B);
-    let sweep = binary(&mut patch, BinaryOp::Multiply, 0.0, 0.02495);
-    connect(&mut patch, depth_amount, sweep, InputKind::A);
-    let delay_time = binary(&mut patch, BinaryOp::Add, 0.00005, 0.0);
-    connect(&mut patch, sweep, delay_time, InputKind::B);
+    let delay_time = patch.insert(scale_offset(
+        Sample::new(0.02495).unwrap(),
+        Sample::new(0.00005).unwrap(),
+    ));
+    connect(&mut patch, depth_amount, delay_time, InputKind::In);
     let delay = patch.insert(Module::Delay {
         input: Sample::ZERO,
         time: Duration::Seconds(crate::time::Seconds::new(0.025).unwrap()),
@@ -525,98 +592,75 @@ fn reverb_tank(room: Unit, damp: Unit, modulation: Unit) -> Module {
     let room_input = input(&mut patch, InputKind::Room, room.value());
     let damp_input = input(&mut patch, InputKind::Damp, damp.value());
     let modulation_input = input(&mut patch, InputKind::Mod, modulation.value());
-    let delay_samples = [672, 1572, 2356, 3163, 908, 1800, 2656, 3720];
-    let depths = [8.0, 7.0, 6.0, 5.0, 9.0, 8.0, 7.0, 6.0];
-    let rates = [0.5, 0.6, 0.7, 0.8, 0.55, 0.65, 0.75, 0.85];
-    let groups = [0, 4].map(|start| {
-        let group = patch.insert(reverb_fdn_voice_group(
-            std::array::from_fn(|channel| delay_samples[start + channel]),
-            std::array::from_fn(|channel| depths[start + channel]),
-            std::array::from_fn(|channel| rates[start + channel]),
+    let decay = patch.insert(scale_offset(
+        Sample::new(0.69).unwrap(),
+        Sample::new(0.3).unwrap(),
+    ));
+    connect(&mut patch, room_input, decay, InputKind::In);
+    let tuning = [
+        (672, 8.0, 0.5),
+        (1572, 7.0, 0.6),
+        (2356, 6.0, 0.7),
+        (3163, 5.0, 0.8),
+        (908, 9.0, 0.55),
+        (1800, 8.0, 0.65),
+        (2656, 7.0, 0.75),
+        (3720, 6.0, 0.85),
+    ];
+    let channels = tuning.map(|(samples, _, _)| {
+        let delay = patch.insert(Module::Delay {
+            input: Sample::ZERO,
+            time: Duration::Seconds(Seconds::new((samples + 32) as f32 / 29_761.0).unwrap()),
+            feedback: Unit::ZERO,
+        });
+        let tap = patch.insert_delay_tap(delay, Unit::ONE).unwrap();
+        (tap, delay)
+    });
+    let bank_taps = channels.map(|(_, delay)| patch.insert_delay_tap(delay, Unit::ONE).unwrap());
+    let banks = [0, 4].map(|start| {
+        let bank = patch.insert(reverb_control_bank(
+            std::array::from_fn(|channel| tuning[start + channel]),
             room,
             damp,
             modulation,
         ));
-        connect(&mut patch, modulation_input, group, InputKind::Mod);
-        connect(&mut patch, damp_input, group, InputKind::Damp);
-        connect(&mut patch, room_input, group, InputKind::Room);
-        connect(&mut patch, diffused, group, InputKind::Diff);
-        group
-    });
-    let mut delays = Vec::new();
-    for delay_samples in delay_samples {
-        let delay = patch.insert(Module::Delay {
-            input: Sample::ZERO,
-            time: Duration::Seconds(Seconds::new((delay_samples + 32) as f32 / 29_761.0).unwrap()),
-            feedback: Unit::ZERO,
-        });
-        delays.push(delay);
-    }
-    let group_delayed = delays
-        .iter()
-        .map(|delay| patch.insert_delay_tap(*delay, Unit::ONE).unwrap())
-        .collect::<Vec<_>>();
-    let reflection_delayed = (0..3)
-        .map(|_| {
-            delays
-                .iter()
-                .map(|delay| patch.insert_delay_tap(*delay, Unit::ONE).unwrap())
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    let output_delayed = delays
-        .iter()
-        .map(|delay| patch.insert_delay_tap(*delay, Unit::ONE).unwrap())
-        .collect::<Vec<_>>();
-    let reflections = reflection_delayed
-        .iter()
-        .map(|delayed| {
-            let reflection = patch.insert(reverb_reflection());
-            for (channel, kind) in REVERB_CHANNEL_KINDS.into_iter().enumerate() {
-                connect(&mut patch, delayed[channel], reflection, kind);
+        connect(&mut patch, modulation_input, bank, InputKind::Mod);
+        connect(&mut patch, diffused, bank, InputKind::Diff);
+        connect(&mut patch, decay, bank, InputKind::Gain);
+        connect(&mut patch, damp_input, bank, InputKind::Damp);
+        for channel in 0..4 {
+            connect(
+                &mut patch,
+                bank_taps[start + channel],
+                bank,
+                REVERB_CHANNEL_KINDS[channel],
+            );
+            for (slot, kind) in [InputKind::Time, InputKind::In].into_iter().enumerate() {
+                let output = patch
+                    .output_port(bank, (channel * 2 + slot) as u16)
+                    .unwrap();
+                let input = patch.input_port(channels[start + channel].1, kind).unwrap();
+                patch.connect_input(output, input).unwrap();
             }
-            reflection
-        })
-        .collect::<Vec<_>>();
-    for (channel, _) in REVERB_CHANNEL_KINDS.into_iter().enumerate() {
-        let group = groups[channel / 4];
-        connect(
-            &mut patch,
-            group_delayed[channel],
-            group,
-            REVERB_GROUP_CHANNEL_KINDS[channel % 4],
-        );
-        connect_output(
-            &mut patch,
-            group,
-            (channel % 4 * 2) as u16,
-            delays[channel],
-            InputKind::Time,
-        );
-        connect_output(
-            &mut patch,
-            group,
-            (channel % 4 * 2 + 1) as u16,
-            delays[channel],
-            InputKind::In,
-        );
+        }
+        bank
+    });
+    let matrix = patch.insert(reverb_matrix());
+    for ((tap, _), kind) in channels.into_iter().zip(REVERB_CHANNEL_KINDS) {
+        connect(&mut patch, tap, matrix, kind);
     }
-    connect(&mut patch, reflections[0], groups[0], InputKind::Feedback);
-    connect(&mut patch, reflections[1], groups[1], InputKind::Feedback);
-    let output = patch.insert(reverb_output_decoder());
-    for (channel, kind) in REVERB_CHANNEL_KINDS.into_iter().enumerate() {
-        connect(&mut patch, output_delayed[channel], output, kind);
+    for bank in banks {
+        connect(&mut patch, matrix, bank, InputKind::Feedback);
     }
-    connect(&mut patch, reflections[2], output, InputKind::Feedback);
-    set_output(&mut patch, output);
+    patch.output(patch.output_port(matrix, 1).unwrap()).unwrap();
     composition(
         "FDN Tank",
         patch,
         [
             ("Input", InputKind::In, diffused),
             ("Room", InputKind::Room, room_input),
-            ("Damping", InputKind::Damp, damp_input),
             ("Modulation", InputKind::Mod, modulation_input),
+            ("Damping", InputKind::Damp, damp_input),
         ],
     )
 }
@@ -641,139 +685,37 @@ const REVERB_CHANNEL_LABELS: [&str; 8] = [
     "Channel 7",
     "Channel 8",
 ];
-const REVERB_GROUP_CHANNEL_KINDS: [InputKind; 4] = [
-    InputKind::Channel1,
-    InputKind::Channel2,
-    InputKind::Channel3,
-    InputKind::Channel4,
-];
-
-fn reverb_fdn_voice_group(
-    samples: [usize; 4],
-    depths: [f32; 4],
-    rates: [f32; 4],
-    room: Unit,
-    damp: Unit,
-    modulation: Unit,
-) -> Module {
+fn reverb_matrix() -> Module {
     let mut patch = Patch::new();
-    let delayed = REVERB_GROUP_CHANNEL_KINDS.map(|kind| input(&mut patch, kind, 0.0));
-    let modulation_input = input(&mut patch, InputKind::Mod, modulation.value());
-    let damp_input = input(&mut patch, InputKind::Damp, damp.value());
-    let room_input = input(&mut patch, InputKind::Room, room.value());
-    let diffused = input(&mut patch, InputKind::Diff, 0.0);
-    let reflection = input(&mut patch, InputKind::Feedback, 0.0);
-    let delay_group = patch.insert(reverb_delay_group(samples, depths, rates, modulation));
-    connect(&mut patch, modulation_input, delay_group, InputKind::Mod);
-    let feedback_group = patch.insert(reverb_feedback_group(room, damp));
-    for (channel, kind) in REVERB_GROUP_CHANNEL_KINDS.into_iter().enumerate() {
-        connect(&mut patch, delayed[channel], feedback_group, kind);
+    let channels = REVERB_CHANNEL_KINDS.map(|kind| input(&mut patch, kind, 0.0));
+    let reflection = patch.insert(reverb_reflection());
+    let output = patch.insert(reverb_output_decoder());
+    for (channel, kind) in channels.into_iter().zip(REVERB_CHANNEL_KINDS) {
+        connect(&mut patch, channel, reflection, kind);
+        connect(&mut patch, channel, output, kind);
     }
-    connect(&mut patch, reflection, feedback_group, InputKind::Feedback);
-    connect(&mut patch, diffused, feedback_group, InputKind::Diff);
-    connect(&mut patch, room_input, feedback_group, InputKind::Room);
-    connect(&mut patch, damp_input, feedback_group, InputKind::Damp);
-    let outputs = (0..4)
-        .flat_map(|channel| {
-            [
-                (
-                    format!("Time {}", channel + 1),
-                    patch.output_port(delay_group, channel).unwrap(),
-                ),
-                (
-                    format!("Signal {}", channel + 1),
-                    patch.output_port(feedback_group, channel).unwrap(),
-                ),
-            ]
-        })
-        .collect::<Vec<_>>();
-    patch.output(outputs[0].1).unwrap();
+    connect(&mut patch, reflection, output, InputKind::Feedback);
+    let reflection = patch.output_port(reflection, 0).unwrap();
+    let output = patch.output_port(output, 0).unwrap();
+    patch.output(output).unwrap();
     Module::Composition(Box::new(
         Composition::new(
-            "FDN Voice Group",
+            "Feedback Matrix",
             patch,
-            REVERB_GROUP_CHANNEL_KINDS
-                .into_iter()
-                .enumerate()
-                .map(|(channel, kind)| {
-                    (
-                        REVERB_CHANNEL_LABELS[channel].to_string(),
-                        kind,
-                        delayed[channel],
-                    )
-                })
-                .chain([
-                    ("Reflection".to_string(), InputKind::Feedback, reflection),
-                    ("Diffused".to_string(), InputKind::Diff, diffused),
-                    ("Room".to_string(), InputKind::Room, room_input),
-                    ("Damping".to_string(), InputKind::Damp, damp_input),
-                    ("Modulation".to_string(), InputKind::Mod, modulation_input),
-                ]),
-            outputs,
+            channels.into_iter().enumerate().map(|(index, channel)| {
+                (
+                    REVERB_CHANNEL_LABELS[index].to_string(),
+                    REVERB_CHANNEL_KINDS[index],
+                    channel,
+                )
+            }),
+            [
+                ("Reflection".to_string(), reflection),
+                ("Output".to_string(), output),
+            ],
         )
         .unwrap(),
     ))
-}
-
-fn reverb_delay_group(
-    samples: [usize; 4],
-    depths: [f32; 4],
-    rates: [f32; 4],
-    modulation: Unit,
-) -> Module {
-    let mut patch = Patch::new();
-    let input = input(&mut patch, InputKind::Mod, modulation.value());
-    let outputs = (0..4)
-        .map(|channel| {
-            let output = patch.insert(reverb_delay_time(
-                samples[channel],
-                depths[channel],
-                rates[channel],
-                modulation,
-            ));
-            connect(&mut patch, input, output, InputKind::Mod);
-            output
-        })
-        .collect::<Vec<_>>();
-    composition_outputs(
-        "Delay Group",
-        patch,
-        [("Modulation", InputKind::Mod, input)],
-        outputs,
-    )
-}
-
-fn reverb_feedback_group(room: Unit, damp: Unit) -> Module {
-    let mut patch = Patch::new();
-    let delayed = REVERB_GROUP_CHANNEL_KINDS.map(|kind| input(&mut patch, kind, 0.0));
-    let reflection = input(&mut patch, InputKind::Feedback, 0.0);
-    let diffused = input(&mut patch, InputKind::Diff, 0.0);
-    let room_input = input(&mut patch, InputKind::Room, room.value());
-    let damp_input = input(&mut patch, InputKind::Damp, damp.value());
-    let outputs = delayed.map(|delayed| {
-        let path = patch.insert(reverb_feedback_path(room, damp));
-        connect(&mut patch, delayed, path, InputKind::In);
-        connect(&mut patch, reflection, path, InputKind::Feedback);
-        connect(&mut patch, diffused, path, InputKind::Diff);
-        connect(&mut patch, room_input, path, InputKind::Room);
-        connect(&mut patch, damp_input, path, InputKind::Damp);
-        path
-    });
-    composition_outputs(
-        "Feedback Group",
-        patch,
-        REVERB_GROUP_CHANNEL_KINDS
-            .into_iter()
-            .enumerate()
-            .map(|(channel, kind)| (REVERB_CHANNEL_LABELS[channel], kind, delayed[channel]))
-            .chain([
-                ("Reflection", InputKind::Feedback, reflection),
-                ("Diffused", InputKind::Diff, diffused),
-                ("Room", InputKind::Room, room_input),
-                ("Damping", InputKind::Damp, damp_input),
-            ]),
-        outputs,
-    )
 }
 
 fn reverb_reflection() -> Module {
@@ -932,7 +874,10 @@ fn reverb_weighted_output_pair(
 fn reverb_delay_time(samples: usize, depth: f32, rate: f32, modulation: Unit) -> Module {
     let mut patch = Patch::new();
     let modulation_input = input(&mut patch, InputKind::Mod, modulation.value());
-    let oscillator = patch.insert(sine(Hertz::new(rate).unwrap()));
+    let oscillator = patch.insert(Module::Oscillator {
+        waveform: crate::patch::Waveform::Sine,
+        frequency: Hertz::new(rate).unwrap(),
+    });
     let depth = binary(&mut patch, BinaryOp::Multiply, 0.0, depth / 29_761.0);
     connect(&mut patch, oscillator, depth, InputKind::A);
     let modulated = binary(&mut patch, BinaryOp::Multiply, 0.0, modulation.value());
@@ -948,12 +893,144 @@ fn reverb_delay_time(samples: usize, depth: f32, rate: f32, modulation: Unit) ->
     )
 }
 
+fn reverb_modulation_bank(tuning: [(usize, f32, f32); 4], modulation: Unit) -> Module {
+    let mut patch = Patch::new();
+    let control = input(&mut patch, InputKind::Mod, modulation.value());
+    let outputs = tuning.map(|(samples, depth, rate)| {
+        let time = patch.insert(reverb_delay_time(samples, depth, rate, modulation));
+        connect(&mut patch, control, time, InputKind::Mod);
+        time
+    });
+    composition_outputs(
+        "Modulation Bank",
+        patch,
+        [("Modulation", InputKind::Mod, control)],
+        outputs,
+    )
+}
+
+fn reverb_control_bank(
+    tuning: [(usize, f32, f32); 4],
+    room: Unit,
+    damp: Unit,
+    modulation: Unit,
+) -> Module {
+    let mut patch = Patch::new();
+    let channels = [
+        InputKind::Channel1,
+        InputKind::Channel2,
+        InputKind::Channel3,
+        InputKind::Channel4,
+    ]
+    .map(|kind| input(&mut patch, kind, 0.0));
+    let modulation_input = input(&mut patch, InputKind::Mod, modulation.value());
+    let damping = input(&mut patch, InputKind::Damp, damp.value());
+    let gain = input(&mut patch, InputKind::Gain, room.value() * 0.69 + 0.3);
+    let signal = input(&mut patch, InputKind::Diff, 0.0);
+    let reflection = input(&mut patch, InputKind::Feedback, 0.0);
+    let times = patch.insert(reverb_modulation_bank(tuning, modulation));
+    connect(&mut patch, modulation_input, times, InputKind::Mod);
+    let feedback = patch.insert(reverb_feedback_bank(room, damp));
+    for (index, channel) in channels.into_iter().enumerate() {
+        connect(&mut patch, channel, feedback, REVERB_CHANNEL_KINDS[index]);
+    }
+    connect(&mut patch, damping, feedback, InputKind::Damp);
+    connect(&mut patch, gain, feedback, InputKind::Gain);
+    connect(&mut patch, signal, feedback, InputKind::Diff);
+    connect(&mut patch, reflection, feedback, InputKind::Feedback);
+    let outputs = (0..4)
+        .flat_map(|channel| {
+            [
+                (
+                    format!("Time {}", channel + 1),
+                    patch.output_port(times, channel).unwrap(),
+                ),
+                (
+                    format!("Signal {}", channel + 1),
+                    patch.output_port(feedback, channel).unwrap(),
+                ),
+            ]
+        })
+        .collect::<Vec<_>>();
+    patch.output(outputs[0].1).unwrap();
+    Module::Composition(Box::new(
+        Composition::new(
+            "Channel Controls",
+            patch,
+            channels
+                .into_iter()
+                .enumerate()
+                .map(|(index, channel)| {
+                    (
+                        REVERB_CHANNEL_LABELS[index].to_string(),
+                        REVERB_CHANNEL_KINDS[index],
+                        channel,
+                    )
+                })
+                .chain([
+                    ("Modulation".to_string(), InputKind::Mod, modulation_input),
+                    ("Damping".to_string(), InputKind::Damp, damping),
+                    ("Decay".to_string(), InputKind::Gain, gain),
+                    ("Input".to_string(), InputKind::Diff, signal),
+                    ("Reflection".to_string(), InputKind::Feedback, reflection),
+                ]),
+            outputs,
+        )
+        .unwrap(),
+    ))
+}
+
+fn reverb_feedback_bank(room: Unit, damp: Unit) -> Module {
+    let mut patch = Patch::new();
+    let channels = [
+        InputKind::Channel1,
+        InputKind::Channel2,
+        InputKind::Channel3,
+        InputKind::Channel4,
+    ]
+    .map(|kind| input(&mut patch, kind, 0.0));
+    let reflection = input(&mut patch, InputKind::Feedback, 0.0);
+    let signal = input(&mut patch, InputKind::Diff, 0.0);
+    let gain = input(&mut patch, InputKind::Gain, room.value() * 0.69 + 0.3);
+    let damping = input(&mut patch, InputKind::Damp, damp.value());
+    let outputs = channels.map(|channel| {
+        let feedback = patch.insert(reverb_feedback_path(room, damp));
+        connect(&mut patch, channel, feedback, InputKind::In);
+        connect(&mut patch, reflection, feedback, InputKind::Feedback);
+        connect(&mut patch, signal, feedback, InputKind::Diff);
+        connect(&mut patch, gain, feedback, InputKind::Gain);
+        connect(&mut patch, damping, feedback, InputKind::Damp);
+        feedback
+    });
+    composition_outputs(
+        "Feedback Bank",
+        patch,
+        channels
+            .into_iter()
+            .enumerate()
+            .map(|(index, channel)| {
+                (
+                    REVERB_CHANNEL_LABELS[index],
+                    REVERB_CHANNEL_KINDS[index],
+                    channel,
+                )
+            })
+            .chain([
+                ("Reflection", InputKind::Feedback, reflection),
+                ("Input", InputKind::Diff, signal),
+                ("Decay", InputKind::Gain, gain),
+                ("Damping", InputKind::Damp, damping),
+            ]),
+        outputs,
+    )
+}
+
 fn reverb_feedback_path(room: Unit, damp: Unit) -> Module {
     let mut patch = Patch::new();
     let delayed = input(&mut patch, InputKind::In, 0.0);
     let reflection = input(&mut patch, InputKind::Feedback, 0.0);
     let diffused = input(&mut patch, InputKind::Diff, 0.0);
-    let room_input = input(&mut patch, InputKind::Room, room.value());
+    let gain = input(&mut patch, InputKind::Gain, room.value() * 0.69 + 0.3);
     let damp_input = input(&mut patch, InputKind::Damp, damp.value());
     let mixed = binary(&mut patch, BinaryOp::Add, 0.0, 0.0);
     connect(&mut patch, delayed, mixed, InputKind::A);
@@ -964,14 +1041,12 @@ fn reverb_feedback_path(room: Unit, damp: Unit) -> Module {
     });
     connect(&mut patch, mixed, damping, InputKind::In);
     connect(&mut patch, damp_input, damping, InputKind::Damp);
-    let decay = patch.insert(reverb_room_decay(room));
-    connect(&mut patch, room_input, decay, InputKind::Room);
     let decayed = binary(&mut patch, BinaryOp::Multiply, 0.0, room.value());
     connect(&mut patch, damping, decayed, InputKind::A);
-    connect(&mut patch, decay, decayed, InputKind::B);
+    connect(&mut patch, gain, decayed, InputKind::B);
     let output = binary(&mut patch, BinaryOp::Add, 0.0, 0.0);
-    connect(&mut patch, diffused, output, InputKind::A);
-    connect(&mut patch, decayed, output, InputKind::B);
+    connect(&mut patch, diffused, output, InputKind::B);
+    connect(&mut patch, decayed, output, InputKind::A);
     set_output(&mut patch, output);
     composition(
         "Feedback Path",
@@ -979,22 +1054,11 @@ fn reverb_feedback_path(room: Unit, damp: Unit) -> Module {
         [
             ("Delayed", InputKind::In, delayed),
             ("Reflection", InputKind::Feedback, reflection),
-            ("Diffused", InputKind::Diff, diffused),
-            ("Room", InputKind::Room, room_input),
             ("Damping", InputKind::Damp, damp_input),
+            ("Decay", InputKind::Gain, gain),
+            ("Diffused", InputKind::Diff, diffused),
         ],
     )
-}
-
-fn reverb_room_decay(room: Unit) -> Module {
-    let mut patch = Patch::new();
-    let room_input = input(&mut patch, InputKind::Room, room.value());
-    let room_scale = binary(&mut patch, BinaryOp::Multiply, 0.0, 0.69);
-    connect(&mut patch, room_input, room_scale, InputKind::A);
-    let decay = binary(&mut patch, BinaryOp::Add, 0.3, 0.0);
-    connect(&mut patch, room_scale, decay, InputKind::B);
-    set_output(&mut patch, decay);
-    composition("Room Decay", patch, [("Room", InputKind::Room, room_input)])
 }
 
 fn connect(
@@ -1005,18 +1069,6 @@ fn connect(
 ) {
     let input = patch.input_port(to, input).unwrap();
     let from = patch.output_port(from, 0).unwrap();
-    patch.connect_input(from, input).unwrap();
-}
-
-fn connect_output(
-    patch: &mut Patch,
-    from: crate::patch::ModuleId,
-    output: u16,
-    to: crate::patch::ModuleId,
-    input: InputKind,
-) {
-    let input = patch.input_port(to, input).unwrap();
-    let from = patch.output_port(from, output).unwrap();
     patch.connect_input(from, input).unwrap();
 }
 
@@ -1155,6 +1207,63 @@ mod tests {
     use crate::time::SampleRate;
 
     #[test]
+    fn reusable_blocks_accept_connected_parameters() {
+        let cases = [
+            (
+                scale_offset(Sample::new(1.0).unwrap(), Sample::ZERO),
+                vec![
+                    (InputKind::In, 0.25),
+                    (InputKind::Gain, 4.0),
+                    (InputKind::Value, -0.5),
+                ],
+                0.5,
+            ),
+            (
+                gain(Gain::new(1.0).unwrap()),
+                vec![(InputKind::In, 0.25), (InputKind::Gain, 3.0)],
+                0.75,
+            ),
+            (
+                compressor_gain(Unit::new(0.5).unwrap(), CompressorRatio::new(2.0).unwrap()),
+                vec![
+                    (InputKind::In, 1.0),
+                    (InputKind::Thresh, 0.25),
+                    (InputKind::Ratio, 2.0),
+                ],
+                0.5,
+            ),
+            (
+                envelope_follower(Seconds::new(0.1).unwrap(), Seconds::new(0.1).unwrap()),
+                vec![
+                    (InputKind::In, -0.75),
+                    (InputKind::Attack, 0.0),
+                    (InputKind::Release, 0.0),
+                ],
+                0.75,
+            ),
+        ];
+        for (module, controls, expected) in cases {
+            let mut patch = Patch::new();
+            let effect = patch.insert(module);
+            for (kind, value) in controls {
+                let constant = patch.insert(Module::Constant(Sample::new(value).unwrap()));
+                connect(&mut patch, constant, effect, kind);
+            }
+            set_output(&mut patch, effect);
+            let mut compiled =
+                CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+            let actual = (0..32)
+                .map(|_| compiled.next().left().value())
+                .last()
+                .unwrap();
+            assert!(
+                (actual - expected).abs() < 0.000001,
+                "{actual} != {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn adsr_is_a_composed_arithmetic_graph() {
         let mut patch = Patch::new();
         let rise = patch.insert(Module::Constant(Sample::new(0.125).unwrap()));
@@ -1224,6 +1333,7 @@ mod tests {
                     frequency: None,
                     gate: 1.0,
                     degree: 4,
+                    expression: 0.0,
                 })
                 .left()
                 .value(),
@@ -1235,6 +1345,7 @@ mod tests {
                     frequency: None,
                     gate: 1.0,
                     degree: 5,
+                    expression: 0.0,
                 })
                 .left()
                 .value(),

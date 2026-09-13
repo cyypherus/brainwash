@@ -9,10 +9,10 @@ impl GuiState {
         &self,
         rate: SampleRate,
     ) -> Result<GuiAudioPatch, AudioPatchError> {
-        let instrument = self.instrument();
+        let instrument = &self.instrument;
         let root_modules = &instrument.root.modules;
         let output = self
-            .instrument()
+            .instrument
             .root
             .modules
             .iter()
@@ -373,7 +373,7 @@ pub(super) fn output_voice_mode(
 fn module_uses_voice_controls(kind: ModuleKind) -> bool {
     matches!(
         kind,
-        ModuleKind::Freq | ModuleKind::Gate | ModuleKind::Degree
+        ModuleKind::Freq | ModuleKind::Gate | ModuleKind::Degree | ModuleKind::Expression
     )
 }
 
@@ -408,8 +408,7 @@ pub(super) fn gui_composition(
         let audio_id = match &module.body {
             ModuleBody::CompositionInput { kind, value, .. } => patch.insert(AudioModule::Input {
                 kind: *kind,
-                default: AudioSample::new(value.value as f32 / 100.0)
-                    .ok_or(AudioPatchError::InvalidParameter)?,
+                default: value.value,
             }),
             ModuleBody::Composition { .. } => {
                 patch.insert(gui_composition(state, module, rate, bpm)?)
@@ -474,10 +473,7 @@ pub(super) fn gui_composition(
                     .output_port(output, output_index)
                     .map_err(AudioPatchError::Connect)?
             } else {
-                let constant = patch.insert(AudioModule::Constant(
-                    AudioSample::new(input.value as f32 / 100.0)
-                        .ok_or(AudioPatchError::InvalidParameter)?,
-                ));
+                let constant = patch.insert(AudioModule::Constant(input.value));
                 patch
                     .output_port(constant, 0)
                     .map_err(AudioPatchError::Connect)?
@@ -560,6 +556,7 @@ pub(super) fn audio_module(
         ModuleKind::Freq => Ok(AudioModule::Freq),
         ModuleKind::Gate => Ok(AudioModule::Gate),
         ModuleKind::Degree => Ok(AudioModule::Degree),
+        ModuleKind::Expression => Ok(AudioModule::Expression),
         ModuleKind::Phase => Ok(AudioModule::Phase {
             frequency: Hertz::new(audio_float(module, 0)?)
                 .ok_or(AudioPatchError::InvalidParameter)?,
@@ -650,8 +647,7 @@ pub(super) fn audio_module(
             };
             Ok(AudioModule::Binary {
                 op: BinaryOp::Add,
-                a: AudioSample::new(value.value as f32 / 100.0)
-                    .ok_or(AudioPatchError::InvalidParameter)?,
+                a: value.value,
                 b: AudioSample::ZERO,
             })
         }
@@ -794,11 +790,11 @@ fn seconds(value: f32) -> Result<Duration, AudioPatchError> {
 }
 
 pub(super) fn audio_float(module: &Module, parameter: usize) -> Result<f32, AudioPatchError> {
-    let Some(ParameterValue::Float { value, .. }) = module.parameter(parameter).map(|p| p.value)
-    else {
-        return Err(AudioPatchError::InvalidParameter);
-    };
-    Ok(value as f32 / 100.0)
+    module
+        .body
+        .float_param(parameter)
+        .map(|param| param.value.value())
+        .ok_or(AudioPatchError::InvalidParameter)
 }
 
 fn audio_sample(module: &Module, parameter: usize) -> Result<AudioSample, AudioPatchError> {
@@ -838,5 +834,39 @@ pub(super) fn scale_from_index(index: usize) -> Scale {
         23 => bmaj(),
         24 => bmin(),
         _ => cmin(),
+    }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+
+    #[test]
+    fn composition_input_and_probe_keep_sub_cent_audio_values() {
+        for kind in [ModuleKind::CompositionInput, ModuleKind::Probe] {
+            for value in [0.02495, 0.00005, -0.00005] {
+                let mut module = Module {
+                    id: ModuleId::new(0),
+                    position: GridPos::new(0, 0),
+                    orientation: Orientation::Right,
+                    body: kind.default_body(),
+                    disabled: false,
+                };
+                let index = if kind == ModuleKind::CompositionInput {
+                    1
+                } else {
+                    0
+                };
+                module.body.float_param_mut(index).unwrap().value =
+                    AudioSample::new(value).unwrap();
+                let mut patch = Patch::new();
+                let output = patch
+                    .insert(audio_module(&module, SampleRate::new(44_100).unwrap(), 120).unwrap());
+                patch.output(patch.output_port(output, 0).unwrap()).unwrap();
+                let mut compiled =
+                    CompiledPatch::new(&patch, SampleRate::new(44_100).unwrap()).unwrap();
+                assert_eq!(compiled.next().left().value(), value);
+            }
+        }
     }
 }

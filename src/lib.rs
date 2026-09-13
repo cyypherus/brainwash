@@ -11,9 +11,8 @@ pub mod persist;
 pub mod preset;
 pub mod sample;
 pub mod scale;
+pub mod sequence;
 pub mod time;
-pub mod track;
-pub mod voice;
 
 #[cfg(test)]
 #[allow(dead_code)]

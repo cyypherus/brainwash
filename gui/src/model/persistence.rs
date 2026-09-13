@@ -15,14 +15,14 @@ pub(super) fn project_from_instrument(
     );
     Ok(Project {
         bpm: bpm as f32,
-        bars: 1.0,
+        version: 1,
         scale_idx: scale_index,
         modules: project_modules_from_surface(
             &instrument.root,
             &composition_ids,
             &composition_ports,
         )?,
-        track: Some(instrument.track_text.clone()),
+        sequence: instrument.sequence.clone(),
         compositions: project_compositions_from_surface(
             &instrument.root,
             &composition_ids,
@@ -193,6 +193,7 @@ fn project_kind(
         ModuleKind::Freq => ProjectModuleKind::Standard(ProjectStandardModule::Freq),
         ModuleKind::Gate => ProjectModuleKind::Standard(ProjectStandardModule::Gate),
         ModuleKind::Degree => ProjectModuleKind::Standard(ProjectStandardModule::Degree),
+        ModuleKind::Expression => ProjectModuleKind::Standard(ProjectStandardModule::Expression),
         ModuleKind::Phase => ProjectModuleKind::Standard(ProjectStandardModule::Phase),
         ModuleKind::Noise => ProjectModuleKind::Standard(ProjectStandardModule::Noise),
         ModuleKind::Rise => ProjectModuleKind::Standard(ProjectStandardModule::Rise),
@@ -235,6 +236,7 @@ fn project_params(
         ModuleBody::Freq
         | ModuleBody::Gate
         | ModuleBody::Degree
+        | ModuleBody::Expression
         | ModuleBody::TurnRightDown
         | ModuleBody::TurnDownRight
         | ModuleBody::LeftSplit
@@ -366,7 +368,7 @@ fn project_params(
 }
 
 fn project_float(param: FloatParam) -> f32 {
-    param.value as f32 / 100.0
+    param.value.value()
 }
 
 fn project_time(param: TimeParam) -> Result<ProjectTimeValue, String> {
@@ -509,7 +511,9 @@ fn module_from_project(definition: &ProjectModuleDef) -> Result<(Module, Option<
                 .map_err(|_| format!("invalid primitive {}", definition.id.value()))?,
         );
     }
-    apply_project_params(&mut module, &definition.params);
+    if !matches!(definition.params, ProjectModuleParams::Primitive { .. }) {
+        apply_project_params(&mut module, &definition.params)?;
+    }
     Ok((module, composition_id))
 }
 
@@ -539,6 +543,7 @@ fn kind_from_project(kind: ProjectModuleKind) -> (ModuleKind, Option<u32>) {
                 ProjectStandardModule::Freq => ModuleKind::Freq,
                 ProjectStandardModule::Gate => ModuleKind::Gate,
                 ProjectStandardModule::Degree => ModuleKind::Degree,
+                ProjectStandardModule::Expression => ModuleKind::Expression,
                 ProjectStandardModule::Phase => ModuleKind::Phase,
                 ProjectStandardModule::Noise => ModuleKind::Noise,
                 ProjectStandardModule::Rise => ModuleKind::Rise,
@@ -559,7 +564,7 @@ fn kind_from_project(kind: ProjectModuleKind) -> (ModuleKind, Option<u32>) {
     }
 }
 
-fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
+fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) -> Result<(), String> {
     let mut parameters = module.body.parameters();
     match params {
         ProjectModuleParams::None | ProjectModuleParams::Primitive { .. } => {}
@@ -580,7 +585,7 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             if let Some(parameter) = parameters.get_mut(0) {
                 parameter.value = ParameterValue::Text(label.clone());
             }
-            set_float(&mut parameters, 1, *value);
+            set_float(&mut module.body, 1, *value)?;
             if let Some(parameter) = parameters.get_mut(1) {
                 parameter.connected = *connected;
             }
@@ -593,7 +598,7 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             if let Some(parameter) = parameters.get_mut(0) {
                 parameter.value = ParameterValue::Text(label.clone());
             }
-            set_float(&mut parameters, 1, *input);
+            set_float(&mut module.body, 1, *input)?;
             if let Some(parameter) = parameters.get_mut(1) {
                 parameter.connected = *connected;
             }
@@ -602,7 +607,7 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             frequency,
             connected,
         } => {
-            set_float(&mut parameters, 0, *frequency);
+            set_float(&mut module.body, 0, *frequency)?;
             if let Some(parameter) = parameters.get_mut(0) {
                 parameter.connected = connected & 1 != 0;
             }
@@ -617,7 +622,7 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             time,
             connected,
         } => {
-            set_float(&mut parameters, 0, *gate);
+            set_float(&mut module.body, 0, *gate)?;
             set_time(&mut parameters, 1, *time);
             apply_connected(&mut parameters, *connected);
         }
@@ -626,7 +631,7 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             time,
             connected,
         } => {
-            set_float(&mut parameters, 0, *value);
+            set_float(&mut module.body, 0, *value)?;
             set_time(&mut parameters, 1, *time);
             apply_connected(&mut parameters, *connected);
         }
@@ -635,7 +640,7 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             points,
             connected,
         } => {
-            set_float(&mut parameters, 0, *phase);
+            set_float(&mut module.body, 0, *phase)?;
             if let Some(target) = module.body.env_points_mut() {
                 *target = points.iter().map(env_point_from_project).collect();
             }
@@ -648,10 +653,10 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             damp,
             connected,
         } => {
-            set_float(&mut parameters, 0, *input);
+            set_float(&mut module.body, 0, *input)?;
             set_time(&mut parameters, 1, *time);
-            set_float(&mut parameters, 2, *feedback);
-            set_float(&mut parameters, 3, *damp);
+            set_float(&mut module.body, 2, *feedback)?;
+            set_float(&mut module.body, 3, *damp)?;
             apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Allpass {
@@ -660,9 +665,9 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             feedback,
             connected,
         } => {
-            set_float(&mut parameters, 0, *input);
+            set_float(&mut module.body, 0, *input)?;
             set_time(&mut parameters, 1, *time);
-            set_float(&mut parameters, 2, *feedback);
+            set_float(&mut module.body, 2, *feedback)?;
             apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Delay {
@@ -671,9 +676,9 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             feedback,
             connected,
         } => {
-            set_float(&mut parameters, 2, *input);
+            set_float(&mut module.body, 2, *input)?;
             set_time(&mut parameters, 1, *time);
-            set_float(&mut parameters, 0, *feedback);
+            set_float(&mut module.body, 0, *feedback)?;
             apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Sample {
@@ -699,11 +704,11 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
                         .collect(),
                 );
             }
-            set_float(&mut parameters, 1, *position);
+            set_float(&mut module.body, 1, *position)?;
             apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Probe { input, connected } => {
-            set_float(&mut parameters, 0, *input);
+            set_float(&mut module.body, 0, *input)?;
             apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::Output {
@@ -711,20 +716,24 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
             gain,
             connected,
         } => {
-            set_float(&mut parameters, 0, *input);
-            set_float(&mut parameters, 1, *gain);
+            set_float(&mut module.body, 0, *input)?;
+            set_float(&mut module.body, 1, *gain)?;
             apply_connected(&mut parameters, *connected);
         }
         ProjectModuleParams::DelayTap { gain } => {
-            set_float(&mut parameters, 1, *gain);
+            set_float(&mut module.body, 1, *gain)?;
         }
         ProjectModuleParams::Random { gate, connected } => {
-            set_float(&mut parameters, 0, *gate);
+            set_float(&mut module.body, 0, *gate)?;
             apply_connected(&mut parameters, *connected);
         }
     }
     for (index, parameter) in parameters.into_iter().enumerate() {
-        module.body.set_parameter(index, parameter);
+        if let Some(target) = module.body.float_param_mut(index) {
+            target.connected = parameter.connected;
+        } else {
+            module.body.set_parameter(index, parameter);
+        }
     }
     if let ProjectModuleParams::Delay { time, .. } = params
         && time.unit == ProjectTimeUnit::Seconds
@@ -732,19 +741,15 @@ fn apply_project_params(module: &mut Module, params: &ProjectModuleParams) {
     {
         target.exact_seconds = Some(time.seconds.to_bits());
     }
+    Ok(())
 }
 
-fn set_float(parameters: &mut [ModuleParameter], index: usize, value: f32) {
-    if let Some(parameter) = parameters.get_mut(index)
-        && let ParameterValue::Float {
-            value: target,
-            min,
-            max,
-            ..
-        } = &mut parameter.value
-    {
-        *target = (value * 100.0).round().clamp(*min as f32, *max as f32) as i32;
-    }
+fn set_float(body: &mut ModuleBody, index: usize, value: f32) -> Result<(), String> {
+    let target = body
+        .float_param_mut(index)
+        .ok_or_else(|| "invalid float parameter".to_string())?;
+    target.value = AudioSample::new(value).ok_or_else(|| "invalid float value".to_string())?;
+    Ok(())
 }
 
 fn set_time(parameters: &mut [ModuleParameter], index: usize, value: ProjectTimeValue) {
@@ -787,5 +792,101 @@ fn env_point_from_project(point: &brainwash_grid::project::EnvPoint) -> EnvPoint
         time: (point.time * 100.0).round().clamp(0.0, 100.0) as i32,
         value: (point.value * 100.0).round().clamp(-100.0, 100.0) as i32,
         curve: point.curve,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_parameters_survive_project_round_trip() {
+        for kind in all_modules()
+            .iter()
+            .copied()
+            .filter(|kind| !matches!(kind, ModuleKind::Composition | ModuleKind::DelayTap))
+        {
+            let mut instrument = Instrument::new();
+            instrument.root.modules.push(Module {
+                id: ModuleId::new(0),
+                position: GridPos::new(0, 0),
+                orientation: Orientation::Right,
+                body: kind.default_body(),
+                disabled: false,
+            });
+            let project = project_from_instrument(&instrument, 120, 0).unwrap();
+            let loaded = instrument_surface_from_project(&project).unwrap();
+            assert_eq!(
+                loaded.modules[0].body, instrument.root.modules[0].body,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn project_round_trip_preserves_float_precision_for_audio() {
+        for kind in all_modules()
+            .iter()
+            .copied()
+            .chain([ModuleKind::CompositionInput, ModuleKind::CompositionOutput])
+            .filter(|kind| !matches!(kind, ModuleKind::Composition | ModuleKind::DelayTap))
+        {
+            let mut instrument = Instrument::new();
+            let mut body = kind.default_body();
+            let count = body.parameters().len();
+            for index in 0..count {
+                if let Some(param) = body.float_param_mut(index) {
+                    param.value =
+                        AudioSample::new(if index % 2 == 0 { 0.02495 } else { 0.00005 }).unwrap();
+                }
+            }
+            instrument.root.modules.push(Module {
+                id: ModuleId::new(0),
+                position: GridPos::new(0, 0),
+                orientation: Orientation::Right,
+                body,
+                disabled: false,
+            });
+            let project = project_from_instrument(&instrument, 120, 0).unwrap();
+            let loaded = instrument_surface_from_project(&project).unwrap();
+            assert_eq!(
+                loaded.modules[0].body, instrument.root.modules[0].body,
+                "{kind:?}"
+            );
+            for index in 0..count {
+                if let Some(param) = loaded.modules[0].body.float_param(index) {
+                    assert_eq!(
+                        super::super::audio_patch::audio_float(&loaded.modules[0], index).unwrap(),
+                        param.value.value()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn loading_preserves_primitive_sound_parameters_exactly() {
+        for source in [
+            "Binary(op:Multiply,a:0.0001234567,b:6.2831855)",
+            "Unary(op:Sine,input:0.12345679)",
+        ] {
+            let definition = ProjectModuleDef {
+                id: ModuleId::new(0),
+                kind: ProjectModuleKind::Standard(ProjectStandardModule::Primitive),
+                x: 0,
+                y: 0,
+                orientation: Orientation::Right,
+                params: ProjectModuleParams::Primitive {
+                    source: source.into(),
+                },
+            };
+            let expected = brainwash::persist::module_from_str(source).unwrap();
+            let (restored, composition) = module_from_project(&definition).unwrap();
+            assert_eq!(composition, None);
+            let ModuleBody::Primitive(actual) = restored.body else {
+                panic!()
+            };
+            assert_eq!(actual, expected);
+        }
     }
 }
